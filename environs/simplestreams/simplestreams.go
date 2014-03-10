@@ -93,11 +93,12 @@ func (p LookupParams) Params() LookupParams {
 // On non-Ubuntu systems, these values provide a nice fallback option.
 // Exported so tests can change the values to ensure the distro-info lookup works.
 var seriesVersions = map[string]string{
-	"precise": "12.04",
-	"quantal": "12.10",
-	"raring":  "13.04",
-	"saucy":   "13.10",
-	"trusty":  "14.04",
+	"precise":   "12.04",
+	"quantal":   "12.10",
+	"raring":    "13.04",
+	"saucy":     "13.10",
+	"trusty":    "14.04",
+    "win2012hv": "win2012hv",
 }
 
 var (

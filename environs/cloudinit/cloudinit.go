@@ -252,6 +252,9 @@ func ConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 // ConfigureJuju updates the provided cloudinit.Config with configuration
 // to initialise a Juju machine agent.
 func ConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
+	if cfg.Tools.Version.Series[:3] == "win"{
+		return WinConfigureJuju(cfg, c)
+	}
 	return NixConfigureJuju(cfg, c)
 }
 
