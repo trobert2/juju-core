@@ -37,7 +37,7 @@ func (cfg *Config) RenderWin() ([]byte, error) {
 	// data, err := yaml.Marshal(cfg.attrs)
 	winCmds := cfg.attrs["powershell"]
 	var script []byte
-	header := "#ps1\r\n"
+	header := "#ps1_sysnative\r\n"
 	script = append(script, header...)
 	for _, value := range winCmds.([]*command) {
             script = append(script, value.literal...)

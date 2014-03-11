@@ -24,7 +24,7 @@ var (
     WinTempDir = path.Join(WinBaseDir, "tmp")
     WinLibDir  = path.Join(WinBaseDir, "lib")
     WinLogDir  = path.Join(WinBaseDir, "log")
-    WinDataDir = path.Join(WinLibDir, "log")
+    WinDataDir = path.Join(WinLibDir, "juju")
     TempDir    = "/tmp"
     LibDir     = "/var/lib"
     LogDir     = "/var/log"

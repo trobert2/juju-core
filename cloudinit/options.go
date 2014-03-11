@@ -350,7 +350,7 @@ func (cfg *Config) AddFile(filename, data string, mode uint) {
 
 func (cfg *Config) WinAddFile(filename, data string, mode uint) {
 	cfg.AddPSScripts(
-		fmt.Sprintf(`Set-Content '%s' '%s'`, filename, data),
+		fmt.Sprintf("Set-Content '%s' @\"\r\n%s\r\n\"@", filename, data),
 	)
 }
 

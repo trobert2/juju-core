@@ -144,3 +144,10 @@ func ReadFileSHA256(filename string) (string, int64, error) {
 	defer f.Close()
 	return ReadSHA256(f)
 }
+
+//gsamfira: The PathToWindows is a parlous one.
+//Quick and dirty hack to Get around the separator issue when
+//generation windows paths on linux
+func PathToWindows(filepath string) string {
+	return strings.Replace(filepath, "/", "\\", -1)
+}

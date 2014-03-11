@@ -190,18 +190,20 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 	// Note: this must be the last runcmd we do in ConfigureBasic, as
 	// the presence of the nonce file is used to gate the remainder
 	// of synchronous bootstrap.
-	zipUrl := "http://gaby.rohost.com/7z920.x64.msi"
+	zipUrl := "http://freefr.dl.sourceforge.net/project/sevenzip/7-Zip/9.20/7z920-x64.msi"
 	var zipDst = path.Join(osenv.WinTempDir, "7z920.x64.msi")
 
 	c.AddPSScripts(
+        fmt.Sprintf(`mkdir %s`, utils.PathToWindows(osenv.WinTempDir)),
 		fmt.Sprintf(`Invoke-WebRequest "%s" -OutFile "%s"`,
-			zipUrl, zipDst),
-		fmt.Sprintf(`msiexec.exe /i "%s" /qb`, zipDst),
+			zipUrl, utils.PathToWindows(zipDst)),
+		fmt.Sprintf(`msiexec.exe /i "%s" /qb`, utils.PathToWindows(zipDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install 7zip" }`),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
 	c.AddPSScripts(
-		fmt.Sprintf(`Set-Content "%s" "%s"`, noncefile, shquote(cfg.MachineNonce)),
+        fmt.Sprintf(`mkdir '%s'`, utils.PathToWindows(cfg.DataDir)),
+		fmt.Sprintf(`Set-Content "%s" "%s"`, utils.PathToWindows(noncefile), shquote(cfg.MachineNonce)),
 	)
 	return nil
 }
@@ -289,21 +291,20 @@ func WinConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
 	}
 	var zipBin string = `C:\Program Files\7-Zip\7z.exe`
 	c.AddPSScripts(
-		fmt.Sprintf(`$binDir=%s`, cfg.jujuTools()),
-		fmt.Sprintf(`mkdir %s`, cfg.DataDir),
-		fmt.Sprintf(`mkdir %s`, cfg.LogDir),
+		fmt.Sprintf(`$binDir="%s"`, utils.PathToWindows(cfg.jujuTools())),
+		fmt.Sprintf(`mkdir '%s'`, utils.PathToWindows(cfg.LogDir)),
 		fmt.Sprintf(`mkdir $binDir`),
 		fmt.Sprintf(`$WebClient = New-Object System.Net.WebClient`),
 		fmt.Sprintf(`[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}`),
-		fmt.Sprintf(`$WebClient.DownloadFile("%s", $binDir\tools.tar.gz)`),
-		fmt.Sprintf(`$dToolsHash = (Get-FileHash -Algorithm SHA256 $binDir\tools.tar.gz).hash`),
-		fmt.Sprintf(`$dToolsHash > $binDir\juju%s.sha256`,
+		fmt.Sprintf(`$WebClient.DownloadFile('%s', "$binDir\tools.tar.gz")`, cfg.Tools.URL),
+		fmt.Sprintf(`$dToolsHash = (Get-FileHash -Algorithm SHA256 "$binDir\tools.tar.gz").hash`),
+		fmt.Sprintf(`$dToolsHash > "$binDir\juju%s.sha256"`,
 			cfg.Tools.Version),
-		fmt.Sprintf(`if ($dToolsHash -ne "%s"){ Throw "Tools checksum mismatch"}`,
-			cfg.Tools.Version),
-		fmt.Sprintf(`& "%s" x $binDir\tools.tar.gz -o$binDir\`, zipBin),
-		fmt.Sprintf(`& "%s" x $binDir\tools.tar -o$binDir\`, zipBin),
-		fmt.Sprintf(`rm $binDir\tools.tar.gz`),
+		fmt.Sprintf(`if ($dToolsHash.ToLower() -ne "%s"){ Throw "Tools checksum mismatch"}`,
+			cfg.Tools.SHA256),
+		fmt.Sprintf(`& "%s" x "$binDir\tools.tar.gz" -o"$binDir\"`, zipBin),
+		fmt.Sprintf(`& "%s" x "$binDir\tools.tar" -o"$binDir\"`, zipBin),
+		fmt.Sprintf(`rm "$binDir\tools.tar.gz"`),
 		fmt.Sprintf(`Set-Content $binDir\downloaded-tools.txt '%s'`, string(toolsJson)),
 	)
 
