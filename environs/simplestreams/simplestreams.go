@@ -106,6 +106,9 @@ var seriesVersions = map[string]string{
 	"saucy":   "13.10",
 	"trusty":  "14.04",
 	"win2012hv": "win2012hv",
+    "win2012hvr2": "win2012hvr2",
+    "win2012": "win2012",
+    "win2012r2": "win2012r2",
 }
 
 var (
