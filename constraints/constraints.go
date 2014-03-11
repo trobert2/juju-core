@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/errgo/errgo"
+
 	"launchpad.net/juju-core/instance"
 )
 
@@ -207,7 +209,7 @@ func (v *Value) setRaw(raw string) error {
 		return fmt.Errorf("unknown constraint %q", name)
 	}
 	if err != nil {
-		return fmt.Errorf("bad %q constraint: %v", name, err)
+		return errgo.Annotatef(err, "bad %q constraint", name)
 	}
 	return nil
 }
@@ -279,7 +281,7 @@ func (v *Value) setArch(str string) error {
 	}
 	switch str {
 	case "":
-	case "amd64", "i386", "arm":
+	case "amd64", "i386", "arm", "arm64", "ppc64":
 	default:
 		return fmt.Errorf("%q not recognized", str)
 	}

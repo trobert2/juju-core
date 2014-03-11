@@ -4,15 +4,13 @@
 package client
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"strings"
 
-	"launchpad.net/loggo"
+	"github.com/errgo/errgo"
+	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/charm"
 	coreCloudinit "launchpad.net/juju-core/cloudinit"
@@ -20,6 +18,7 @@ import (
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/cloudinit"
 	"launchpad.net/juju-core/environs/config"
+	envtools "launchpad.net/juju-core/environs/tools"
 	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/juju"
@@ -29,6 +28,8 @@ import (
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/apiserver/common"
 	"launchpad.net/juju-core/state/statecmd"
+	coretools "launchpad.net/juju-core/tools"
+	"launchpad.net/juju-core/utils"
 )
 
 var logger = loggo.GetLogger("juju.state.apiserver.client")
@@ -609,6 +610,7 @@ func (c *Client) ProvisioningScript(args params.ProvisioningScriptParams) (param
 	if err != nil {
 		return result, err
 	}
+	mcfg.DisablePackageCommands = args.DisablePackageCommands
 	cloudcfg := coreCloudinit.New()
 	if err := cloudinit.ConfigureJuju(mcfg, cloudcfg); err != nil {
 		return result, err
@@ -808,6 +810,27 @@ func (c *Client) SetEnvironAgentVersion(args params.SetEnvironAgentVersion) erro
 	return c.api.state.SetEnvironAgentVersion(args.Version)
 }
 
+// FindTools returns a List containing all tools matching the given parameters.
+func (c *Client) FindTools(args params.FindToolsParams) (params.FindToolsResults, error) {
+	result := params.FindToolsResults{}
+	// Get the existing environment config from the state.
+	envConfig, err := c.api.state.EnvironConfig()
+	if err != nil {
+		return result, err
+	}
+	env, err := environs.New(envConfig)
+	if err != nil {
+		return result, err
+	}
+	filter := coretools.Filter{
+		Arch:   args.Arch,
+		Series: args.Series,
+	}
+	result.List, err = envtools.FindTools(env, args.MajorVersion, args.MinorVersion, filter, envtools.DoNotAllowRetry)
+	result.Error = common.ServerError(err)
+	return result, nil
+}
+
 func destroyErr(desc string, ids, errs []string) error {
 	if len(errs) == 0 {
 		return nil
@@ -835,9 +858,13 @@ func (c *Client) AddCharm(args params.CharmURL) error {
 		return fmt.Errorf("charm URL must include revision")
 	}
 
-	// First check the charm is not already in state.
-	if _, err := c.api.state.Charm(charmURL); err == nil {
+	// First, check if a pending or a real charm exists in state.
+	stateCharm, err := c.api.state.PrepareStoreCharmUpload(charmURL)
+	if err == nil && stateCharm.IsUploaded() {
+		// Charm already in state (it was uploaded already).
 		return nil
+	} else if err != nil {
+		return err
 	}
 
 	// Get the charm and its information from the store.
@@ -845,53 +872,75 @@ func (c *Client) AddCharm(args params.CharmURL) error {
 	if err != nil {
 		return err
 	}
-	store := config.AuthorizeCharmRepo(CharmStore, envConfig)
+	store := config.SpecializeCharmRepo(CharmStore, envConfig)
 	downloadedCharm, err := store.Get(charmURL)
 	if err != nil {
-		return fmt.Errorf("cannot download charm %q: %v", charmURL.String(), err)
+		return errgo.Annotatef(err, "cannot download charm %q", charmURL.String())
 	}
 
 	// Open it and calculate the SHA256 hash.
 	downloadedBundle, ok := downloadedCharm.(*charm.Bundle)
 	if !ok {
-		return fmt.Errorf("expected a charm archive, got %T", downloadedCharm)
+		return errgo.New("expected a charm archive, got %T", downloadedCharm)
 	}
 	archive, err := os.Open(downloadedBundle.Path)
 	if err != nil {
-		return fmt.Errorf("cannot read downloaded charm: %v", err)
+		return errgo.Annotate(err, "cannot read downloaded charm")
 	}
 	defer archive.Close()
-	hash := sha256.New()
-	size, err := io.Copy(hash, archive)
+	bundleSHA256, size, err := utils.ReadSHA256(archive)
 	if err != nil {
-		return fmt.Errorf("cannot calculate SHA256 hash of charm: %v", err)
+		return errgo.Annotate(err, "cannot calculate SHA256 hash of charm")
 	}
-	bundleSHA256 := hex.EncodeToString(hash.Sum(nil))
 	if _, err := archive.Seek(0, 0); err != nil {
-		return fmt.Errorf("cannot rewind charm archive: %v", err)
+		return errgo.Annotate(err, "cannot rewind charm archive")
 	}
 
 	// Get the environment storage and upload the charm.
 	env, err := environs.New(envConfig)
 	if err != nil {
-		return fmt.Errorf("cannot access environment: %v", err)
+		return errgo.Annotate(err, "cannot access environment")
 	}
 	storage := env.Storage()
-	name := charm.Quote(charmURL.String())
-	err = storage.Put(name, archive, size)
+	archiveName, err := CharmArchiveName(charmURL.Name, charmURL.Revision)
 	if err != nil {
-		return fmt.Errorf("cannot upload charm to provider storage: %v", err)
+		return errgo.Annotate(err, "cannot generate charm archive name")
 	}
-	storageURL, err := storage.URL(name)
+	if err := storage.Put(archiveName, archive, size); err != nil {
+		return errgo.Annotate(err, "cannot upload charm to provider storage")
+	}
+	storageURL, err := storage.URL(archiveName)
 	if err != nil {
-		return fmt.Errorf("cannot get storage URL for charm: %v", err)
+		return errgo.Annotate(err, "cannot get storage URL for charm")
 	}
 	bundleURL, err := url.Parse(storageURL)
 	if err != nil {
-		return fmt.Errorf("cannot parse storage URL: %v", err)
+		return errgo.Annotate(err, "cannot parse storage URL")
 	}
 
-	// Finally, add the charm to state.
-	_, err = c.api.state.AddCharm(downloadedCharm, charmURL, bundleURL, bundleSHA256)
+	// Finally, update the charm data in state and mark it as no longer pending.
+	_, err = c.api.state.UpdateUploadedCharm(downloadedCharm, charmURL, bundleURL, bundleSHA256)
+	if err == state.ErrCharmRevisionAlreadyModified ||
+		state.IsCharmAlreadyUploadedError(err) {
+		// This is not an error, it just signifies somebody else
+		// managed to upload and update the charm in state before
+		// us. This means we have to delete what we just uploaded
+		// to storage.
+		if err := storage.Remove(archiveName); err != nil {
+			errgo.Annotate(err, "cannot remove duplicated charm from storage")
+		}
+		return nil
+	}
 	return err
+}
+
+// CharmArchiveName returns a string that is suitable as a file name
+// in a storage URL. It is constructed from the charm name, revision
+// and a random UUID string.
+func CharmArchiveName(name string, revision int) (string, error) {
+	uuid, err := utils.NewUUID()
+	if err != nil {
+		return "", err
+	}
+	return charm.Quote(fmt.Sprintf("%s-%d-%s", name, revision, uuid)), nil
 }

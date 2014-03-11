@@ -7,7 +7,7 @@ import (
 	"errors"
 	"os"
 
-	"launchpad.net/loggo"
+	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/config"
@@ -41,7 +41,7 @@ func (maasEnvironProvider) Open(cfg *config.Config) (environs.Environ, error) {
 var errAgentNameAlreadySet = errors.New(
 	"maas-agent-name is already set; this should not be set by hand")
 
-func (p maasEnvironProvider) Prepare(cfg *config.Config) (environs.Environ, error) {
+func (p maasEnvironProvider) Prepare(ctx environs.BootstrapContext, cfg *config.Config) (environs.Environ, error) {
 	attrs := cfg.UnknownAttrs()
 	oldName, found := attrs["maas-agent-name"]
 	if found && oldName != "" {

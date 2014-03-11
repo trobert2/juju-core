@@ -7,15 +7,18 @@ import (
 	"fmt"
 	"path"
 
+	"github.com/errgo/errgo"
+
 	"launchpad.net/juju-core/agent"
 	coreCloudinit "launchpad.net/juju-core/cloudinit"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs/cloudinit"
 	"launchpad.net/juju-core/environs/config"
-	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/juju/osenv"
+	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
+	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/utils"
 )
 
@@ -24,14 +27,8 @@ import (
 // system state.
 var DataDir = path.Join(osenv.LibDir, "juju")
 
-// LogDir is the default log file path.
-var LogDir = path.Join(osenv.LogDir, "juju")
-
 // CloudInitOutputLog is the default cloud-init-output.log file path.
 var CloudInitOutputLog = path.Join(osenv.LogDir, "cloud-init-output.log")
-
-// RsyslogConfPath is the default rsyslogd conf file path.
-const RsyslogConfPath = "/etc/rsyslog.d/25-juju.conf"
 
 // MongoServiceName is the default Upstart service name for Mongo.
 const MongoServiceName = "juju-db"
@@ -39,10 +36,11 @@ const MongoServiceName = "juju-db"
 // NewMachineConfig sets up a basic machine configuration, for a non-bootstrap
 // node.  You'll still need to supply more information, but this takes care of
 // the fixed entries and the ones that are always needed.
-func NewMachineConfig(machineID, machineNonce, machineSeries string,
+func NewMachineConfig(machineID, machineNonce string, machineSeries string,
 	stateInfo *state.Info, apiInfo *api.Info) *cloudinit.MachineConfig {
+
 	localDataDir := DataDir
-	localLogDir := LogDir
+	localLogDir := agent.DefaultLogDir
 	if len(machineSeries) > 3 && machineSeries[:3] == "win"{
 		localDataDir = osenv.WinDataDir
 		localLogDir = osenv.WinLogDir
@@ -51,8 +49,8 @@ func NewMachineConfig(machineID, machineNonce, machineSeries string,
 		// Fixed entries.
 		DataDir:                 localDataDir,
 		LogDir:                  localLogDir,
+		Jobs:                    []params.MachineJob{params.JobHostUnits},
 		CloudInitOutputLog:      CloudInitOutputLog,
-		RsyslogConfPath:         RsyslogConfPath,
 		MachineAgentServiceName: "jujud-" + names.MachineTag(machineID),
 		MongoServiceName:        MongoServiceName,
 
@@ -71,18 +69,24 @@ func NewMachineConfig(machineID, machineNonce, machineSeries string,
 func NewBootstrapMachineConfig(stateInfoURL string, privateSystemSSHKey string) *cloudinit.MachineConfig {
 	// For a bootstrap instance, FinishMachineConfig will provide the
 	// state.Info and the api.Info. The machine id must *always* be "0".
-	// gsamfira: Series is empty for bootstrap machine.
 	mcfg := NewMachineConfig("0", state.BootstrapNonce, "", nil, nil)
 	mcfg.StateServer = true
 	mcfg.StateInfoURL = stateInfoURL
 	mcfg.SystemPrivateSSHKey = privateSystemSSHKey
+	mcfg.Jobs = []params.MachineJob{params.JobManageEnviron, params.JobHostUnits}
 	return mcfg
 }
 
+// PopulateMachineConfig is called both from the FinishMachineConfig below,
+// which does have access to the environment config, and from the container
+// provisioners, which don't have access to the environment config. Everything
+// that is needed to provision a container needs to be returned to the
+// provisioner in the ContainerConfig structure. Those values are then used to
+// call this function.
 func PopulateMachineConfig(mcfg *cloudinit.MachineConfig,
 	providerType, authorizedKeys string,
 	sslHostnameVerification bool,
-	syslogPort int,
+	proxy, aptProxy osenv.ProxySettings,
 ) error {
 	if authorizedKeys == "" {
 		return fmt.Errorf("environment configuration has no authorized-keys")
@@ -94,7 +98,8 @@ func PopulateMachineConfig(mcfg *cloudinit.MachineConfig,
 	mcfg.AgentEnvironment[agent.ProviderType] = providerType
 	mcfg.AgentEnvironment[agent.ContainerType] = string(mcfg.MachineContainerType)
 	mcfg.DisableSSLHostnameVerification = !sslHostnameVerification
-	mcfg.SyslogPort = syslogPort
+	mcfg.ProxySettings = proxy
+	mcfg.AptProxySettings = aptProxy
 	return nil
 }
 
@@ -111,11 +116,16 @@ func PopulateMachineConfig(mcfg *cloudinit.MachineConfig,
 func FinishMachineConfig(mcfg *cloudinit.MachineConfig, cfg *config.Config, cons constraints.Value) (err error) {
 	defer utils.ErrorContextf(&err, "cannot complete machine configuration")
 
-	if err := PopulateMachineConfig(mcfg, cfg.Type(), cfg.AuthorizedKeys(), cfg.SSLHostnameVerification(), cfg.SyslogPort()); err != nil {
+	if err := PopulateMachineConfig(
+		mcfg,
+		cfg.Type(),
+		cfg.AuthorizedKeys(),
+		cfg.SSLHostnameVerification(),
+		cfg.ProxySettings(),
+		cfg.AptProxySettings(),
+	); err != nil {
 		return err
 	}
-	mcfg.ProxySettings = cfg.ProxySettings()
-	mcfg.AptProxySettings = cfg.AptProxySettings()
 
 	// The following settings are only appropriate at bootstrap time. At the
 	// moment, the only state server is the bootstrap node, but this
@@ -147,7 +157,7 @@ func FinishMachineConfig(mcfg *cloudinit.MachineConfig, cfg *config.Config, cons
 	// These really are directly relevant to running a state server.
 	cert, key, err := cfg.GenerateStateServerCertAndKey()
 	if err != nil {
-		return fmt.Errorf("cannot generate state server certificate: %v", err)
+		return errgo.Annotate(err, "cannot generate state server certificate")
 	}
 	mcfg.StateServerCert = cert
 	mcfg.StateServerKey = key

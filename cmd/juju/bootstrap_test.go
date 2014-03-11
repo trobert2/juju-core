@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/juju/loggo"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/cmd"
@@ -26,6 +27,7 @@ import (
 	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/provider/dummy"
 	coretesting "launchpad.net/juju-core/testing"
+	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/testing/testbase"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/version"
@@ -315,6 +317,27 @@ func (s *BootstrapSuite) TestBootstrapTwice(c *gc.C) {
 	c.Check(coretesting.Stdout(ctx2), gc.Equals, "")
 }
 
+func (s *BootstrapSuite) TestBootstrapJenvWarning(c *gc.C) {
+	env, fake := makeEmptyFakeHome(c)
+	defer fake.Restore()
+	defaultSeriesVersion := version.Current
+	defaultSeriesVersion.Series = env.Config().DefaultSeries()
+
+	store, err := configstore.Default()
+	c.Assert(err, gc.IsNil)
+	ctx := coretesting.Context(c)
+	environs.PrepareFromName("peckham", ctx, store)
+
+	logger := "jenv.warning.test"
+	testWriter := &loggo.TestWriter{}
+	loggo.RegisterWriter(logger, testWriter, loggo.WARNING)
+	defer loggo.RemoveWriter(logger)
+
+	_, errc := runCommand(ctx, new(BootstrapCommand), "-e", "peckham")
+	c.Assert(<-errc, gc.IsNil)
+	c.Assert(testWriter.Log, jc.LogMatches, []string{"ignoring environments.yaml: using bootstrap config in .*"})
+}
+
 func (s *BootstrapSuite) TestInvalidLocalSource(c *gc.C) {
 	s.PatchValue(&version.Current.Number, version.MustParse("1.2.0"))
 	env, fake := makeEmptyFakeHome(c)
@@ -349,7 +372,7 @@ func createImageMetadata(c *gc.C) (string, []*imagemetadata.ImageMetadata) {
 		Endpoint: "endpoint",
 	}
 	sourceDir := c.MkDir()
-	sourceStor, err := filestorage.NewFileStorageWriter(sourceDir, filestorage.UseDefaultTmpDir)
+	sourceStor, err := filestorage.NewFileStorageWriter(sourceDir)
 	c.Assert(err, gc.IsNil)
 	err = imagemetadata.MergeAndWriteMetadata("raring", im, cloudSpec, sourceStor)
 	c.Assert(err, gc.IsNil)
@@ -372,6 +395,7 @@ func (s *BootstrapSuite) TestUploadLocalImageMetadata(c *gc.C) {
 	ctx := coretesting.Context(c)
 	code := cmd.Main(&BootstrapCommand{}, ctx, []string{"--metadata-source", sourceDir})
 	c.Check(code, gc.Equals, 0)
+	c.Assert(imagemetadata.DefaultBaseURL, gc.Equals, imagemetadata.UbuntuCloudImagesURL)
 
 	// Now check the image metadata has been uploaded.
 	checkImageMetadata(c, env.Storage(), expected)
@@ -475,6 +499,28 @@ func (s *BootstrapSuite) TestMissingToolsUploadFailedError(c *gc.C) {
 	c.Assert(errText, gc.Matches, expectedErrText)
 }
 
+func (s *BootstrapSuite) TestBootstrapDestroy(c *gc.C) {
+	_, fake := makeEmptyFakeHome(c)
+	defer fake.Restore()
+	opc, errc := runCommand(nullContext(), new(BootstrapCommand), "-e", "brokenenv")
+	err := <-errc
+	c.Assert(err, gc.ErrorMatches, "dummy.Bootstrap is broken")
+	var opDestroy *dummy.OpDestroy
+	for opDestroy == nil {
+		select {
+		case op := <-opc:
+			switch op := op.(type) {
+			case dummy.OpDestroy:
+				opDestroy = &op
+			}
+		default:
+			c.Error("expected call to env.Destroy")
+			return
+		}
+	}
+	c.Assert(opDestroy.Error, gc.ErrorMatches, "dummy.Destroy is broken")
+}
+
 // createToolsSource writes the mock tools and metadata into a temporary
 // directory and returns it.
 func createToolsSource(c *gc.C, versions []version.Binary) string {
@@ -493,7 +539,7 @@ func makeEmptyFakeHome(c *gc.C) (environs.Environ, *coretesting.FakeHome) {
 	dummy.Reset()
 	store, err := configstore.Default()
 	c.Assert(err, gc.IsNil)
-	env, err := environs.PrepareFromName("peckham", store)
+	env, err := environs.PrepareFromName("peckham", nullContext(), store)
 	c.Assert(err, gc.IsNil)
 	envtesting.RemoveAllTools(c, env)
 	return env, fake

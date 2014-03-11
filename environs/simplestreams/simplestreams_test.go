@@ -13,6 +13,7 @@ import (
 
 	"launchpad.net/juju-core/environs/simplestreams"
 	sstesting "launchpad.net/juju-core/environs/simplestreams/testing"
+	coretesting "launchpad.net/juju-core/testing"
 	jc "launchpad.net/juju-core/testing/checkers"
 )
 
@@ -26,7 +27,7 @@ func Test(t *testing.T) {
 func registerSimpleStreamsTests() {
 	gc.Suite(&simplestreamsSuite{
 		LocalLiveSimplestreamsSuite: sstesting.LocalLiveSimplestreamsSuite{
-			Source:        simplestreams.NewURLDataSource("test:", simplestreams.VerifySSLHostnames),
+			Source:        simplestreams.NewURLDataSource("test", "test:", simplestreams.VerifySSLHostnames),
 			RequireSigned: false,
 			DataType:      "image-ids",
 			ValidConstraint: sstesting.NewTestConstraint(simplestreams.LookupParams{
@@ -315,7 +316,7 @@ func (s *countingSource) URL(path string) (string, error) {
 func (s *simplestreamsSuite) TestGetMetadataNoMatching(c *gc.C) {
 	source := &countingSource{
 		DataSource: simplestreams.NewURLDataSource(
-			"test:/daily", simplestreams.VerifySSLHostnames,
+			"test", "test:/daily", simplestreams.VerifySSLHostnames,
 		),
 	}
 	sources := []simplestreams.DataSource{source, source, source}
@@ -329,7 +330,7 @@ func (s *simplestreamsSuite) TestGetMetadataNoMatching(c *gc.C) {
 		Arches: []string{"not-a-real-arch"}, // never matches
 	})
 
-	items, err := simplestreams.GetMetadata(
+	items, resolveInfo, err := simplestreams.GetMetadata(
 		sources,
 		simplestreams.DefaultIndexPath,
 		constraint,
@@ -338,6 +339,12 @@ func (s *simplestreamsSuite) TestGetMetadataNoMatching(c *gc.C) {
 	)
 	c.Assert(err, gc.IsNil)
 	c.Assert(items, gc.HasLen, 0)
+	c.Assert(resolveInfo, gc.DeepEquals, &simplestreams.ResolveInfo{
+		Source:    "test",
+		Signed:    false,
+		IndexURL:  "test:/daily/streams/v1/index.json",
+		MirrorURL: "",
+	})
 
 	// There should be 2 calls to each data-source:
 	// one for .sjson, one for .json.
@@ -411,8 +418,7 @@ func (s *simplestreamsSuite) TestSupportedSeries(c *gc.C) {
 	defer cleanup()
 	series := simplestreams.SupportedSeries()
 	sort.Strings(series)
-	series = series[0:4]
-	c.Assert(series, gc.DeepEquals, []string{"precise", "quantal", "raring", "saucy"})
+	c.Assert(series, gc.DeepEquals, coretesting.SupportedSeries)
 }
 
 var getMirrorTests = []struct {

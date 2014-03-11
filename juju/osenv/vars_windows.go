@@ -11,6 +11,13 @@ import (
 
 var BaseDir string = "C:/Juju" 
 
+var (
+	TempDir    = WinTempDir
+    LibDir     = WinLibDir
+    LogDir     = WinLogDir
+    DataDir    = WinDataDir
+)
+
 // Home returns the os-specific home path as specified in the environment
 func Home() string {
 	return path.Join(os.Getenv("HOMEDRIVE"), os.Getenv("HOMEPATH"))
@@ -26,10 +33,3 @@ func SetHome(s string) error {
 	}
 	return os.Setenv("HOMEPATH", s[len(v):])
 }
-
-var (
-	TempDir    = WinTempDir
-    LibDir     = WinLibDir
-    LogDir     = WinLogDir
-    DataDir    = WinDataDir
-)

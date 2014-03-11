@@ -75,12 +75,32 @@ type Status struct {
 
 // Status returns the status of the juju environment.
 func (c *Client) Status(patterns []string) (*Status, error) {
-	var s Status
+	var result Status
 	p := params.StatusParams{Patterns: patterns}
-	if err := c.st.Call("Client", "", "Status", p, &s); err != nil {
+	if err := c.st.Call("Client", "", "FullStatus", p, &result); err != nil {
 		return nil, err
 	}
-	return &s, nil
+	return &result, nil
+}
+
+// LegacyMachineStatus holds just the instance-id of a machine.
+type LegacyMachineStatus struct {
+	InstanceId string // Not type instance.Id just to match original api.
+}
+
+// LegacyStatus holds minimal information on the status of a juju environment.
+type LegacyStatus struct {
+	Machines map[string]LegacyMachineStatus
+}
+
+// LegacyStatus is a stub version of Status that 1.16 introduced. Should be
+// removed along with structs when api versioning makes it safe to do so.
+func (c *Client) LegacyStatus() (*LegacyStatus, error) {
+	var result LegacyStatus
+	if err := c.st.Call("Client", "", "Status", nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // ServiceSet sets configuration options on a service.
@@ -173,11 +193,7 @@ func (c *Client) AddMachines(machineParams []params.AddMachineParams) ([]params.
 
 // ProvisioningScript returns a shell script that, when run,
 // provisions a machine agent on the machine executing the script.
-func (c *Client) ProvisioningScript(machineId, nonce string) (script string, err error) {
-	args := params.ProvisioningScriptParams{
-		MachineId: machineId,
-		Nonce:     nonce,
-	}
+func (c *Client) ProvisioningScript(args params.ProvisioningScriptParams) (script string, err error) {
 	var result params.ProvisioningScriptResult
 	if err = c.st.Call("Client", "", "ProvisioningScript", args, &result); err != nil {
 		return "", err
@@ -401,6 +417,20 @@ func (c *Client) EnvironmentSet(config map[string]interface{}) error {
 func (c *Client) SetEnvironAgentVersion(version version.Number) error {
 	args := params.SetEnvironAgentVersion{Version: version}
 	return c.st.Call("Client", "", "SetEnvironAgentVersion", args, nil)
+}
+
+// FindTools returns a List containing all tools matching the specified parameters.
+func (c *Client) FindTools(majorVersion, minorVersion int,
+	series, arch string) (result params.FindToolsResults, err error) {
+
+	args := params.FindToolsParams{
+		MajorVersion: majorVersion,
+		MinorVersion: minorVersion,
+		Arch:         arch,
+		Series:       series,
+	}
+	err = c.st.Call("Client", "", "FindTools", args, &result)
+	return result, err
 }
 
 // RunOnAllMachines runs the command on all the machines with the specified

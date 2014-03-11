@@ -96,7 +96,7 @@ type StringResults struct {
 	Results []StringResult
 }
 
-// CharmArchiveURLResult holds a charm archive (bunle) URL, a
+// CharmArchiveURLResult holds a charm archive (bundle) URL, a
 // DisableSSLHostnameVerification flag or an error.
 type CharmArchiveURLResult struct {
 	Error                          *Error
@@ -109,6 +109,14 @@ type CharmArchiveURLResult struct {
 // DisableSSLHostnameVerification flag or an error.
 type CharmArchiveURLResults struct {
 	Results []CharmArchiveURLResult
+}
+
+// EnvironmentResult holds the result of an API call returning a name and UUID
+// for an environment.
+type EnvironmentResult struct {
+	Error *Error
+	Name  string
+	UUID  string
 }
 
 // ResolvedModeResult holds a resolved mode or an error.
@@ -406,6 +414,20 @@ type ToolsResults struct {
 	Results []ToolsResult
 }
 
+// FindToolsParams defines parameters for the FindTools method.
+type FindToolsParams struct {
+	MajorVersion int
+	MinorVersion int
+	Arch         string
+	Series       string
+}
+
+// FindToolsResults holds a list of tools from FindTools and any error.
+type FindToolsResults struct {
+	List  tools.List
+	Error *Error
+}
+
 // Version holds a specific binary version.
 type Version struct {
 	Version version.Binary
@@ -498,10 +520,11 @@ type RelationUnitsWatchResults struct {
 	Results []RelationUnitsWatchResult
 }
 
-// CharmsResponse is the server response to a charm upload request.
+// CharmsResponse is the server response to charm upload or GET requests.
 type CharmsResponse struct {
-	Error    string `json:",omitempty"`
-	CharmURL string `json:",omitempty"`
+	Error    string   `json:",omitempty"`
+	CharmURL string   `json:",omitempty"`
+	Files    []string `json:",omitempty"`
 }
 
 // RunParams is used to provide the parameters to the Run method.

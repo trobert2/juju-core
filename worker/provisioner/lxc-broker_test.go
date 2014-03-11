@@ -68,22 +68,24 @@ func (s *lxcBrokerSuite) SetUpTest(c *gc.C) {
 	var err error
 	s.agentConfig, err = agent.NewAgentConfig(
 		agent.AgentConfigParams{
-			DataDir:      "/not/used/here",
-			Tag:          "tag",
-			Password:     "dummy-secret",
-			Nonce:        "nonce",
-			APIAddresses: []string{"10.0.0.1:1234"},
-			CACert:       []byte(coretesting.CACert),
+			DataDir:           "/not/used/here",
+			Tag:               "tag",
+			UpgradedToVersion: version.Current.Number,
+			Password:          "dummy-secret",
+			Nonce:             "nonce",
+			APIAddresses:      []string{"10.0.0.1:1234"},
+			CACert:            []byte(coretesting.CACert),
 		})
 	c.Assert(err, gc.IsNil)
-	s.broker = provisioner.NewLxcBroker(&fakeAPI{}, tools, s.agentConfig)
+	s.broker, err = provisioner.NewLxcBroker(&fakeAPI{}, tools, s.agentConfig)
+	c.Assert(err, gc.IsNil)
 }
 
 func (s *lxcBrokerSuite) startInstance(c *gc.C, machineId string) instance.Instance {
 	machineNonce := "fake-nonce"
 	stateInfo := jujutesting.FakeStateInfo(machineId)
 	apiInfo := jujutesting.FakeAPIInfo(machineId)
-	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "",stateInfo, apiInfo)
+	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "", stateInfo, apiInfo)
 	cons := constraints.Value{}
 	possibleTools := s.broker.(coretools.HasTools).Tools()
 	lxc, _, err := s.broker.StartInstance(cons, possibleTools, machineConfig)
@@ -236,7 +238,8 @@ func (s *lxcProvisionerSuite) newLxcProvisioner(c *gc.C) provisioner.Provisioner
 	agentConfig := s.AgentConfigForTag(c, parentMachineTag)
 	tools, err := s.provisioner.Tools(agentConfig.Tag())
 	c.Assert(err, gc.IsNil)
-	broker := provisioner.NewLxcBroker(s.provisioner, tools, agentConfig)
+	broker, err := provisioner.NewLxcBroker(s.provisioner, tools, agentConfig)
+	c.Assert(err, gc.IsNil)
 	return provisioner.NewContainerProvisioner(instance.LXC, s.provisioner, agentConfig, broker)
 }
 
@@ -282,5 +285,8 @@ func (s *lxcProvisionerSuite) TestContainerStartedAndStopped(c *gc.C) {
 type fakeAPI struct{}
 
 func (*fakeAPI) ContainerConfig() (params.ContainerConfig, error) {
-	return params.ContainerConfig{"fake", "my-keys", true, 2345}, nil
+	return params.ContainerConfig{
+		ProviderType:            "fake",
+		AuthorizedKeys:          coretesting.FakeAuthKeys,
+		SSLHostnameVerification: true}, nil
 }

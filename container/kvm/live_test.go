@@ -8,8 +8,8 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/juju/loggo"
 	gc "launchpad.net/gocheck"
-	"launchpad.net/loggo"
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/container"
@@ -52,8 +52,8 @@ func (s *LiveSuite) SetUpTest(c *gc.C) {
 func (s *LiveSuite) newManager(c *gc.C, name string) container.Manager {
 	manager, err := kvm.NewContainerManager(
 		container.ManagerConfig{
-			Name:   name,
-			LogDir: c.MkDir(),
+			container.ConfigName:   name,
+			container.ConfigLogDir: c.MkDir(),
 		})
 	c.Assert(err, gc.IsNil)
 	return manager

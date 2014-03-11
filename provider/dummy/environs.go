@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"launchpad.net/loggo"
+	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
@@ -65,7 +65,7 @@ func SampleConfig() testing.Attrs {
 	return testing.Attrs{
 		"type":                      "dummy",
 		"name":                      "only",
-		"authorized-keys":           "my-keys",
+		"authorized-keys":           testing.FakeAuthKeys,
 		"firewall-mode":             config.FwInstance,
 		"admin-secret":              testing.DefaultMongoPassword,
 		"ca-cert":                   testing.CACert,
@@ -97,17 +97,16 @@ func stateInfo() *state.Info {
 // Operation represents an action on the dummy provider.
 type Operation interface{}
 
-type GenericOperation struct {
-	Env string
-}
-
 type OpBootstrap struct {
 	Context     environs.BootstrapContext
 	Env         string
 	Constraints constraints.Value
 }
 
-type OpDestroy GenericOperation
+type OpDestroy struct {
+	Env   string
+	Error error
+}
 
 type OpStartInstance struct {
 	Env          string
@@ -147,8 +146,9 @@ type OpPutFile struct {
 // environProvider represents the dummy provider.  There is only ever one
 // instance of this type (providerInstance)
 type environProvider struct {
-	mu  sync.Mutex
-	ops chan<- Operation
+	mu          sync.Mutex
+	ops         chan<- Operation
+	statePolicy state.Policy
 	// We have one state for each environment name
 	state      map[int]*environState
 	maxStateId int
@@ -165,6 +165,7 @@ type environState struct {
 	id           int
 	name         string
 	ops          chan<- Operation
+	statePolicy  state.Policy
 	mu           sync.Mutex
 	maxId        int // maximum instance id allocated so far.
 	insts        map[instance.Id]*dummyInstance
@@ -226,6 +227,7 @@ func Reset() {
 	if testing.MgoServer.Addr() != "" {
 		testing.MgoServer.Reset()
 	}
+	providerInstance.statePolicy = environs.NewStatePolicy()
 }
 
 func (state *environState) destroy() {
@@ -263,10 +265,11 @@ func (e *environ) GetStateInAPIServer() *state.State {
 // newState creates the state for a new environment with the
 // given name and starts an http server listening for
 // storage requests.
-func newState(name string, ops chan<- Operation) *environState {
+func newState(name string, ops chan<- Operation, policy state.Policy) *environState {
 	s := &environState{
 		name:        name,
 		ops:         ops,
+		statePolicy: policy,
 		insts:       make(map[instance.Id]*dummyInstance),
 		globalPorts: make(map[instance.Port]bool),
 	}
@@ -286,6 +289,15 @@ func (s *environState) listen() {
 	mux := http.NewServeMux()
 	mux.Handle(s.storage.path+"/", http.StripPrefix(s.storage.path+"/", s.storage))
 	go http.Serve(l, mux)
+}
+
+// SetStatePolicy sets the state.Policy to use when a
+// state server is initialised by dummy.
+func SetStatePolicy(policy state.Policy) {
+	p := &providerInstance
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.statePolicy = policy
 }
 
 // Listen closes the previously registered listener (if any).
@@ -423,7 +435,7 @@ func (p *environProvider) Open(cfg *config.Config) (environs.Environ, error) {
 	return env, nil
 }
 
-func (p *environProvider) Prepare(cfg *config.Config) (environs.Environ, error) {
+func (p *environProvider) Prepare(ctx environs.BootstrapContext, cfg *config.Config) (environs.Environ, error) {
 	cfg, err := p.prepare(cfg)
 	if err != nil {
 		return nil, err
@@ -451,7 +463,7 @@ func (p *environProvider) prepare(cfg *config.Config) (*config.Config, error) {
 			panic(fmt.Errorf("cannot share a state between two dummy environs; old %q; new %q", old.name, name))
 		}
 	}
-	state := newState(name, p.ops)
+	state := newState(name, p.ops, p.statePolicy)
 	p.maxStateId++
 	state.id = p.maxStateId
 	p.state[state.id] = state
@@ -491,6 +503,9 @@ dummy:
 
 var errBroken = errors.New("broken environment")
 
+// Override for testing - the data directory with which the state api server is initialised.
+var DataDir = ""
+
 func (e *environ) ecfg() *environConfig {
 	e.ecfgMutex.Lock()
 	ecfg := e.ecfgUnlocked
@@ -514,13 +529,13 @@ func (e *environ) Name() string {
 // GetImageSources returns a list of sources which are used to search for simplestreams image metadata.
 func (e *environ) GetImageSources() ([]simplestreams.DataSource, error) {
 	return []simplestreams.DataSource{
-		storage.NewStorageSimpleStreamsDataSource(e.Storage(), storage.BaseImagesPath)}, nil
+		storage.NewStorageSimpleStreamsDataSource("cloud storage", e.Storage(), storage.BaseImagesPath)}, nil
 }
 
 // GetToolsSources returns a list of sources which are used to search for simplestreams tools metadata.
 func (e *environ) GetToolsSources() ([]simplestreams.DataSource, error) {
 	return []simplestreams.DataSource{
-		storage.NewStorageSimpleStreamsDataSource(e.Storage(), storage.BaseToolsPath)}, nil
+		storage.NewStorageSimpleStreamsDataSource("cloud storage", e.Storage(), storage.BaseToolsPath)}, nil
 }
 
 func (e *environ) Bootstrap(ctx environs.BootstrapContext, cons constraints.Value) error {
@@ -572,7 +587,7 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, cons constraints.Valu
 		// so that we can call it here.
 
 		info := stateInfo()
-		st, err := state.Initialize(info, cfg, state.DefaultDialOpts())
+		st, err := state.Initialize(info, cfg, state.DefaultDialOpts(), estate.statePolicy)
 		if err != nil {
 			panic(err)
 		}
@@ -586,7 +601,7 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, cons constraints.Valu
 		if err != nil {
 			panic(err)
 		}
-		estate.apiServer, err = apiserver.NewServer(st, "localhost:0", []byte(testing.ServerCert), []byte(testing.ServerKey), "")
+		estate.apiServer, err = apiserver.NewServer(st, "localhost:0", []byte(testing.ServerCert), []byte(testing.ServerKey), DataDir)
 		if err != nil {
 			panic(err)
 		}
@@ -637,16 +652,17 @@ func (e *environ) SetConfig(cfg *config.Config) error {
 	return nil
 }
 
-func (e *environ) Destroy() error {
+func (e *environ) Destroy() (res error) {
 	defer delay()
-	if err := e.checkBroken("Destroy"); err != nil {
-		return err
-	}
 	estate, err := e.state()
 	if err != nil {
 		if err == provider.ErrDestroyed {
 			return nil
 		}
+		return err
+	}
+	defer func() { estate.ops <- OpDestroy{Env: estate.name, Error: res} }()
+	if err := e.checkBroken("Destroy"); err != nil {
 		return err
 	}
 	p := &providerInstance
@@ -656,7 +672,6 @@ func (e *environ) Destroy() error {
 
 	estate.mu.Lock()
 	defer estate.mu.Unlock()
-	estate.ops <- OpDestroy{Env: estate.name}
 	estate.destroy()
 	return nil
 }

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"launchpad.net/loggo"
+	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"

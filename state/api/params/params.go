@@ -11,6 +11,7 @@ import (
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/instance"
+	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/utils/ssh"
 	"launchpad.net/juju-core/version"
 )
@@ -512,7 +513,8 @@ type ContainerConfig struct {
 	ProviderType            string
 	AuthorizedKeys          string
 	SSLHostnameVerification bool
-	SyslogPort              int
+	Proxy                   osenv.ProxySettings
+	AptProxy                osenv.ProxySettings
 }
 
 // ProvisioningScriptParams contains the parameters for the
@@ -520,7 +522,14 @@ type ContainerConfig struct {
 type ProvisioningScriptParams struct {
 	MachineId string
 	Nonce     string
-	DataDir   string
+
+	// DataDir may be "", in which case the default will be used.
+	DataDir string
+
+	// DisablePackageCommands may be set to disable all package-related
+	// commands. It is then the responsibility of the provisioner to
+	// ensure that all the packages required by Juju are available.
+	DisablePackageCommands bool
 }
 
 // ProvisioningScriptResult contains the result of the
@@ -552,10 +561,14 @@ type SetEnvironAgentVersion struct {
 type DeployerConnectionValues struct {
 	StateAddresses []string
 	APIAddresses   []string
-	SyslogPort     int
 }
 
 // StatusParams holds parameters for the Status call.
 type StatusParams struct {
 	Patterns []string
+}
+
+// SetRsyslogCertParams holds parameters for the SetRsyslogCert call.
+type SetRsyslogCertParams struct {
+	CACert []byte
 }

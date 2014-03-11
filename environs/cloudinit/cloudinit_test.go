@@ -12,6 +12,7 @@ import (
 	"launchpad.net/goyaml"
 
 	"launchpad.net/juju-core/agent"
+	"launchpad.net/juju-core/agent/mongo"
 	coreCloudinit "launchpad.net/juju-core/cloudinit"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
@@ -21,6 +22,7 @@ import (
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
+	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/testing"
 	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/testing/testbase"
@@ -37,6 +39,13 @@ type cloudinitSuite struct {
 var _ = gc.Suite(&cloudinitSuite{})
 
 var envConstraints = constraints.MustParse("mem=2G")
+
+var allMachineJobs = []params.MachineJob{
+	params.JobManageEnviron, params.JobHostUnits,
+}
+var normalMachineJobs = []params.MachineJob{
+	params.JobHostUnits,
+}
 
 type cloudinitTest struct {
 	cfg           cloudinit.MachineConfig
@@ -56,6 +65,16 @@ func minimalConfig(c *gc.C) *config.Config {
 	return cfg
 }
 
+func must(s string, err error) string {
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+// mongodPath is the path where we should expect mongod in the environment.
+var mongodPath = must(mongo.MongodPath())
+
 // Each test gives a cloudinit config - we check the
 // output to see if it looks correct.
 var cloudinitTests = []cloudinitTest{
@@ -72,7 +91,6 @@ var cloudinitTests = []cloudinitTest{
 			StateServerKey:  serverKey,
 			StatePort:       37017,
 			APIPort:         17070,
-			SyslogPort:      514,
 			MachineNonce:    "FAKE_NONCE",
 			StateInfo: &state.Info{
 				Password: "arble",
@@ -84,9 +102,9 @@ var cloudinitTests = []cloudinitTest{
 			},
 			Constraints:             envConstraints,
 			DataDir:                 environs.DataDir,
-			LogDir:                  environs.LogDir,
+			LogDir:                  agent.DefaultLogDir,
+			Jobs:                    allMachineJobs,
 			CloudInitOutputLog:      environs.CloudInitOutputLog,
-			RsyslogConfPath:         environs.RsyslogConfPath,
 			StateInfoURL:            "some-url",
 			SystemPrivateSSHKey:     "private rsa key",
 			MachineAgentServiceName: "jujud-machine-0",
@@ -100,25 +118,23 @@ install -D -m 644 /dev/null '/var/lib/juju/nonce.txt'
 printf '%s\\n' 'FAKE_NONCE' > '/var/lib/juju/nonce.txt'
 test -e /proc/self/fd/9 \|\| exec 9>&2
 \(\[ ! -e /home/ubuntu/.profile \] \|\| grep -q '.juju-proxy' /home/ubuntu/.profile\) \|\| printf .* >> /home/ubuntu/.profile
-mkdir -p /var/lib/juju
+mkdir -p /var/lib/juju/locks
+\[ -e /home/ubuntu \] && chown ubuntu:ubuntu /var/lib/juju/locks
 mkdir -p /var/log/juju
 echo 'Fetching tools.*
 bin='/var/lib/juju/tools/1\.2\.3-precise-amd64'
 mkdir -p \$bin
-wget --no-verbose -O \$bin/tools\.tar\.gz 'http://foo\.com/tools/releases/juju1\.2\.3-precise-amd64\.tgz'
+curl -o \$bin/tools\.tar\.gz 'http://foo\.com/tools/releases/juju1\.2\.3-precise-amd64\.tgz'
 sha256sum \$bin/tools\.tar\.gz > \$bin/juju1\.2\.3-precise-amd64\.sha256
 grep '1234' \$bin/juju1\.2\.3-precise-amd64.sha256 \|\| \(echo "Tools checksum mismatch"; exit 1\)
 tar zxf \$bin/tools.tar.gz -C \$bin
 rm \$bin/tools\.tar\.gz && rm \$bin/juju1\.2\.3-precise-amd64\.sha256
 printf %s '{"version":"1\.2\.3-precise-amd64","url":"http://foo\.com/tools/releases/juju1\.2\.3-precise-amd64\.tgz","sha256":"1234","size":10}' > \$bin/downloaded-tools\.txt
-install -D -m 600 /dev/null '/etc/rsyslog\.d/25-juju\.conf'
-printf '%s\\n' '.*' > '/etc/rsyslog.d/25-juju.conf'
-restart rsyslog
 mkdir -p '/var/lib/juju/agents/machine-0'
-install -m 644 /dev/null '/var/lib/juju/agents/machine-0/format'
-printf '%s\\n' '.*' > '/var/lib/juju/agents/machine-0/format'
 install -m 600 /dev/null '/var/lib/juju/agents/machine-0/agent\.conf'
 printf '%s\\n' '.*' > '/var/lib/juju/agents/machine-0/agent\.conf'
+install -D -m 644 /dev/null '/etc/apt/preferences\.d/50-cloud-tools'
+printf '%s\\n' '.*' > '/etc/apt/preferences\.d/50-cloud-tools'
 install -D -m 600 /dev/null '/var/lib/juju/system-identity'
 printf '%s\\n' '.*' > '/var/lib/juju/system-identity'
 install -D -m 600 /dev/null '/var/lib/juju/server\.pem'
@@ -129,11 +145,9 @@ dd bs=1M count=1 if=/dev/zero of=/var/lib/juju/db/journal/prealloc\.0
 dd bs=1M count=1 if=/dev/zero of=/var/lib/juju/db/journal/prealloc\.1
 dd bs=1M count=1 if=/dev/zero of=/var/lib/juju/db/journal/prealloc\.2
 echo 'Starting MongoDB server \(juju-db\)'.*
-cat >> /etc/init/juju-db\.conf << 'EOF'\\ndescription "juju state database"\\nauthor "Juju Team <juju@lists\.ubuntu\.com>"\\nstart on runlevel \[2345\]\\nstop on runlevel \[!2345\]\\nrespawn\\nnormal exit 0\\n\\nlimit nofile 65000 65000\\nlimit nproc 20000 20000\\n\\nexec /usr/bin/mongod --auth --dbpath=/var/lib/juju/db --sslOnNormalPorts --sslPEMKeyFile '/var/lib/juju/server\.pem' --sslPEMKeyPassword ignored --bind_ip 0\.0\.0\.0 --port 37017 --noprealloc --syslog --smallfiles\\nEOF\\n
+cat >> /etc/init/juju-db\.conf << 'EOF'\\ndescription "juju state database"\\nauthor "Juju Team <juju@lists\.ubuntu\.com>"\\nstart on runlevel \[2345\]\\nstop on runlevel \[!2345\]\\nrespawn\\nnormal exit 0\\n\\nlimit nofile 65000 65000\\nlimit nproc 20000 20000\\n\\nexec ` + mongodPath + ` --auth --dbpath=/var/lib/juju/db --sslOnNormalPorts --sslPEMKeyFile '/var/lib/juju/server\.pem' --sslPEMKeyPassword ignored --bind_ip 0\.0\.0\.0 --port 37017 --noprealloc --syslog --smallfiles\\nEOF\\n
 start juju-db
 mkdir -p '/var/lib/juju/agents/bootstrap'
-install -m 644 /dev/null '/var/lib/juju/agents/bootstrap/format'
-printf '%s\\n' '.*' > '/var/lib/juju/agents/bootstrap/format'
 install -m 600 /dev/null '/var/lib/juju/agents/bootstrap/agent\.conf'
 printf '%s\\n' '.*' > '/var/lib/juju/agents/bootstrap/agent\.conf'
 echo 'Bootstrapping Juju machine agent'.*
@@ -158,7 +172,6 @@ start jujud-machine-0
 			StateServerKey:  serverKey,
 			StatePort:       37017,
 			APIPort:         17070,
-			SyslogPort:      514,
 			MachineNonce:    "FAKE_NONCE",
 			StateInfo: &state.Info{
 				Password: "arble",
@@ -170,9 +183,9 @@ start jujud-machine-0
 			},
 			Constraints:             envConstraints,
 			DataDir:                 environs.DataDir,
-			LogDir:                  environs.LogDir,
+			LogDir:                  agent.DefaultLogDir,
+			Jobs:                    allMachineJobs,
 			CloudInitOutputLog:      environs.CloudInitOutputLog,
-			RsyslogConfPath:         environs.RsyslogConfPath,
 			StateInfoURL:            "some-url",
 			SystemPrivateSSHKey:     "private rsa key",
 			MachineAgentServiceName: "jujud-machine-0",
@@ -182,7 +195,7 @@ start jujud-machine-0
 		inexactMatch: true,
 		expectScripts: `
 bin='/var/lib/juju/tools/1\.2\.3-raring-amd64'
-wget --no-verbose -O \$bin/tools\.tar\.gz 'http://foo\.com/tools/releases/juju1\.2\.3-raring-amd64\.tgz'
+curl -o \$bin/tools\.tar\.gz 'http://foo\.com/tools/releases/juju1\.2\.3-raring-amd64\.tgz'
 sha256sum \$bin/tools\.tar\.gz > \$bin/juju1\.2\.3-raring-amd64\.sha256
 grep '1234' \$bin/juju1\.2\.3-raring-amd64.sha256 \|\| \(echo "Tools checksum mismatch"; exit 1\)
 rm \$bin/tools\.tar\.gz && rm \$bin/juju1\.2\.3-raring-amd64\.sha256
@@ -198,9 +211,9 @@ ln -s 1\.2\.3-raring-amd64 '/var/lib/juju/tools/machine-0'
 			AuthorizedKeys:     "sshkey1",
 			AgentEnvironment:   map[string]string{agent.ProviderType: "dummy"},
 			DataDir:            environs.DataDir,
-			LogDir:             environs.LogDir,
+			LogDir:             agent.DefaultLogDir,
+			Jobs:               normalMachineJobs,
 			CloudInitOutputLog: environs.CloudInitOutputLog,
-			RsyslogConfPath:    environs.RsyslogConfPath,
 			StateServer:        false,
 			Tools:              newSimpleTools("1.2.3-linux-amd64"),
 			MachineNonce:       "FAKE_NONCE",
@@ -216,7 +229,6 @@ ln -s 1\.2\.3-raring-amd64 '/var/lib/juju/tools/machine-0'
 				Password: "bletch",
 				CACert:   []byte("CA CERT\n" + testing.CACert),
 			},
-			SyslogPort:              514,
 			MachineAgentServiceName: "jujud-machine-99",
 		},
 		expectScripts: `
@@ -225,23 +237,19 @@ install -D -m 644 /dev/null '/var/lib/juju/nonce.txt'
 printf '%s\\n' 'FAKE_NONCE' > '/var/lib/juju/nonce.txt'
 test -e /proc/self/fd/9 \|\| exec 9>&2
 \(\[ ! -e /home/ubuntu/\.profile \] \|\| grep -q '.juju-proxy' /home/ubuntu/.profile\) \|\| printf .* >> /home/ubuntu/.profile
-mkdir -p /var/lib/juju
+mkdir -p /var/lib/juju/locks
+\[ -e /home/ubuntu \] && chown ubuntu:ubuntu /var/lib/juju/locks
 mkdir -p /var/log/juju
 echo 'Fetching tools.*
 bin='/var/lib/juju/tools/1\.2\.3-linux-amd64'
 mkdir -p \$bin
-wget --no-verbose -O \$bin/tools\.tar\.gz 'http://foo\.com/tools/releases/juju1\.2\.3-linux-amd64\.tgz'
+curl -o \$bin/tools\.tar\.gz 'http://foo\.com/tools/releases/juju1\.2\.3-linux-amd64\.tgz'
 sha256sum \$bin/tools\.tar\.gz > \$bin/juju1\.2\.3-linux-amd64\.sha256
 grep '1234' \$bin/juju1\.2\.3-linux-amd64.sha256 \|\| \(echo "Tools checksum mismatch"; exit 1\)
 tar zxf \$bin/tools.tar.gz -C \$bin
 rm \$bin/tools\.tar\.gz && rm \$bin/juju1\.2\.3-linux-amd64\.sha256
 printf %s '{"version":"1\.2\.3-linux-amd64","url":"http://foo\.com/tools/releases/juju1\.2\.3-linux-amd64\.tgz","sha256":"1234","size":10}' > \$bin/downloaded-tools\.txt
-install -D -m 600 /dev/null '/etc/rsyslog\.d/25-juju\.conf'
-printf '%s\\n' '.*' > '/etc/rsyslog\.d/25-juju\.conf'
-restart rsyslog
 mkdir -p '/var/lib/juju/agents/machine-99'
-install -m 644 /dev/null '/var/lib/juju/agents/machine-99/format'
-printf '%s\\n' '.*' > '/var/lib/juju/agents/machine-99/format'
 install -m 600 /dev/null '/var/lib/juju/agents/machine-99/agent\.conf'
 printf '%s\\n' '.*' > '/var/lib/juju/agents/machine-99/agent\.conf'
 ln -s 1\.2\.3-linux-amd64 '/var/lib/juju/tools/machine-99'
@@ -257,9 +265,9 @@ start jujud-machine-99
 			AuthorizedKeys:       "sshkey1",
 			AgentEnvironment:     map[string]string{agent.ProviderType: "dummy"},
 			DataDir:              environs.DataDir,
-			LogDir:               environs.LogDir,
+			LogDir:               agent.DefaultLogDir,
+			Jobs:                 normalMachineJobs,
 			CloudInitOutputLog:   environs.CloudInitOutputLog,
-			RsyslogConfPath:      environs.RsyslogConfPath,
 			StateServer:          false,
 			Tools:                newSimpleTools("1.2.3-linux-amd64"),
 			MachineNonce:         "FAKE_NONCE",
@@ -275,16 +283,11 @@ start jujud-machine-99
 				Password: "bletch",
 				CACert:   []byte("CA CERT\n" + testing.CACert),
 			},
-			SyslogPort:              514,
 			MachineAgentServiceName: "jujud-machine-2-lxc-1",
 		},
 		inexactMatch: true,
 		expectScripts: `
-printf '%s\\n' '.*' > '/etc/rsyslog\.d/25-juju\.conf'
-restart rsyslog
 mkdir -p '/var/lib/juju/agents/machine-2-lxc-1'
-install -m 644 /dev/null '/var/lib/juju/agents/machine-2-lxc-1/format'
-printf '%s\\n' '.*' > '/var/lib/juju/agents/machine-2-lxc-1/format'
 install -m 600 /dev/null '/var/lib/juju/agents/machine-2-lxc-1/agent\.conf'
 printf '%s\\n' '.*' > '/var/lib/juju/agents/machine-2-lxc-1/agent\.conf'
 ln -s 1\.2\.3-linux-amd64 '/var/lib/juju/tools/machine-2-lxc-1'
@@ -298,9 +301,9 @@ start jujud-machine-2-lxc-1
 			AuthorizedKeys:     "sshkey1",
 			AgentEnvironment:   map[string]string{agent.ProviderType: "dummy"},
 			DataDir:            environs.DataDir,
-			LogDir:             environs.LogDir,
+			LogDir:             agent.DefaultLogDir,
+			Jobs:               normalMachineJobs,
 			CloudInitOutputLog: environs.CloudInitOutputLog,
-			RsyslogConfPath:    environs.RsyslogConfPath,
 			StateServer:        false,
 			Tools:              newSimpleTools("1.2.3-linux-amd64"),
 			MachineNonce:       "FAKE_NONCE",
@@ -316,13 +319,12 @@ start jujud-machine-2-lxc-1
 				Password: "bletch",
 				CACert:   []byte("CA CERT\n" + testing.CACert),
 			},
-			SyslogPort:                     514,
 			DisableSSLHostnameVerification: true,
 			MachineAgentServiceName:        "jujud-machine-99",
 		},
 		inexactMatch: true,
 		expectScripts: `
-wget --no-check-certificate --no-verbose -O \$bin/tools\.tar\.gz 'http://foo\.com/tools/releases/juju1\.2\.3-linux-amd64\.tgz'
+curl --insecure -o \$bin/tools\.tar\.gz 'http://foo\.com/tools/releases/juju1\.2\.3-linux-amd64\.tgz'
 `,
 	}, {
 		// empty contraints.
@@ -337,7 +339,6 @@ wget --no-check-certificate --no-verbose -O \$bin/tools\.tar\.gz 'http://foo\.co
 			StateServerKey:  serverKey,
 			StatePort:       37017,
 			APIPort:         17070,
-			SyslogPort:      514,
 			MachineNonce:    "FAKE_NONCE",
 			StateInfo: &state.Info{
 				Password: "arble",
@@ -348,9 +349,9 @@ wget --no-check-certificate --no-verbose -O \$bin/tools\.tar\.gz 'http://foo\.co
 				CACert:   []byte("CA CERT\n" + testing.CACert),
 			},
 			DataDir:                 environs.DataDir,
-			LogDir:                  environs.LogDir,
+			LogDir:                  agent.DefaultLogDir,
+			Jobs:                    allMachineJobs,
 			CloudInitOutputLog:      environs.CloudInitOutputLog,
-			RsyslogConfPath:         environs.RsyslogConfPath,
 			StateInfoURL:            "some-url",
 			SystemPrivateSSHKey:     "private rsa key",
 			MachineAgentServiceName: "jujud-machine-0",
@@ -380,7 +381,7 @@ func newFileTools(vers, path string) *tools.Tools {
 }
 
 func getAgentConfig(c *gc.C, tag string, scripts []string) (cfg string) {
-	re := regexp.MustCompile(`printf '%s\\n' '([^']+)' > .*agents/` + regexp.QuoteMeta(tag) + `/agent\.conf`)
+	re := regexp.MustCompile(`printf '%s\\n' '((\n|.)+)' > .*agents/` + regexp.QuoteMeta(tag) + `/agent\.conf`)
 	found := false
 	for _, s := range scripts {
 		m := re.FindStringSubmatch(s)
@@ -559,7 +560,7 @@ func assertScriptMatch(c *gc.C, got []string, expect string, exact bool) {
 	}
 }
 
-// CheckPackage checks that the cloudinit will or won't install the given
+// checkPackage checks that the cloudinit will or won't install the given
 // package, depending on the value of match.
 func checkPackage(c *gc.C, x map[interface{}]interface{}, pkg string, match bool) {
 	pkgs0 := x["packages"]
@@ -575,7 +576,9 @@ func checkPackage(c *gc.C, x map[interface{}]interface{}, pkg string, match bool
 	found := false
 	for _, p0 := range pkgs {
 		p := p0.(string)
-		if p == pkg {
+		hasTargetRelease := strings.Contains(p, "--target-release")
+		hasQuotedPkg := strings.Contains(p, "'"+pkg+"'")
+		if p == pkg || (hasTargetRelease && hasQuotedPkg) {
 			found = true
 		}
 	}
@@ -587,7 +590,7 @@ func checkPackage(c *gc.C, x map[interface{}]interface{}, pkg string, match bool
 	}
 }
 
-// CheckAptSources checks that the cloudinit will or won't install the given
+// checkAptSources checks that the cloudinit will or won't install the given
 // source, depending on the value of match.
 func checkAptSource(c *gc.C, x map[interface{}]interface{}, source, key string, match bool) {
 	sources0 := x["apt_sources"]
@@ -633,9 +636,6 @@ var verifyTests = []struct {
 	}},
 	{"missing API info", func(cfg *cloudinit.MachineConfig) {
 		cfg.APIInfo = nil
-	}},
-	{"missing syslog port", func(cfg *cloudinit.MachineConfig) {
-		cfg.SyslogPort = 0
 	}},
 	{"missing state hosts", func(cfg *cloudinit.MachineConfig) {
 		cfg.StateServer = false
@@ -685,9 +685,6 @@ var verifyTests = []struct {
 	}},
 	{"missing cloud-init output log path", func(cfg *cloudinit.MachineConfig) {
 		cfg.CloudInitOutputLog = ""
-	}},
-	{"missing rsyslog.d conf path", func(cfg *cloudinit.MachineConfig) {
-		cfg.RsyslogConfPath = ""
 	}},
 	{"missing tools", func(cfg *cloudinit.MachineConfig) {
 		cfg.Tools = nil
@@ -755,7 +752,6 @@ func (*cloudinitSuite) TestCloudInitVerify(c *gc.C) {
 		StateServerKey:   serverKey,
 		StatePort:        1234,
 		APIPort:          1235,
-		SyslogPort:       2345,
 		MachineId:        "99",
 		Tools:            newSimpleTools("9.9.9-linux-arble"),
 		AuthorizedKeys:   "sshkey1",
@@ -771,9 +767,9 @@ func (*cloudinitSuite) TestCloudInitVerify(c *gc.C) {
 		},
 		Config:                  minimalConfig(c),
 		DataDir:                 environs.DataDir,
-		LogDir:                  environs.LogDir,
+		LogDir:                  agent.DefaultLogDir,
+		Jobs:                    normalMachineJobs,
 		CloudInitOutputLog:      environs.CloudInitOutputLog,
-		RsyslogConfPath:         environs.RsyslogConfPath,
 		MachineNonce:            "FAKE_NONCE",
 		SystemPrivateSSHKey:     "private rsa key",
 		MachineAgentServiceName: "jujud-machine-99",
@@ -808,6 +804,14 @@ func (*cloudinitSuite) createMachineConfig(c *gc.C, environConfig *config.Config
 	return machineConfig
 }
 
+func (s *cloudinitSuite) TestMachineConfigTargetRelease(c *gc.C) {
+	environConfig := minimalConfig(c)
+	machineCfg := s.createMachineConfig(c, environConfig)
+	c.Assert(machineCfg.TargetRelease(), gc.Equals, "")
+	machineCfg.Tools.Version.Series = "precise"
+	c.Assert(machineCfg.TargetRelease(), gc.Equals, "precise-updates/cloud-tools")
+}
+
 func (s *cloudinitSuite) TestAptProxyNotWrittenIfNotSet(c *gc.C) {
 	environConfig := minimalConfig(c)
 	machineCfg := s.createMachineConfig(c, environConfig)
@@ -839,6 +843,7 @@ func (s *cloudinitSuite) TestProxyWritten(c *gc.C) {
 	environConfig := minimalConfig(c)
 	environConfig, err := environConfig.Apply(map[string]interface{}{
 		"http-proxy": "http://user@10.0.0.1",
+		"no-proxy":   "localhost,10.0.3.1",
 	})
 	c.Assert(err, gc.IsNil)
 	machineCfg := s.createMachineConfig(c, environConfig)
@@ -848,12 +853,20 @@ func (s *cloudinitSuite) TestProxyWritten(c *gc.C) {
 
 	cmds := cloudcfg.RunCmds()
 	first := `([ ! -e /home/ubuntu/.profile ] || grep -q '.juju-proxy' /home/ubuntu/.profile) || printf '\n# Added by juju\n[ -f "$HOME/.juju-proxy" ] && . "$HOME/.juju-proxy"\n' >> /home/ubuntu/.profile`
-	second := `[ -e /home/ubuntu ] && (printf '%s\n' 'export http_proxy=http://user@10.0.0.1
-export HTTP_PROXY=http://user@10.0.0.1' > /home/ubuntu/.juju-proxy && chown ubuntu:ubuntu /home/ubuntu/.juju-proxy)`
+	expected := []interface{}{
+		`export http_proxy=http://user@10.0.0.1`,
+		`export HTTP_PROXY=http://user@10.0.0.1`,
+		`export no_proxy=localhost,10.0.3.1`,
+		`export NO_PROXY=localhost,10.0.3.1`,
+		`[ -e /home/ubuntu ] && (printf '%s\n' 'export http_proxy=http://user@10.0.0.1
+export HTTP_PROXY=http://user@10.0.0.1
+export no_proxy=localhost,10.0.3.1
+export NO_PROXY=localhost,10.0.3.1' > /home/ubuntu/.juju-proxy && chown ubuntu:ubuntu /home/ubuntu/.juju-proxy)`,
+	}
 	found := false
 	for i, cmd := range cmds {
 		if cmd == first {
-			c.Assert(cmds[i+1], gc.Equals, second)
+			c.Assert(cmds[i+1:i+6], jc.DeepEquals, expected)
 			found = true
 			break
 		}

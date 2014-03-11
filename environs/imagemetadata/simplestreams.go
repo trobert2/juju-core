@@ -79,8 +79,16 @@ p7vH1ewg+vd9ySST0+OkWXYpbMOIARfBKyrGM3nu
 -----END PGP PUBLIC KEY BLOCK-----
 `
 
-// This needs to be a var so we can override it for testing.
-var DefaultBaseURL = "http://cloud-images.ubuntu.com/releases"
+const (
+	// The location where Ubuntu cloud image metadata is published for
+	// public consumption.
+	UbuntuCloudImagesURL = "http://cloud-images.ubuntu.com"
+	// The path where released image metadata is found.
+	ReleasedImagesPath = "releases"
+)
+
+// This needs to be a var so we can override it for testing and in bootstrap.
+var DefaultBaseURL = UbuntuCloudImagesURL
 
 // ImageConstraint defines criteria used to find an image metadata record.
 type ImageConstraint struct {
@@ -92,18 +100,29 @@ func NewImageConstraint(params simplestreams.LookupParams) *ImageConstraint {
 		params.Series = simplestreams.SupportedSeries()
 	}
 	if len(params.Arches) == 0 {
-		params.Arches = []string{"amd64", "i386", "arm"}
+		params.Arches = []string{"amd64", "i386", "arm", "arm64", "ppc64"}
 	}
 	return &ImageConstraint{LookupParams: params}
 }
 
+const (
+	// Used to specify the released image metadata.
+	ReleasedStream = "released"
+)
+
+// idStream returns the string to use in making a product id
+// for the given product stream.
+func idStream(stream string) string {
+	idstream := ""
+	if stream != "" && stream != ReleasedStream {
+		idstream = "." + stream
+	}
+	return idstream
+}
+
 // Generates a string array representing product ids formed similarly to an ISCSI qualified name (IQN).
 func (ic *ImageConstraint) Ids() ([]string, error) {
-	stream := ic.Stream
-	if stream != "" {
-		stream = "." + stream
-	}
-
+	stream := idStream(ic.Stream)
 	nrArches := len(ic.Arches)
 	nrSeries := len(ic.Series)
 	ids := make([]string, nrArches*nrSeries)
@@ -129,6 +148,7 @@ type ImageMetadata struct {
 	RegionAlias string `json:"crsn,omitempty"`
 	RegionName  string `json:"region,omitempty"`
 	Endpoint    string `json:"endpoint,omitempty"`
+	Stream      string `json:"-"`
 }
 
 func (im *ImageMetadata) String() string {
@@ -136,29 +156,32 @@ func (im *ImageMetadata) String() string {
 }
 
 func (im *ImageMetadata) productId() string {
-	return fmt.Sprintf("com.ubuntu.cloud:server:%s:%s", im.Version, im.Arch)
+	stream := idStream(im.Stream)
+	return fmt.Sprintf("com.ubuntu.cloud%s:server:%s:%s", stream, im.Version, im.Arch)
 }
 
 // Fetch returns a list of images for the specified cloud matching the constraint.
 // The base URL locations are as specified - the first location which has a file is the one used.
 // Signed data is preferred, but if there is no signed data available and onlySigned is false,
 // then unsigned data is used.
-func Fetch(sources []simplestreams.DataSource, indexPath string, cons *ImageConstraint, onlySigned bool) ([]*ImageMetadata, error) {
+func Fetch(
+	sources []simplestreams.DataSource, indexPath string, cons *ImageConstraint,
+	onlySigned bool) ([]*ImageMetadata, *simplestreams.ResolveInfo, error) {
 	params := simplestreams.ValueParams{
 		DataType:      ImageIds,
 		FilterFunc:    appendMatchingImages,
 		ValueTemplate: ImageMetadata{},
 		PublicKey:     simplestreamsImagesPublicKey,
 	}
-	items, err := simplestreams.GetMetadata(sources, indexPath, cons, onlySigned, params)
+	items, resolveInfo, err := simplestreams.GetMetadata(sources, indexPath, cons, onlySigned, params)
 	if err != nil {
-		return nil, err
+		return nil, resolveInfo, err
 	}
 	metadata := make([]*ImageMetadata, len(items))
 	for i, md := range items {
 		metadata[i] = md.(*ImageMetadata)
 	}
-	return metadata, nil
+	return metadata, resolveInfo, nil
 }
 
 type imageKey struct {

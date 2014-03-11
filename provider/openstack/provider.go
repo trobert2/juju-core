@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/juju/loggo"
 	"launchpad.net/goose/client"
 	gooseerrors "launchpad.net/goose/errors"
 	"launchpad.net/goose/identity"
 	"launchpad.net/goose/nova"
 	"launchpad.net/goose/swift"
-	"launchpad.net/loggo"
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
@@ -87,6 +87,10 @@ openstack:
     # image-metadata-url specifies the location of Ubuntu cloud image metadata. It defaults to the
     # global public image metadata location https://cloud-images.ubuntu.com/releases.
     # image-metadata-url:  https://you-tools-metadata-url
+
+    # image-stream chooses a simplestreams stream to select OS images from,
+    # for example daily or released images (or any other stream available on simplestreams).
+    # image-stream: "released"
 
     # auth-url defaults to the value of the environment variable OS_AUTH_URL,
     # but can be specified here.
@@ -176,7 +180,7 @@ func (p environProvider) Open(cfg *config.Config) (environs.Environ, error) {
 	return e, nil
 }
 
-func (p environProvider) Prepare(cfg *config.Config) (environs.Environ, error) {
+func (p environProvider) Prepare(ctx environs.BootstrapContext, cfg *config.Config) (environs.Environ, error) {
 	attrs := cfg.UnknownAttrs()
 	if _, ok := attrs["control-bucket"]; !ok {
 		uuid, err := utils.NewUUID()
@@ -200,7 +204,7 @@ func (p environProvider) MetadataLookupParams(region string) (*simplestreams.Met
 	}
 	return &simplestreams.MetadataLookupParams{
 		Region:        region,
-		Architectures: []string{"amd64", "arm"},
+		Architectures: []string{"amd64", "arm", "arm64", "ppc64"},
 	}, nil
 }
 
@@ -479,18 +483,6 @@ func (e *environ) nova() *nova.Client {
 	return nova
 }
 
-// PrecheckInstance is specified in the environs.Prechecker interface.
-func (*environ) PrecheckInstance(series string, cons constraints.Value) error {
-	return nil
-}
-
-// PrecheckContainer is specified in the environs.Prechecker interface.
-func (*environ) PrecheckContainer(series string, kind instance.ContainerType) error {
-	// This check can either go away or be relaxed when the openstack
-	// provider manages container addressibility.
-	return environs.NewContainersUnsupported("openstack provider does not support containers")
-}
-
 func (e *environ) Name() string {
 	return e.name
 }
@@ -593,7 +585,7 @@ func (e *environ) GetImageSources() ([]simplestreams.DataSource, error) {
 	}
 	// Add the simplestreams source off the control bucket.
 	e.imageSources = append(e.imageSources, storage.NewStorageSimpleStreamsDataSource(
-		e.Storage(), storage.BaseImagesPath))
+		"cloud storage", e.Storage(), storage.BaseImagesPath))
 	// Add the simplestreams base URL from keystone if it is defined.
 	productStreamsURL, err := e.client.MakeServiceURL("product-streams", nil)
 	if err == nil {
@@ -601,7 +593,7 @@ func (e *environ) GetImageSources() ([]simplestreams.DataSource, error) {
 		if !e.Config().SSLHostnameVerification() {
 			verify = simplestreams.NoVerifySSLHostnames
 		}
-		source := simplestreams.NewURLDataSource(productStreamsURL, verify)
+		source := simplestreams.NewURLDataSource("keystone catalog", productStreamsURL, verify)
 		e.imageSources = append(e.imageSources, source)
 	}
 	return e.imageSources, nil
@@ -626,11 +618,12 @@ func (e *environ) GetToolsSources() ([]simplestreams.DataSource, error) {
 		verify = simplestreams.NoVerifySSLHostnames
 	}
 	// Add the simplestreams source off the control bucket.
-	e.toolsSources = append(e.toolsSources, storage.NewStorageSimpleStreamsDataSource(e.Storage(), storage.BaseToolsPath))
+	e.toolsSources = append(e.toolsSources, storage.NewStorageSimpleStreamsDataSource(
+		"cloud storage", e.Storage(), storage.BaseToolsPath))
 	// Add the simplestreams base URL from keystone if it is defined.
 	toolsURL, err := e.client.MakeServiceURL("juju-tools", nil)
 	if err == nil {
-		source := simplestreams.NewURLDataSource(toolsURL, verify)
+		source := simplestreams.NewURLDataSource("keystone catalog", toolsURL, verify)
 		e.toolsSources = append(e.toolsSources, source)
 	}
 	return e.toolsSources, nil
@@ -1204,7 +1197,7 @@ func (e *environ) MetadataLookupParams(region string) (*simplestreams.MetadataLo
 		Series:        e.ecfg().DefaultSeries(),
 		Region:        region,
 		Endpoint:      e.ecfg().authURL(),
-		Architectures: []string{"amd64", "arm"},
+		Architectures: []string{"amd64", "arm", "arm64", "ppc64"},
 	}, nil
 }
 

@@ -19,11 +19,14 @@ import (
 	"launchpad.net/juju-core/environs/jujutest"
 	envtesting "launchpad.net/juju-core/environs/testing"
 	"launchpad.net/juju-core/environs/tools"
-	"launchpad.net/juju-core/instance"
+	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/provider/local"
+	"launchpad.net/juju-core/state/api/params"
 	coretesting "launchpad.net/juju-core/testing"
 	jc "launchpad.net/juju-core/testing/checkers"
 )
+
+const echoCommandScript = "#!/bin/sh\necho $0 \"$@\" >> $0.args"
 
 type environSuite struct {
 	baseProviderSuite
@@ -35,6 +38,11 @@ var _ = gc.Suite(&environSuite{})
 func (s *environSuite) SetUpTest(c *gc.C) {
 	s.baseProviderSuite.SetUpTest(c)
 	s.ToolsFixture.SetUpTest(c)
+}
+
+func (s *environSuite) TearDownTest(c *gc.C) {
+	s.ToolsFixture.TearDownTest(c)
+	s.baseProviderSuite.TearDownTest(c)
 }
 
 func (*environSuite) TestOpenFailsWithProtectedDirectories(c *gc.C) {
@@ -69,29 +77,14 @@ func (s *environSuite) TestGetToolsMetadataSources(c *gc.C) {
 	c.Assert(strings.Contains(url, "/tools"), jc.IsTrue)
 }
 
-func (s *environSuite) TestPrecheck(c *gc.C) {
-	testConfig := minimalConfig(c)
-	environ, err := local.Provider.Open(testConfig)
-	c.Assert(err, gc.IsNil)
-	var cons constraints.Value
-	prechecker, ok := environ.(environs.Prechecker)
-	c.Assert(ok, jc.IsTrue)
-
-	err = prechecker.PrecheckInstance("precise", cons)
-	c.Check(err, gc.IsNil)
-
-	err = prechecker.PrecheckContainer("precise", instance.LXC)
-	c.Check(err, gc.ErrorMatches, "local provider does not support nested containers")
-}
-
 type localJujuTestSuite struct {
 	baseProviderSuite
 	jujutest.Tests
 	restoreRootCheck   func()
 	oldUpstartLocation string
-	oldPath            string
 	testPath           string
 	dbServiceName      string
+	fakesudo           string
 }
 
 func (s *localJujuTestSuite) SetUpTest(c *gc.C) {
@@ -99,9 +92,13 @@ func (s *localJujuTestSuite) SetUpTest(c *gc.C) {
 	// Construct the directories first.
 	err := local.CreateDirs(c, minimalConfig(c))
 	c.Assert(err, gc.IsNil)
-	s.oldPath = os.Getenv("PATH")
 	s.testPath = c.MkDir()
-	os.Setenv("PATH", s.testPath+":"+s.oldPath)
+	s.fakesudo = filepath.Join(s.testPath, "sudo")
+	s.PatchEnvPathPrepend(s.testPath)
+
+	// Write a fake "sudo" which records its args to sudo.args.
+	err = ioutil.WriteFile(s.fakesudo, []byte(echoCommandScript), 0755)
+	c.Assert(err, gc.IsNil)
 
 	// Add in an admin secret
 	s.Tests.TestConfig["admin-secret"] = "sekrit"
@@ -115,7 +112,6 @@ func (s *localJujuTestSuite) SetUpTest(c *gc.C) {
 
 func (s *localJujuTestSuite) TearDownTest(c *gc.C) {
 	s.Tests.TearDownTest(c)
-	os.Setenv("PATH", s.oldPath)
 	s.restoreRootCheck()
 	s.baseProviderSuite.TearDownTest(c)
 }
@@ -141,23 +137,69 @@ var _ = gc.Suite(&localJujuTestSuite{
 	},
 })
 
+func (s *localJujuTestSuite) TestStartStop(c *gc.C) {
+	c.Skip("StartInstance not implemented yet.")
+}
+
+func (s *localJujuTestSuite) testBootstrap(c *gc.C) (env environs.Environ) {
+	testConfig := minimalConfig(c)
+	ctx := coretesting.Context(c)
+	environ, err := local.Provider.Prepare(ctx, testConfig)
+	c.Assert(err, gc.IsNil)
+	envtesting.UploadFakeTools(c, environ.Storage())
+	defer environ.Storage().RemoveAll()
+	err = environ.Bootstrap(ctx, constraints.Value{})
+	c.Assert(err, gc.IsNil)
+	return environ
+}
+
 func (s *localJujuTestSuite) TestBootstrap(c *gc.C) {
 	s.PatchValue(local.FinishBootstrap, func(mcfg *cloudinit.MachineConfig, cloudcfg *coreCloudinit.Config, ctx environs.BootstrapContext) error {
 		c.Assert(cloudcfg.AptUpdate(), jc.IsFalse)
 		c.Assert(cloudcfg.AptUpgrade(), jc.IsFalse)
 		c.Assert(cloudcfg.Packages(), gc.HasLen, 0)
+		c.Assert(mcfg.AgentEnvironment, gc.Not(gc.IsNil))
+		// local does not allow machine-0 to host units
+		c.Assert(mcfg.Jobs, gc.DeepEquals, []params.MachineJob{params.JobManageEnviron})
 		return nil
 	})
-	testConfig := minimalConfig(c)
-	environ, err := local.Provider.Prepare(testConfig)
-	c.Assert(err, gc.IsNil)
-	envtesting.UploadFakeTools(c, environ.Storage())
-	defer environ.Storage().RemoveAll()
-	ctx := envtesting.NewBootstrapContext(coretesting.Context(c))
-	err = environ.Bootstrap(ctx, constraints.Value{})
-	c.Assert(err, gc.IsNil)
+	s.testBootstrap(c)
 }
 
-func (s *localJujuTestSuite) TestStartStop(c *gc.C) {
-	c.Skip("StartInstance not implemented yet.")
+func (s *localJujuTestSuite) TestDestroy(c *gc.C) {
+	s.PatchValue(local.FinishBootstrap, func(mcfg *cloudinit.MachineConfig, cloudcfg *coreCloudinit.Config, ctx environs.BootstrapContext) error {
+		return nil
+	})
+	env := s.testBootstrap(c)
+	err := env.Destroy()
+	// Succeeds because there's no "agents" directory,
+	// so destroy will just return without attempting
+	// sudo or anything.
+	c.Assert(err, gc.IsNil)
+	c.Assert(s.fakesudo+".args", jc.DoesNotExist)
+}
+
+func (s *localJujuTestSuite) TestDestroyCallSudo(c *gc.C) {
+	s.PatchValue(local.FinishBootstrap, func(mcfg *cloudinit.MachineConfig, cloudcfg *coreCloudinit.Config, ctx environs.BootstrapContext) error {
+		return nil
+	})
+	env := s.testBootstrap(c)
+	rootDir := env.Config().AllAttrs()["root-dir"].(string)
+	agentsDir := filepath.Join(rootDir, "agents")
+	err := os.Mkdir(agentsDir, 0755)
+	c.Assert(err, gc.IsNil)
+	err = env.Destroy()
+	c.Assert(err, gc.IsNil)
+	data, err := ioutil.ReadFile(s.fakesudo + ".args")
+	c.Assert(err, gc.IsNil)
+	expected := []string{
+		s.fakesudo,
+		"JUJU_HOME=" + osenv.JujuHome(),
+		os.Args[0],
+		"destroy-environment",
+		"-y",
+		"--force",
+		env.Config().Name(),
+	}
+	c.Assert(string(data), gc.Equals, strings.Join(expected, " ")+"\n")
 }

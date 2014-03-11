@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/juju/loggo"
 	"launchpad.net/gnuflag"
-	"launchpad.net/loggo"
 
 	"launchpad.net/juju-core/juju/osenv"
 )
@@ -68,7 +68,7 @@ func (l *Log) Start(ctx *Context) error {
 	}
 	level := loggo.WARNING
 	if l.Verbose {
-		ctx.Stdout.Write([]byte("verbose is deprecated with the current meaning, use show-log\n"))
+		ctx.Stdout.Write([]byte("Flag --verbose is deprecated with the current meaning, use --show-log\n"))
 		l.ShowLog = true
 	}
 	if l.ShowLog {

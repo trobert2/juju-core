@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/juju/loggo"
 	"launchpad.net/goamz/aws"
 	"launchpad.net/goamz/ec2"
 	"launchpad.net/goamz/s3"
-	"launchpad.net/loggo"
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
@@ -188,6 +188,10 @@ amazon:
     #
     # secret-key holds the ec2 secret key. It defaults to the environment
     # variable AWS_SECRET_ACCESS_KEY.
+    #
+    # image-stream chooses a simplestreams stream to select OS images from,
+    # for example daily or released images (or any other stream available on simplestreams).
+    # image-stream: "released"
 
 `[1:]
 }
@@ -203,7 +207,7 @@ func (p environProvider) Open(cfg *config.Config) (environs.Environ, error) {
 	return e, nil
 }
 
-func (p environProvider) Prepare(cfg *config.Config) (environs.Environ, error) {
+func (p environProvider) Prepare(ctx environs.BootstrapContext, cfg *config.Config) (environs.Environ, error) {
 	attrs := cfg.UnknownAttrs()
 	if _, ok := attrs["control-bucket"]; !ok {
 		uuid, err := utils.NewUUID()
@@ -232,7 +236,7 @@ func (p environProvider) MetadataLookupParams(region string) (*simplestreams.Met
 	return &simplestreams.MetadataLookupParams{
 		Region:        region,
 		Endpoint:      ec2Region.EC2Endpoint,
-		Architectures: []string{"amd64", "i386", "arm"},
+		Architectures: []string{"amd64", "i386"},
 	}, nil
 }
 
@@ -302,18 +306,6 @@ func (e *environ) s3() *s3.S3 {
 	return s3
 }
 
-// PrecheckInstance is specified in the environs.Prechecker interface.
-func (e *environ) PrecheckInstance(series string, cons constraints.Value) error {
-	return nil
-}
-
-// PrecheckContainer is specified in the environs.Prechecker interface.
-func (e *environ) PrecheckContainer(series string, kind instance.ContainerType) error {
-	// This check can either go away or be relaxed when the ec2
-	// provider manages container addressibility.
-	return environs.NewContainersUnsupported("ec2 provider does not support containers")
-}
-
 func (e *environ) Name() string {
 	return e.name
 }
@@ -346,7 +338,7 @@ func (e *environ) MetadataLookupParams(region string) (*simplestreams.MetadataLo
 		Series:        e.ecfg().DefaultSeries(),
 		Region:        region,
 		Endpoint:      ec2Region.EC2Endpoint,
-		Architectures: []string{"amd64", "i386", "arm"},
+		Architectures: []string{"amd64", "i386", "arm", "arm64", "ppc64"},
 	}, nil
 }
 
@@ -377,7 +369,7 @@ func (e *environ) StartInstance(cons constraints.Value, possibleTools tools.List
 	}
 
 	series := possibleTools.OneSeries()
-	spec, err := findInstanceSpec(sources, &instances.InstanceConstraint{
+	spec, err := findInstanceSpec(sources, e.Config().ImageStream(), &instances.InstanceConstraint{
 		Region:      e.ecfg().region(),
 		Series:      series,
 		Arches:      arches,
@@ -1065,7 +1057,7 @@ func fetchMetadata(name string) (value string, err error) {
 func (e *environ) GetImageSources() ([]simplestreams.DataSource, error) {
 	// Add the simplestreams source off the control bucket.
 	sources := []simplestreams.DataSource{
-		storage.NewStorageSimpleStreamsDataSource(e.Storage(), storage.BaseImagesPath)}
+		storage.NewStorageSimpleStreamsDataSource("cloud storage", e.Storage(), storage.BaseImagesPath)}
 	return sources, nil
 }
 
@@ -1073,6 +1065,6 @@ func (e *environ) GetImageSources() ([]simplestreams.DataSource, error) {
 func (e *environ) GetToolsSources() ([]simplestreams.DataSource, error) {
 	// Add the simplestreams source off the control bucket.
 	sources := []simplestreams.DataSource{
-		storage.NewStorageSimpleStreamsDataSource(e.Storage(), storage.BaseToolsPath)}
+		storage.NewStorageSimpleStreamsDataSource("cloud storage", e.Storage(), storage.BaseToolsPath)}
 	return sources, nil
 }

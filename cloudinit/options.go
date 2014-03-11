@@ -10,6 +10,10 @@ import (
 	"launchpad.net/juju-core/utils/ssh"
 )
 
+// CloudToolsPrefsPath defines the default location of
+// apt_preferences(5) file for the cloud-tools pocket.
+const CloudToolsPrefsPath = "/etc/apt/preferences.d/50-cloud-tools"
+
 // SetAttr sets an arbitrary attribute in the cloudinit config.
 // If value is nil the attribute will be deleted; otherwise
 // the value will be marshalled according to the rules
@@ -73,13 +77,19 @@ func (cfg *Config) SetAptPreserveSourcesList(yes bool) {
 
 // AddAptSource adds an apt source. The key holds the
 // public key of the source, in the form expected by apt-key(8).
-func (cfg *Config) AddAptSource(name, key string) {
+func (cfg *Config) AddAptSource(name, key string, prefs *AptPreferences) {
 	src, _ := cfg.attrs["apt_sources"].([]*AptSource)
 	cfg.attrs["apt_sources"] = append(src,
 		&AptSource{
 			Source: name,
 			Key:    key,
-		})
+			Prefs:  prefs,
+		},
+	)
+	if prefs != nil {
+		// Create the apt preferences file.
+		cfg.AddFile(prefs.Path, prefs.FileContents(), 0644)
+	}
 }
 
 // AptSources returns the apt sources added with AddAptSource.
@@ -95,11 +105,16 @@ func (cfg *Config) SetDebconfSelections(answers string) {
 	cfg.set("debconf_selections", answers != "", answers)
 }
 
-// AddPackage adds a package to be installed on first boot.
-// If any packages are specified, "apt-get update"
-// will be called.
-func (cfg *Config) AddPackage(name string) {
-	cfg.attrs["packages"] = append(cfg.Packages(), name)
+// AddPackage adds a package to be installed using apt-get.
+// If targetRelease is provided, --target-release will be passed to the apt-get command.
+// If targetRelease is an empty string, no --target-release will be passed to the apt-get command.
+func (cfg *Config) AddPackage(packageName, targetRelease string) {
+	if targetRelease == "" {
+		cfg.attrs["packages"] = append(cfg.Packages(), packageName)
+	} else {
+		name := fmt.Sprintf("--target-release '%s' '%s'", targetRelease, packageName)
+		cfg.attrs["packages"] = append(cfg.Packages(), name)
+	}
 }
 
 // Packages returns a list of packages that will be
@@ -333,6 +348,12 @@ func (cfg *Config) AddFile(filename, data string, mode uint) {
 	)
 }
 
+func (cfg *Config) WinAddFile(filename, data string, mode uint) {
+	cfg.AddPSScripts(
+		fmt.Sprintf(`Set-Content '%s' '%s'`, filename, data),
+	)
+}
+
 func shquote(p string) string {
 	return utils.ShQuote(p)
 }
@@ -345,7 +366,6 @@ func shquote(p string) string {
 // puppet
 // resizefs
 // rightscale_userdata
-// rsyslog
 // scripts_per_boot
 // scripts_per_instance
 // scripts_per_once

@@ -4,7 +4,7 @@
 package charmrevisionupdater
 
 import (
-	"launchpad.net/loggo"
+	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/log"

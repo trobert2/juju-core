@@ -9,6 +9,7 @@ import (
 
 	"launchpad.net/tomb"
 
+	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/rpc"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/apiserver/agent"
@@ -16,12 +17,14 @@ import (
 	"launchpad.net/juju-core/state/apiserver/client"
 	"launchpad.net/juju-core/state/apiserver/common"
 	"launchpad.net/juju-core/state/apiserver/deployer"
+	"launchpad.net/juju-core/state/apiserver/environment"
 	"launchpad.net/juju-core/state/apiserver/firewaller"
 	"launchpad.net/juju-core/state/apiserver/keymanager"
 	"launchpad.net/juju-core/state/apiserver/keyupdater"
 	loggerapi "launchpad.net/juju-core/state/apiserver/logger"
 	"launchpad.net/juju-core/state/apiserver/machine"
 	"launchpad.net/juju-core/state/apiserver/provisioner"
+	"launchpad.net/juju-core/state/apiserver/rsyslog"
 	"launchpad.net/juju-core/state/apiserver/uniter"
 	"launchpad.net/juju-core/state/apiserver/upgrader"
 	"launchpad.net/juju-core/state/multiwatcher"
@@ -169,6 +172,28 @@ func (r *srvRoot) Deployer(id string) (*deployer.DeployerAPI, error) {
 	return deployer.NewDeployerAPI(r.srv.state, r.resources, r)
 }
 
+// Environment returns an object that provides access to the Environment API
+// facade. The id argument is reserved for future use and currently needs to
+// be empty.
+func (r *srvRoot) Environment(id string) (*environment.EnvironmentAPI, error) {
+	if id != "" {
+		// Safeguard id for possible future use.
+		return nil, common.ErrBadId
+	}
+	return environment.NewEnvironmentAPI(r.srv.state, r.resources, r)
+}
+
+// Rsyslog returns an object that provides access to the Rsyslog API
+// facade. The id argument is reserved for future use and currently needs to
+// be empty.
+func (r *srvRoot) Rsyslog(id string) (*rsyslog.RsyslogAPI, error) {
+	if id != "" {
+		// Safeguard id for possible future use.
+		return nil, common.ErrBadId
+	}
+	return rsyslog.NewRsyslogAPI(r.srv.state, r.resources, r)
+}
+
 // Logger returns an object that provides access to the Logger API facade.
 // The id argument is reserved for future use and must be empty.
 func (r *srvRoot) Logger(id string) (*loggerapi.LoggerAPI, error) {
@@ -181,12 +206,27 @@ func (r *srvRoot) Logger(id string) (*loggerapi.LoggerAPI, error) {
 
 // Upgrader returns an object that provides access to the Upgrader API facade.
 // The id argument is reserved for future use and must be empty.
-func (r *srvRoot) Upgrader(id string) (*upgrader.UpgraderAPI, error) {
+func (r *srvRoot) Upgrader(id string) (upgrader.Upgrader, error) {
 	if id != "" {
 		// TODO: There is no direct test for this
 		return nil, common.ErrBadId
 	}
-	return upgrader.NewUpgraderAPI(r.srv.state, r.resources, r)
+	// The type of upgrader we return depends on who is asking.
+	// Machines get an UpgraderAPI, units get a UnitUpgraderAPI.
+	// This is tested in the state/api/upgrader package since there
+	// are currently no direct srvRoot tests.
+	tagKind, _, err := names.ParseTag(r.GetAuthTag(), "")
+	if err != nil {
+		return nil, common.ErrPerm
+	}
+	switch tagKind {
+	case names.MachineTagKind:
+		return upgrader.NewUpgraderAPI(r.srv.state, r.resources, r)
+	case names.UnitTagKind:
+		return upgrader.NewUnitUpgraderAPI(r.srv.state, r.resources, r, r.srv.dataDir)
+	}
+	// Not a machine or unit.
+	return nil, common.ErrPerm
 }
 
 // KeyUpdater returns an object that provides access to the KeyUpdater API facade.

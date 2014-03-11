@@ -177,15 +177,43 @@ var ctests = []struct {
 		"AptSources",
 		"apt_sources:\n- source: keyName\n  key: someKey\n",
 		func(cfg *cloudinit.Config) {
-			cfg.AddAptSource("keyName", "someKey")
+			cfg.AddAptSource("keyName", "someKey", nil)
 		},
 	},
 	{
-		"Packages",
-		"packages:\n- juju\n- ubuntu\n",
+		"AptSources with preferences",
+		`apt_sources:
+- source: keyName
+  key: someKey
+runcmd:
+- install -D -m 644 /dev/null '/some/path'
+- 'printf ''%s\n'' ''Explanation: test
+
+  Package: *
+
+  Pin: release n=series
+
+  Pin-Priority: 123
+
+  '' > ''/some/path'''
+`,
 		func(cfg *cloudinit.Config) {
-			cfg.AddPackage("juju")
-			cfg.AddPackage("ubuntu")
+			prefs := &cloudinit.AptPreferences{
+				Path:        "/some/path",
+				Explanation: "test",
+				Package:     "*",
+				Pin:         "release n=series",
+				PinPriority: 123,
+			}
+			cfg.AddAptSource("keyName", "someKey", prefs)
+		},
+	},
+	{
+		"Packages with --target-release",
+		"packages:\n- --target-release 'precise-updates/cloud-tools' 'mongodb-server'\n- --target-release 'precise-updates/cloud-tools' 'juju'\n",
+		func(cfg *cloudinit.Config) {
+			cfg.AddPackage("mongodb-server", "precise-updates/cloud-tools")
+			cfg.AddPackage("juju", "precise-updates/cloud-tools")
 		},
 	},
 	{
@@ -274,9 +302,13 @@ func (S) TestRunCmds(c *gc.C) {
 func (S) TestPackages(c *gc.C) {
 	cfg := cloudinit.New()
 	c.Assert(cfg.Packages(), gc.HasLen, 0)
-	cfg.AddPackage("a b c")
-	cfg.AddPackage("d!")
-	c.Assert(cfg.Packages(), gc.DeepEquals, []string{"a b c", "d!"})
+	cfg.AddPackage("a b c", "")
+	cfg.AddPackage("d!", "")
+	expectedPackages := []string{"a b c", "d!"}
+	c.Assert(cfg.Packages(), gc.DeepEquals, expectedPackages)
+	cfg.AddPackage("package", "series")
+	expectedPackages = append(expectedPackages, "--target-release 'series' 'package'")
+	c.Assert(cfg.Packages(), gc.DeepEquals, expectedPackages)
 }
 
 func (S) TestSetOutput(c *gc.C) {
@@ -316,8 +348,8 @@ func (S) TestSetOutput(c *gc.C) {
 //- ubuntu
 func ExampleConfig() {
 	cfg := cloudinit.New()
-	cfg.AddPackage("juju")
-	cfg.AddPackage("ubuntu")
+	cfg.AddPackage("juju", "")
+	cfg.AddPackage("ubuntu", "")
 	data, err := cfg.Render()
 	if err != nil {
 		fmt.Printf("render error: %v", err)

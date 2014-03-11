@@ -6,7 +6,7 @@ package provisioner
 import (
 	"sync"
 
-	"launchpad.net/loggo"
+	"github.com/juju/loggo"
 	"launchpad.net/tomb"
 
 	"launchpad.net/juju-core/agent"

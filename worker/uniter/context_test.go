@@ -174,19 +174,23 @@ var runHookTests = []struct {
 			stdout: strings.Repeat("a", lineBufferSize+10),
 		},
 	}, {
-		summary:       "check shell environment for non-relation hook context",
-		relid:         -1,
-		spec:          hookSpec{perm: 0700},
-		proxySettings: osenv.ProxySettings{Http: "http", Https: "https", Ftp: "ftp"},
+		summary: "check shell environment for non-relation hook context",
+		relid:   -1,
+		spec:    hookSpec{perm: 0700},
+		proxySettings: osenv.ProxySettings{
+			Http: "http", Https: "https", Ftp: "ftp", NoProxy: "no proxy"},
 		env: map[string]string{
 			"JUJU_UNIT_NAME":     "u/0",
 			"JUJU_API_ADDRESSES": expectedApiAddrs,
+			"JUJU_ENV_NAME":      "test-env-name",
 			"http_proxy":         "http",
 			"HTTP_PROXY":         "http",
 			"https_proxy":        "https",
 			"HTTPS_PROXY":        "https",
 			"ftp_proxy":          "ftp",
 			"FTP_PROXY":          "ftp",
+			"no_proxy":           "no proxy",
+			"NO_PROXY":           "no proxy",
 		},
 	}, {
 		summary: "check shell environment for relation-broken hook context",
@@ -195,6 +199,7 @@ var runHookTests = []struct {
 		env: map[string]string{
 			"JUJU_UNIT_NAME":     "u/0",
 			"JUJU_API_ADDRESSES": expectedApiAddrs,
+			"JUJU_ENV_NAME":      "test-env-name",
 			"JUJU_RELATION":      "db",
 			"JUJU_RELATION_ID":   "db:1",
 			"JUJU_REMOTE_UNIT":   "",
@@ -207,6 +212,7 @@ var runHookTests = []struct {
 		env: map[string]string{
 			"JUJU_UNIT_NAME":     "u/0",
 			"JUJU_API_ADDRESSES": expectedApiAddrs,
+			"JUJU_ENV_NAME":      "test-env-name",
 			"JUJU_RELATION":      "db",
 			"JUJU_RELATION_ID":   "db:1",
 			"JUJU_REMOTE_UNIT":   "r/1",
@@ -428,7 +434,7 @@ func (s *ContextRelationSuite) TestChangeMembers(c *gc.C) {
 
 	// ...and that its settings are no longer cached.
 	_, err := ctx.ReadSettings("u/2")
-	c.Assert(err, gc.ErrorMatches, "permission denied")
+	c.Assert(err, gc.ErrorMatches, "cannot read settings for unit \"u/2\" in relation \"u:ring\": settings not found")
 }
 
 func (s *ContextRelationSuite) TestMemberCaching(c *gc.C) {
@@ -710,8 +716,9 @@ func (s *HookContextSuite) getHookContext(c *gc.C, uuid string, relid int,
 		_, found := s.relctxs[relid]
 		c.Assert(found, gc.Equals, true)
 	}
-	context, err := uniter.NewHookContext(s.apiUnit, "TestCtx", uuid, relid, remote,
-		s.relctxs, apiAddrs, "test-owner", proxies)
+	context, err := uniter.NewHookContext(s.apiUnit, "TestCtx", uuid,
+		"test-env-name", relid, remote, s.relctxs, apiAddrs, "test-owner",
+		proxies)
 	c.Assert(err, gc.IsNil)
 	return context
 }
@@ -764,6 +771,7 @@ func (s *RunCommandSuite) TestRunCommandsHasEnvironSet(c *gc.C) {
 		"JUJU_CONTEXT_ID":          "TestCtx",
 		"JUJU_AGENT_SOCKET":        "/path/to/socket",
 		"JUJU_UNIT_NAME":           "u/0",
+		"JUJU_ENV_NAME":            "test-env-name",
 	}
 	for key, value := range expected {
 		c.Check(executionEnvironment[key], gc.Equals, value)

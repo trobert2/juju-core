@@ -40,9 +40,7 @@ func IsValidUser(user string) bool {
 
 // IsValidSeries returns whether series is a valid series in charm URLs.
 func IsValidSeries(series string) bool {
-    a := validSeries.MatchString(series)
-    fmt.Printf("Will return: %v\n", a)
-	return a
+	return validSeries.MatchString(series)
 }
 
 // IsValidName returns whether name is a valid charm name.
@@ -103,12 +101,9 @@ func ParseURL(url string) (*URL, error) {
 	}
 	if len(parts) == 2 {
 		u.Series = parts[0]
-        //fmt.Printf("%s\n", u.Series)
-        //is_valid := IsValidSeries(u.Series)
-        //fmt.Printf("%s-->%v\n", u.Series, is_valid)
-		//if is_valid != true {
-		//	return nil, fmt.Errorf("charm URL has invalid series: %q", url)
-		//}
+		if !IsValidSeries(u.Series) {
+			return nil, fmt.Errorf("charm URL has invalid series: %q", url)
+		}
 		parts = parts[1:]
 	}
 
