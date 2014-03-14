@@ -29,4 +29,5 @@ var (
     LibDir     = "/var/lib"
     LogDir     = "/var/log"
     DataDir    = path.Join(LibDir, "juju")
+    SocketType = "unix"
 )

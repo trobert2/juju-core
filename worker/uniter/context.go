@@ -178,6 +178,7 @@ func (ctx *HookContext) RelationIds() []int {
 // hookVars returns an os.Environ-style list of strings necessary to run a hook
 // such that it can know what environment it's operating in, and can call back
 // into ctx.
+// TODO: gsamfira: env vars for windows
 func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
 	vars := []string{
 		"APT_LISTCHANGES_FRONTEND=none",

@@ -41,6 +41,9 @@ const (
 	// These work fine for linux, but should we need to work with windows
 	// workloads in the future, we'll need to move these into a file that is
 	// compiled conditionally for different targets and use tcp (most likely).
+
+	// gsamfira: On Windows this file will be a text file we will use it to store
+	// the TCP port nr until we implement RPC over named pipes
 	RunListenerFile = "run.socket"
 )
 
@@ -78,6 +81,7 @@ type Uniter struct {
 	rand         *rand.Rand
 	hookLock     *fslock.Lock
 	runListener  *RunListener
+	tcpSock      string
 
 	proxy      osenv.ProxySettings
 	proxyMutex sync.Mutex

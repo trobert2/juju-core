@@ -16,6 +16,7 @@ var (
     LibDir     = WinLibDir
     LogDir     = WinLogDir
     DataDir    = WinDataDir
+    SocketType = "tcp"
 )
 
 // Home returns the os-specific home path as specified in the environment

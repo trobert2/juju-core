@@ -11,8 +11,10 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"runtime"
 
 	"launchpad.net/juju-core/utils/exec"
+	"launchpad.net/juju/osenv"
 )
 
 const JujuRunEndpoint = "JujuRunServer.RunCommands"
@@ -59,13 +61,16 @@ func NewRunListener(runner CommandRunner, socketPath string) (*RunListener, erro
 	if err := server.Register(&JujuRunServer{runner}); err != nil {
 		return nil, err
 	}
-	// In case the unix socket is present, delete it.
-	if err := os.Remove(socketPath); err != nil {
-		logger.Tracef("ignoring error on removing %q: %v", socketPath, err)
+	//we use TCP sockets on Windows
+	if runtime.GOOS != "windows" {
+		// In case the unix socket is present, delete it.
+		if err := os.Remove(socketPath); err != nil {
+			logger.Tracef("ignoring error on removing %q: %v", socketPath, err)
+		}
 	}
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := net.Listen(osenv.SocketType, socketPath)
 	if err != nil {
-		logger.Errorf("failed to listen on unix:%s: %v", socketPath, err)
+		logger.Errorf("failed to listen on %s:%s: %v", osenv.SocketType, osenv.socketPath, err)
 		return nil, err
 	}
 	runListener := &RunListener{

@@ -7,20 +7,22 @@ import (
 	"fmt"
 	"net/rpc"
 	"os"
+	"path"
 	"path/filepath"
 
 	"launchpad.net/gnuflag"
 
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/names"
+	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/utils/fslock"
 	"launchpad.net/juju-core/worker/uniter"
 )
 
 var (
-	AgentDir = "/var/lib/juju/agents"
-	LockDir  = "/var/lib/juju/locks"
+	AgentDir = path.Join(osenv.DataDir, "agents")
+	LockDir  = path.Join(osenv.DataDir, "locks")
 )
 
 type RunCommand struct {

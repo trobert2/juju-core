@@ -17,6 +17,7 @@ import (
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/worker/uniter/jujuc"
+	"launchpad.net/juju-core/juju/osenv"
 
 	// Import the providers.
 	_ "launchpad.net/juju-core/provider/all"
@@ -77,7 +78,7 @@ func jujuCMain(commandName string, args []string) (code int, err error) {
 	if err != nil {
 		return
 	}
-	client, err := rpc.Dial("unix", socketPath)
+	client, err := rpc.Dial(osenv.SocketType, socketPath)
 	if err != nil {
 		return
 	}

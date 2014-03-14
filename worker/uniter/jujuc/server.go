@@ -19,6 +19,7 @@ import (
 
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/utils/exec"
+	"launchpad.net/juju/osenv"
 )
 
 var logger = loggo.GetLogger("worker.uniter.jujuc")
@@ -127,7 +128,8 @@ func NewServer(getCmd CmdGetter, socketPath string) (*Server, error) {
 	if err := server.Register(&Jujuc{getCmd: getCmd}); err != nil {
 		return nil, err
 	}
-	listener, err := net.Listen("unix", socketPath)
+
+	listener, err := net.Listen(osenv.SocketType, socketPath)
 	if err != nil {
 		return nil, err
 	}

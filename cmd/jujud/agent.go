@@ -15,6 +15,7 @@ import (
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/state"
+	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/state/api"
 	apiagent "launchpad.net/juju-core/state/api/agent"
 	apideployer "launchpad.net/juju-core/state/api/deployer"
@@ -44,7 +45,7 @@ func (c *AgentConf) addFlags(f *gnuflag.FlagSet) {
 	// We need to pass a config location here instead and
 	// use it to locate the conf and the infer the data-dir
 	// from there instead of passing it like that.
-	f.StringVar(&c.dataDir, "data-dir", "/var/lib/juju", "directory for juju data")
+	f.StringVar(&c.dataDir, "data-dir", osenv.DataDir, "directory for juju data")
 }
 
 func (c *AgentConf) checkArgs(args []string) error {
