@@ -5,6 +5,7 @@ import (
     "os"
     "syscall"
     "unsafe"
+    "errors"
 )
 
 func fileOrFolder(target string) (dwFlag int, err error){
@@ -26,11 +27,10 @@ func fileOrFolder(target string) (dwFlag int, err error){
     return dwFlag, err
 }
 
-func CreateSymLink(link, target string){
+func CreateSymLink(link, target string) error{
 	dwFlag, err := fileOrFolder(target)
 	if err != nil {
-        fmt.Println(err)
-        return
+        return err
     }
 	var (
         kernel32, _ = syscall.LoadLibrary("kernel32.dll")
@@ -40,7 +40,7 @@ func CreateSymLink(link, target string){
 	_, _, callErr := syscall.Syscall(uintptr(CreateSymbolicLinkW), nargs, 
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(link))), uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(target))), uintptr(dwFlag))
 	if callErr != 0 {
-            fmt.Println("CreateSymbolicLinkW Error:", callErr)
+            return errors.New(fmt.Sprintf("CreateSymbolicLinkW Error: %v", callErr))
         }
 	defer syscall.FreeLibrary(kernel32)
 }

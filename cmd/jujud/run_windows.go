@@ -14,6 +14,8 @@ import (
 
     "launchpad.net/juju-core/cmd"
     "launchpad.net/juju-core/names"
+    "launchpad.net/juju/osenv"
+    "launchpad.net/juju-core/utils"
     "launchpad.net/juju-core/utils/exec"
     "launchpad.net/juju-core/utils/fslock"
     "launchpad.net/juju-core/worker/uniter"
@@ -46,9 +48,10 @@ func (c *RunCommand) executeInUnitContext() (*exec.ExecResponse, error) {
         return nil, err
     }
 
-    socketPath := c.getNamedPipe()
+    socketPath := filepath.Join(unitDir, uniter.RunListenerFile)
+    sock := utils.ReadSocketFile(socketPath)
     // make sure the socket exists
-    client, err := npipe.Dial(socketPath)
+    client, err := rpc.Dial(osenv.SocketType, sock)
     if err != nil {
         return nil, err
     }
@@ -57,10 +60,6 @@ func (c *RunCommand) executeInUnitContext() (*exec.ExecResponse, error) {
     var result exec.ExecResponse
     err = client.Call(uniter.JujuRunEndpoint, c.commands, &result)
     return &result, err
-}
-
-func getLock() (*fslock.Lock, error) {
-    return fslock.NewLock(LockDir, "uniter-hook-execution")
 }
 
 func (c *RunCommand) executeNoContext() (*exec.ExecResponse, error) {

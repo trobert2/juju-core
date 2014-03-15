@@ -3,10 +3,12 @@ package utils
 import (
     "net"
     "os"
-    "error"
+    "errors"
     "strconv"
+    "io/ioutil"
 )
 
+// TODO: gsamfira: Create a lock for allocated ports to prevent race conditions
 
 func TestPort(port int) error {
     p := fmt.Sprintf("127.0.0.1:%s", strconv.Itoa(port))
@@ -49,7 +51,7 @@ func WriteSocketFile(socketPath string) (string, error){
     }
 
     if _, err := os.Stat(socketPath); err == nil {
-        os.Remove(socketPath)
+        _ := os.Remove(socketPath)
     }
 
     fd, err := os.Create(socketPath)
@@ -65,5 +67,26 @@ func WriteSocketFile(socketPath string) (string, error){
     if ferr != nil {
         return "", ferr
     }
+    return addr, nil
+}
+
+func ReadSocketFile(socketPath string) (string, error){
+    if _, err := os.Stat(socketPath); err != nil {
+        return "", err
+    }
+    buf, readErr := ioutil.ReadFile(socketPath)
+    if readErr != nil {
+        return "", readErr
+    }
+    sock := string(buf)
+    return sock
+}
+
+func GetSocket() (string, error) {
+    port, perr := GetPort()
+    if perr != nil {
+        return "", perr
+    }
+    addr := fmt.Sprintf("127.0.0.1:%v", port)
     return addr, nil
 }
