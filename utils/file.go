@@ -100,6 +100,10 @@ func CopyFile(dest, source string) error {
 	return err
 }
 
+func WriteFile(filename string, contents []byte, perms os.FileMode) (err error) {
+	return ioutil.WriteFile(filename, contents, perms)
+}
+
 // AtomicWriteFileAndChange atomically writes the filename with the
 // given contents and calls the given function after the contents were
 // written, but before the file is renamed.
@@ -133,6 +137,10 @@ func AtomicWriteFileAndChange(filename string, contents []byte, change func(*os.
 // path.
 func AtomicWriteFile(filename string, contents []byte, perms os.FileMode) (err error) {
 	return AtomicWriteFileAndChange(filename, contents, func(f *os.File) error {
+		// gsamfira: Windows does not support Chmod
+		if runtime.GOOS == "windows" {
+			return nil
+		}
 		if err := f.Chmod(perms); err != nil {
 			return fmt.Errorf("cannot set permissions: %v", err)
 		}

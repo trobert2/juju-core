@@ -25,4 +25,5 @@ var (
     WinLibDir  = path.Join(WinBaseDir, "lib")
     WinLogDir  = path.Join(WinBaseDir, "log")
     WinDataDir = path.Join(WinLibDir, "juju")
+    WinBinDir  = path.Join(WinBaseDir, "bin")
 )

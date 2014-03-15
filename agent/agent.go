@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"runtime"
 
 	"github.com/errgo/errgo"
 	"github.com/juju/loggo"
@@ -481,6 +482,9 @@ func (c *configInternal) write() error {
 	configDir := filepath.Dir(c.configFilePath)
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("cannot create agent config dir %q: %v", configDir, err)
+	}
+	if runtime.GOOS == "windows" {
+		return utils.WriteFile(c.configFilePath, data, 0600)
 	}
 	return utils.AtomicWriteFile(c.configFilePath, data, 0600)
 }

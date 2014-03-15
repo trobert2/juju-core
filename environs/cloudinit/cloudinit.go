@@ -203,9 +203,10 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install 7zip" }`),
 		fmt.Sprintf(`Invoke-WebRequest "%s" -OutFile "%s"`,
 			gitUrl, utils.PathToWindows(gitDst)),
-		fmt.Sprintf(`"%s" /SILENT`, utils.PathToWindows(gitDst)),
+		fmt.Sprintf(`& "%s" /SILENT`, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
-		fmt.Sprintf(`setx PATH "$env:PATH;C:\ProgramFiles (x86)\Git\cmd" /M`),
+		fmt.Sprintf(`mkdir "%s"`, osenv.WinBinDir),
+		fmt.Sprintf(`setx PATH "$env:PATH;C:\ProgramFiles (x86)\Git\cmd;%s" /M`, osenv.WinBinDir),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
 	c.AddPSScripts(
@@ -299,7 +300,7 @@ func WinConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
 	var zipBin string = `C:\Program Files\7-Zip\7z.exe`
 	c.AddPSScripts(
 		fmt.Sprintf(`$binDir="%s"`, utils.PathToWindows(cfg.jujuTools())),
-		fmt.Sprintf(`mkdir '%s'`, utils.PathToWindows(cfg.LogDir)),
+		fmt.Sprintf(`mkdir '%s\juju'`, utils.PathToWindows(cfg.LogDir)),
 		fmt.Sprintf(`mkdir $binDir`),
 		fmt.Sprintf(`$WebClient = New-Object System.Net.WebClient`),
 		fmt.Sprintf(`[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}`),

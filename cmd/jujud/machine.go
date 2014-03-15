@@ -15,6 +15,7 @@ import (
 
 	"launchpad.net/juju-core/agent"
 	"launchpad.net/juju-core/charm"
+	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/container/kvm"
 	"launchpad.net/juju-core/instance"
@@ -58,7 +59,7 @@ const bootstrapMachineId = "0"
 
 var retryDelay = 3 * time.Second
 
-var jujuRun = "/usr/local/bin/juju-run"
+var jujuRun = osenv.JujuRun
 
 // MachineAgent is a cmd.Command responsible for running a machine agent.
 type MachineAgent struct {
@@ -485,14 +486,6 @@ func (a *MachineAgent) Entity(st *state.State) (AgentState, error) {
 
 func (a *MachineAgent) Tag() string {
 	return names.MachineTag(a.MachineId)
-}
-
-func (a *MachineAgent) initAgent() error {
-	if err := os.Remove(jujuRun); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	jujud := filepath.Join(a.Conf.dataDir, "tools", a.Tag(), "jujud")
-	return os.Symlink(jujud, jujuRun)
 }
 
 func (a *MachineAgent) uninstallAgent() error {
