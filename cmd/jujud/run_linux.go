@@ -10,10 +10,10 @@ import (
     "path/filepath"
 
     "launchpad.net/juju-core/juju/osenv"
-    "launchpad.net/juju-core/utils"
     "launchpad.net/juju-core/utils/exec"
     "launchpad.net/juju-core/worker/uniter"
 )
+
 
 func (c *RunCommand) executeInUnitContext() (*exec.ExecResponse, error) {
     unitDir := filepath.Join(AgentDir, c.unit)
@@ -27,12 +27,8 @@ func (c *RunCommand) executeInUnitContext() (*exec.ExecResponse, error) {
     }
 
     socketPath := filepath.Join(unitDir, uniter.RunListenerFile)
-    sock, errSock := utils.ReadSocketFile(socketPath)
-    if errSock != nil {
-        return nil, errSock
-    }
     // make sure the socket exists
-    client, err := rpc.Dial(osenv.SocketType, sock)
+    client, err := rpc.Dial(osenv.SocketType, socketPath)
     if err != nil {
         return nil, err
     }
@@ -56,8 +52,10 @@ func (c *RunCommand) executeNoContext() (*exec.ExecResponse, error) {
     }
     defer lock.Unlock()
 
+    runCmd := `[ -f "/home/ubuntu/.juju-proxy" ] && . "/home/ubuntu/.juju-proxy"` + "\n" + c.commands
+
     return exec.RunCommands(
         exec.RunParams{
-            Commands: c.commands,
+            Commands: runCmd,
         })
 }

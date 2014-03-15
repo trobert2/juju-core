@@ -1,14 +1,18 @@
 package exec
 
 import (
-    "os/exec"
     "bytes"
+    "os/exec"
     "syscall"
 )
 
-
+// RunCommands executes the Commands specified in the RunParams using
+// '/bin/bash -s', passing the commands through as stdin, and collecting
+// stdout and stderr.  If a non-zero return code is returned, this is
+// collected as the code for the response and this does not classify as an
+// error.
 func RunCommands(run RunParams) (*ExecResponse, error) {
-    ps := exec.Command("powershell.exe", "-noprofile", "-noninteractive", "-command", "$input|iex")
+    ps := exec.Command("/bin/bash", "-s")
     if run.Environment != nil {
         ps.Env = run.Environment
     }

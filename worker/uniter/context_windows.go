@@ -24,10 +24,10 @@ func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string
     environ = append(environ, "JUJU_API_ADDRESSES=" + strings.Join(ctx.apiAddrs, " "))
 
     if r, found := ctx.HookRelation(); found {
-        environ = append(vars, "JUJU_RELATION="+r.Name())
-        environ = append(vars, "JUJU_RELATION_ID="+r.FakeId())
-        environ, _ := ctx.RemoteUnitName()
-        environ = append(vars, "JUJU_REMOTE_UNIT="+name)
+        environ = append(environ, "JUJU_RELATION="+r.Name())
+        environ = append(environ, "JUJU_RELATION_ID="+r.FakeId())
+        name, _ := ctx.RemoteUnitName()
+        environ = append(environ, "JUJU_REMOTE_UNIT="+name)
     }
-    return vars
+    return environ
 }

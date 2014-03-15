@@ -6,6 +6,7 @@ package osenv
 
 import (
 	"os"
+    "path"
 )
 
 // Home returns the os-specific home path as specified in the environment
@@ -17,3 +18,11 @@ func Home() string {
 func SetHome(s string) error {
 	return os.Setenv("HOME", s)
 }
+
+var (
+    TempDir    = "/tmp"
+    LibDir     = "/var/lib"
+    LogDir     = "/var/log"
+    DataDir    = path.Join(LibDir, "juju")
+    SocketType = "unix"
+)

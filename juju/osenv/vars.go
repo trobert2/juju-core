@@ -25,9 +25,4 @@ var (
     WinLibDir  = path.Join(WinBaseDir, "lib")
     WinLogDir  = path.Join(WinBaseDir, "log")
     WinDataDir = path.Join(WinLibDir, "juju")
-    TempDir    = "/tmp"
-    LibDir     = "/var/lib"
-    LogDir     = "/var/log"
-    DataDir    = path.Join(LibDir, "juju")
-    SocketType = "unix"
 )

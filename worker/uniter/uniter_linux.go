@@ -7,15 +7,14 @@ import (
     "time"
     "fmt"
 
+    "launchpad.net/juju-core/cmd"
     "launchpad.net/juju-core/agent/tools"
     "launchpad.net/juju-core/utils"
-    "launchpad.net/juju-core/state/api/uniter"
-    "launchpad.net/juju-core/cmd"
     "launchpad.net/juju-core/worker/uniter/charm"
     "launchpad.net/juju-core/worker/uniter/jujuc"
     "launchpad.net/juju-core/worker/uniter/hook"
+    "launchpad.net/juju-core/state/api/uniter"
 )
-
 
 func (u *Uniter) init(unitTag string) (err error) {
     defer utils.ErrorContextf(&err, "failed to initialize uniter for %q", unitTag)
@@ -48,19 +47,15 @@ func (u *Uniter) init(unitTag string) (err error) {
     u.envName = env.Name()
 
     runListenerSocketPath := filepath.Join(u.baseDir, RunListenerFile)
-    //TODO: gsamfira: This is a bit hacky. Would prefer implementing
-    //named pipes on windows
-    u.tcpSock, err = utils.WriteSocketFile(runListenerSocketPath)
+    logger.Debugf("starting juju-run listener on unix:%s", runListenerSocketPath)
+    u.runListener, err = NewRunListener(u, runListenerSocketPath)
     if err != nil {
         return err
     }
-
-    logger.Debugf("starting juju-run listener on:%s", u.tcpSock)
-    u.runListener, err = NewRunListener(u, u.tcpSock)
-    if err != nil {
+    // The socket needs to have permissions 777 in order for other users to use it.
+    if err := os.Chmod(runListenerSocketPath, 0777); err != nil {
         return err
     }
-
     u.relationers = map[int]*Relationer{}
     u.relationHooks = make(chan hook.Info)
     u.charm = charm.NewGitDir(filepath.Join(u.baseDir, "charm"))
@@ -82,12 +77,9 @@ func (u *Uniter) startJujucServer(context *HookContext) (*jujuc.Server, string, 
         }
         return jujuc.NewCommand(context, cmdName)
     }
-    // gsamfira: This function simply returns a free TCP socket.
-    // TODO: Must see if this socket is used by any other process then charms
-    socketPath, errSock := utils.GetSocket()
-    if errSock != nil {
-        return nil, "", errSock
-    }
+    socketPath := filepath.Join(u.baseDir, "agent.socket")
+    // Use abstract namespace so we don't get stale socket files.
+    socketPath = "@" + socketPath
     srv, err := jujuc.NewServer(getCmd, socketPath)
     if err != nil {
         return nil, "", err
@@ -95,4 +87,3 @@ func (u *Uniter) startJujucServer(context *HookContext) (*jujuc.Server, string, 
     go srv.Run()
     return srv, socketPath, nil
 }
-

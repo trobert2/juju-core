@@ -6,6 +6,7 @@ package uniter
 import (
     "fmt"
     "os"
+    "errors"
     "path/filepath"
 
     "launchpad.net/juju-core/worker/uniter/jujuc"
@@ -17,11 +18,6 @@ import (
 
 func EnsureJujucSymlinks(dir string) (err error) {
     for _, name := range jujuc.CommandNames() {
-        // We only need to create symlinks to the .exe variants
-        ext := name[len(name)-4:]
-        if ext != ".exe"{
-            continue
-        }
         file := filepath.Join(dir, name)
         if _, err := os.Stat(file); err != nil {
             err = os.Remove(file)

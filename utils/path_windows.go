@@ -43,4 +43,5 @@ func CreateSymLink(link, target string) error{
             return errors.New(fmt.Sprintf("CreateSymbolicLinkW Error: %v", callErr))
         }
 	defer syscall.FreeLibrary(kernel32)
+    return nil
 }
