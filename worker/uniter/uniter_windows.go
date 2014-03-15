@@ -1,35 +1,16 @@
 package uniter
 
 import (
-    stderrors "errors"
-    "fmt"
     "math/rand"
     "os"
     "path/filepath"
-    "strings"
-    "sync"
     "time"
 
-    "github.com/juju/loggo"
-    "launchpad.net/tomb"
-
     "launchpad.net/juju-core/agent/tools"
-    corecharm "launchpad.net/juju-core/charm"
-    "launchpad.net/juju-core/charm/hooks"
-    "launchpad.net/juju-core/cmd"
     "launchpad.net/juju-core/environs/config"
-    "launchpad.net/juju-core/juju/osenv"
-    "launchpad.net/juju-core/state/api/params"
-    "launchpad.net/juju-core/state/api/uniter"
-    apiwatcher "launchpad.net/juju-core/state/api/watcher"
-    "launchpad.net/juju-core/state/watcher"
     "launchpad.net/juju-core/utils"
-    "launchpad.net/juju-core/utils/exec"
-    "launchpad.net/juju-core/utils/fslock"
     "launchpad.net/juju-core/worker/uniter/charm"
     "launchpad.net/juju-core/worker/uniter/hook"
-    "launchpad.net/juju-core/worker/uniter/jujuc"
-    "launchpad.net/juju-core/worker/uniter/relation"
 )
 
 

@@ -59,7 +59,7 @@ type UniterExecutionObserver interface {
 // implement the actual *behaviour* of the unit agent; that responsibility is
 // delegated to Mode values, which are expected to react to events and direct
 // the uniter's responses to them.
-type Uniter struct {
+type Uniter struct { 
 	tomb          tomb.Tomb
 	st            *uniter.State
 	f             *filter

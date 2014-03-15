@@ -1,4 +1,4 @@
-package util
+package utils
 
 import (
     "net"
@@ -46,6 +46,10 @@ func WriteSocketFile(socketPath string) (string, error){
     port, perr := GetPort()
     if perr != nil {
         return "", perr
+    }
+
+    if _, err := os.Stat(socketPath); err == nil {
+        os.Remove(socketPath)
     }
 
     fd, err := os.Create(socketPath)

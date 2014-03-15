@@ -191,7 +191,9 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 	// the presence of the nonce file is used to gate the remainder
 	// of synchronous bootstrap.
 	zipUrl := "http://freefr.dl.sourceforge.net/project/sevenzip/7-Zip/9.20/7z920-x64.msi"
+	gitUrl := "http://msysgit.googlecode.com/files/Git-1.8.5.2-preview20131230.exe"
 	var zipDst = path.Join(osenv.WinTempDir, "7z920.x64.msi")
+	var gitDst = path.Join(osenv.WinTempDir, "Git-1.8.5.2-preview20131230.exe")
 
 	c.AddPSScripts(
         fmt.Sprintf(`mkdir %s`, utils.PathToWindows(osenv.WinTempDir)),
@@ -199,6 +201,11 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 			zipUrl, utils.PathToWindows(zipDst)),
 		fmt.Sprintf(`msiexec.exe /i "%s" /qb`, utils.PathToWindows(zipDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install 7zip" }`),
+		fmt.Sprintf(`Invoke-WebRequest "%s" -OutFile "%s"`,
+			gitUrl, utils.PathToWindows(gitDst)),
+		fmt.Sprintf(`"%s" /SILENT`, utils.PathToWindows(gitDst)),
+		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
+		fmt.Sprintf(`setx PATH "$env:PATH;C:\ProgramFiles (x86)\Git\cmd" /M`),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
 	c.AddPSScripts(
