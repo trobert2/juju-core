@@ -14,7 +14,7 @@ import (
 
     "launchpad.net/juju-core/cmd"
     "launchpad.net/juju-core/names"
-    "launchpad.net/juju/osenv"
+    "launchpad.net/juju/juju-core/osenv"
     "launchpad.net/juju-core/utils"
     "launchpad.net/juju-core/utils/exec"
     "launchpad.net/juju-core/utils/fslock"

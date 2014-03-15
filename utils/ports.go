@@ -3,6 +3,7 @@ package utils
 import (
     "net"
     "os"
+    "fmt"
     "errors"
     "strconv"
     "io/ioutil"
@@ -51,7 +52,7 @@ func WriteSocketFile(socketPath string) (string, error){
     }
 
     if _, err := os.Stat(socketPath); err == nil {
-        _ := os.Remove(socketPath)
+        _ = os.Remove(socketPath)
     }
 
     fd, err := os.Create(socketPath)
@@ -63,7 +64,7 @@ func WriteSocketFile(socketPath string) (string, error){
     addr := fmt.Sprintf("127.0.0.1:%v", port)
     data := []byte(addr)
 
-    _, ferr := f.Write(data)
+    _, ferr := fd.Write(data)
     if ferr != nil {
         return "", ferr
     }
@@ -79,7 +80,7 @@ func ReadSocketFile(socketPath string) (string, error){
         return "", readErr
     }
     sock := string(buf)
-    return sock
+    return sock, nil
 }
 
 func GetSocket() (string, error) {

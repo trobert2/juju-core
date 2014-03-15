@@ -19,7 +19,7 @@ import (
 
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/utils/exec"
-	"launchpad.net/juju/osenv"
+	"launchpad.net/juju-core/juju/osenv"
 )
 
 var logger = loggo.GetLogger("worker.uniter.jujuc")

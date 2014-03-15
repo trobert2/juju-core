@@ -14,7 +14,7 @@ import (
 	"runtime"
 
 	"launchpad.net/juju-core/utils/exec"
-	"launchpad.net/juju/osenv"
+	"launchpad.net/juju-core/juju/osenv"
 )
 
 const JujuRunEndpoint = "JujuRunServer.RunCommands"
@@ -70,7 +70,7 @@ func NewRunListener(runner CommandRunner, socketPath string) (*RunListener, erro
 	}
 	listener, err := net.Listen(osenv.SocketType, socketPath)
 	if err != nil {
-		logger.Errorf("failed to listen on %s:%s: %v", osenv.SocketType, osenv.socketPath, err)
+		logger.Errorf("failed to listen on %s:%s: %v", osenv.SocketType, socketPath, err)
 		return nil, err
 	}
 	runListener := &RunListener{
