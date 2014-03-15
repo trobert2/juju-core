@@ -206,6 +206,7 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 		fmt.Sprintf(`& "%s" /SILENT`, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
 		fmt.Sprintf(`mkdir "%s"`, osenv.WinBinDir),
+		fmt.Sprintf(`mkdir "%s\locks"`, osenv.LibDir),
 		fmt.Sprintf(`setx PATH "$env:PATH;C:\ProgramFiles (x86)\Git\cmd;%s" /M`, osenv.WinBinDir),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
@@ -312,7 +313,7 @@ func WinConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
 			cfg.Tools.SHA256),
 		fmt.Sprintf(`& "%s" x "$binDir\tools.tar.gz" -o"$binDir\"`, zipBin),
 		fmt.Sprintf(`& "%s" x "$binDir\tools.tar" -o"$binDir\"`, zipBin),
-		fmt.Sprintf(`rm "$binDir\tools.tar.gz"`),
+		fmt.Sprintf(`rm "$binDir\tools.tar*"`),
 		fmt.Sprintf(`Set-Content $binDir\downloaded-tools.txt '%s'`, string(toolsJson)),
 	)
 
@@ -555,6 +556,26 @@ func (cfg *MachineConfig) addAgentInfo(c *cloudinit.Config, tag string) (agent.C
 		c.AddScripts(cmds...)
 	}
 	return acfg, nil
+}
+
+//TODO: gsamfira: add agent to startup
+func (cfg *MachineConfig) winAddMachineAgentToBoot(c *cloudinit.Config, tag, machineId string) error {
+	// Make the agent run via a symbolic link to the actual tools
+	// directory, so it can upgrade itself without needing to change
+	// the upstart script.
+	toolsDir := agenttools.ToolsDir(cfg.DataDir, tag)
+	// TODO(dfc) ln -nfs, so it doesn't fail if for some reason that the target already exists
+	c.AddPSScripts(fmt.Sprintf(`cmd.exe /C mklink %s %v`, cfg.Tools.Version, shquote(toolsDir)))
+	// TODO: port the bellow behavior.
+	/*
+	name := cfg.MachineAgentServiceName
+	conf := upstart.MachineAgentUpstartService(name, toolsDir, cfg.DataDir, cfg.LogDir, tag, machineId, nil)
+	cmds, err := conf.InstallCommands()
+	if err != nil {
+		return errgo.Annotatef(err, "cannot make cloud-init upstart script for the %s agent", tag)
+	}
+	c.AddScripts(cmds...) */
+	return nil
 }
 
 func (cfg *MachineConfig) addMachineAgentToBoot(c *cloudinit.Config, tag, machineId string) error {
