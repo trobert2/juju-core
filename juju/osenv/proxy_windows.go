@@ -81,3 +81,34 @@ func EnableProxyServer(key, ProxyServer string) (){
 	writeToKey(key, "MigrateProxy", 4, uintptr(unsafe.Pointer(&enabled)),  REG_DWORD)
 	writeToKey(key, "ProxyOverride", uintptr(len(ProxyOverride)*2), uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(ProxyOverride))), REG_SZ)
 }
+
+
+// SetEnvironmentValues updates the registry keys with the
+// proxy values stored in the settings object.  Both the lower-case
+// and upper-case variants are set.
+//
+// http_proxy, HTTP_PROXY
+// https_proxy, HTTPS_PROXY
+// ftp_proxy, FTP_PROXY
+func (s *ProxySettings) SetEnvironmentValues() {
+	// this replaces the setenv part
+	EnableProxyServer(key, s.Http)
+}
+
+// getProxySetting returns the current value of the proxy url, if it exists,
+// otherwise, the value returned is "" (aka empty string)
+// warning: get proxy setting (old juju version uses a string parameter, the 
+// key name, we don't need that)
+
+func getProxySetting() string {
+	value, err := getProxySetting(key, "ProxyServer");
+	if err != nil {
+		if value == "" {
+			return ""
+		}
+		else {
+			return value
+		}
+	}
+	return value
+}
