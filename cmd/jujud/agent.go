@@ -37,6 +37,7 @@ func requiredError(name string) error {
 type AgentConf struct {
 	dataDir string
 	config  agent.Config
+	logfile string
 }
 
 // addFlags injects common agent flags into f.

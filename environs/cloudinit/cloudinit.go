@@ -322,7 +322,7 @@ func WinConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
 	if err != nil {
 		return err
 	}
-	return nil
+	return cfg.winAddMachineAgentToBoot(c, machineTag, cfg.MachineId)
 }
 
 func NixConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {

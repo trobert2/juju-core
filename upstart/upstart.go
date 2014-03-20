@@ -128,7 +128,7 @@ normal exit 0
 {{end}}
 {{range $k, $v := .Limit}}limit {{$k}} {{$v}}
 {{end}}
-exec {{.Cmd}}{{if .Out}} >> {{.Out}} 2>&1{{end}}
+exec {{.Cmd}}{{if .Out}} --log-file {{.Out}} 2>&1{{end}}
 `[1:]))
 
 // Conf is responsible for defining and installing upstart services. Its fields

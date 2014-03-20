@@ -12,30 +12,21 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 
 	"labix.org/v2/mgo/bson"
+
+	"github.com/juju/loggo"
 )
+
+var logger = loggo.GetLogger("juju.version.version")
+
 
 // The presence and format of this constant is very important.
 // The debian/rules build recipe uses this value for the version
 // number of the release package.
 const version = "1.17.5"
-
-// lsbReleaseFile is the name of the file that is read in order to determine
-// the release version of ubuntu.
-var lsbReleaseFile = "/etc/lsb-release"
-
-// Current gives the current version of the system.  If the file
-// "FORCE-VERSION" is present in the same directory as the running
-// binary, it will override this.
-var Current = Binary{
-	Number: MustParse(version),
-	Series: readSeries(lsbReleaseFile),
-	Arch:   ubuntuArch(runtime.GOARCH),
-}
 
 func init() {
 	toolsDir := filepath.Dir(os.Args[0])
@@ -309,42 +300,11 @@ func (v Number) IsDev() bool {
 	return isOdd(v.Minor) || v.Build > 0
 }
 
-func readSeries(releaseFile string) string {
-	data, err := ioutil.ReadFile(releaseFile)
-	if err != nil {
-		return "unknown"
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		const prefix = "DISTRIB_CODENAME="
-		if strings.HasPrefix(line, prefix) {
-			return strings.Trim(line[len(prefix):], "\t '\"")
-		}
-	}
-	return "unknown"
-}
-
-// ReleaseVersion looks for the value of DISTRIB_RELEASE in the content of
-// the lsbReleaseFile.  If the value is not found, the file is not found, or
-// an error occurs reading the file, an empty string is returned.
-func ReleaseVersion() string {
-	content, err := ioutil.ReadFile(lsbReleaseFile)
-	if err != nil {
-		return ""
-	}
-	const prefix = "DISTRIB_RELEASE="
-	for _, line := range strings.Split(string(content), "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return strings.Trim(line[len(prefix):], "\t '\"")
-		}
-	}
-	return ""
-}
-
 func ubuntuArch(arch string) string {
-	if arch == "386" {
-		arch = "i386"
-	}
-	return arch
+    if arch == "386" {
+        arch = "i386"
+    }
+    return arch
 }
 
 // ParseMajorMinor takes an argument of the form "major.minor" and returns ints major and minor.
