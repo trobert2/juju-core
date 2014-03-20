@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"path"
 
 	"launchpad.net/goyaml"
 
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/utils"
+	"launchpad.net/juju-core/juju/osenv"
 )
 
 // extractSystemId extracts the 'system_id' part from an InstanceId.
@@ -45,7 +47,7 @@ type machineInfo struct {
 	Hostname string `yaml:,omitempty`
 }
 
-var _MAASInstanceFilename = environs.DataDir + "/MAASmachine.txt"
+var _MAASInstanceFilename = path.Join(environs.DataDir, "MAASmachine.txt")
 
 // cloudinitRunCmd returns the shell command that, when run, will create the
 // "machine info" file containing the hostname of a machine.
@@ -56,6 +58,16 @@ func (info *machineInfo) cloudinitRunCmd() (string, error) {
 		return "", err
 	}
 	script := fmt.Sprintf(`mkdir -p %s; echo -n %s > %s`, utils.ShQuote(environs.DataDir), utils.ShQuote(string(yaml)), utils.ShQuote(_MAASInstanceFilename))
+	return script, nil
+}
+
+func (info *machineInfo) winCloudinitRunCmd() (string, error) {
+	_MAASInstanceFilename = path.Join(osenv.WinDataDir, "MAASmachine.txt")
+	yaml, err := goyaml.Marshal(info)
+	if err != nil {
+		return "", err
+	}
+	script := fmt.Sprintf("mkdir \"%s\"; Set-Content \"%s\" @\"%s\"@", utils.PathToWindows(osenv.WinDataDir), utils.PathToWindows(_MAASInstanceFilename), string(yaml))
 	return script, nil
 }
 

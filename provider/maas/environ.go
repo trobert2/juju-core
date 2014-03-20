@@ -255,6 +255,9 @@ func (environ *maasEnviron) StartInstance(cons constraints.Value, possibleTools 
 	}
 	info := machineInfo{hostname}
 	runCmd, err := info.cloudinitRunCmd()
+	if machineConfig.Tools.Version.Series[:3] == "win"{
+		runCmd, err = info.winCloudinitRunCmd()
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -265,13 +268,21 @@ func (environ *maasEnviron) StartInstance(cons constraints.Value, possibleTools 
 	// The machine envronment config values are being moved to the agent config.
 	// Explicitly specify that the lxc containers use the network bridge defined above.
 	machineConfig.AgentEnvironment[agent.LxcBridge] = "br0"
-	userdata, err := environs.ComposeUserData(
-		machineConfig,
-		runCmd,
-		createBridgeNetwork(),
-		linkBridgeInInterfaces(),
-		"service networking restart",
-	)
+	userdata := []byte{}
+	if machineConfig.Tools.Version.Series[:3] == "win"{
+		userdata, err = environs.ComposeUserData(
+			machineConfig,
+			runCmd,
+		)
+	}else{
+		userdata, err = environs.ComposeUserData(
+			machineConfig,
+			runCmd,
+			createBridgeNetwork(),
+			linkBridgeInInterfaces(),
+			"service networking restart",
+		)
+	}
 	if err != nil {
 		msg := fmt.Errorf("could not compose userdata for bootstrap node: %v", err)
 		return nil, nil, msg

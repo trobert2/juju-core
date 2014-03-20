@@ -171,7 +171,11 @@ func FinishMachineConfig(mcfg *cloudinit.MachineConfig, cfg *config.Config, cons
 func ComposeUserData(cfg *cloudinit.MachineConfig, additionalScripts ...string) ([]byte, error) {
 	cloudcfg := coreCloudinit.New()
 	for _, script := range additionalScripts {
-		cloudcfg.AddRunCmd(script)
+		if cfg.Tools.Version.Series[:3] == "win"{
+			cloudcfg.AddPSCmd(script)
+		}else{
+			cloudcfg.AddRunCmd(script)
+		}
 	}
 	// When bootstrapping, we only want to apt-get update/upgrade
 	// and setup the SSH keys. The rest we leave to cloudinit/sshinit.

@@ -4,9 +4,7 @@
 package uniter
 
 import (
-    "fmt"
     "os"
-    "errors"
     "path/filepath"
 
     "launchpad.net/juju-core/worker/uniter/jujuc"
@@ -19,13 +17,11 @@ import (
 func EnsureJujucSymlinks(dir string) (err error) {
     for _, name := range jujuc.CommandNames() {
         file := filepath.Join(dir, name)
-        if _, err := os.Stat(file); err != nil {
-            err = os.Remove(file)
-            if err != nil {
-                return errors.New(fmt.Sprintf("Failed to remove old symlink: %s", file))
-            }
+        if _, err := os.Stat(file); err == nil {
+            continue
         }
-        err := utils.CreateSymLink(filepath.FromSlash(file), "jujud.exe")
+        jujudExe := filepath.Join(dir, "jujud.exe")
+        err := utils.CreateSymLink(filepath.FromSlash(file), jujudExe)
         if err == nil {
             continue
         }

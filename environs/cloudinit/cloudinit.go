@@ -205,9 +205,9 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 			gitUrl, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`& "%s" /SILENT`, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
-		fmt.Sprintf(`mkdir "%s"`, osenv.WinBinDir),
-		fmt.Sprintf(`mkdir "%s\locks"`, osenv.LibDir),
-		fmt.Sprintf(`setx PATH "$env:PATH;C:\ProgramFiles (x86)\Git\cmd;%s" /M`, osenv.WinBinDir),
+		fmt.Sprintf(`mkdir "%s"`, utils.PathToWindows(osenv.WinBinDir)),
+		fmt.Sprintf(`mkdir "%s\locks"`, utils.PathToWindows(osenv.WinLibDir)),
+		fmt.Sprintf(`setx PATH "$env:PATH;C:\ProgramFiles (x86)\Git\cmd;%s" /M`, utils.PathToWindows(osenv.WinBinDir)),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
 	c.AddPSScripts(
