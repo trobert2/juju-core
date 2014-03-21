@@ -14,6 +14,7 @@ import (
 	corecharm "launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/worker/uniter/charm"
+    "launchpad.net/juju-core/utils"
 )
 
 type DeployerSuite struct {
@@ -74,7 +75,7 @@ func (s *DeployerSuite) TestUpgrade(c *gc.C) {
 	info1 := s.bundles.Add(c, corecharm.MustParseURL("cs:s/c-1"), func(path string) {
 		err := ioutil.WriteFile(filepath.Join(path, "some-file"), []byte("hello"), 0644)
 		c.Assert(err, gc.IsNil)
-		err = os.Symlink("./some-file", filepath.Join(path, "a-symlink"))
+		err = utils.Symlink("./some-file", filepath.Join(path, "a-symlink"))
 		c.Assert(err, gc.IsNil)
 	})
 	err := s.deployer.Stage(info1, nil)

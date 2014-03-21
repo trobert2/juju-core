@@ -19,6 +19,7 @@ import (
     "launchpad.net/juju-core/state/api/params"
     "launchpad.net/juju-core/provider"
     "launchpad.net/juju-core/worker/provisioner"
+    "launchpad.net/juju-core/utils"
 )
 
 func (a *MachineAgent) initAgent() error {
@@ -26,7 +27,7 @@ func (a *MachineAgent) initAgent() error {
         return err
     }
     jujud := filepath.Join(a.Conf.dataDir, "tools", a.Tag(), "jujud")
-    return os.Symlink(jujud, jujuRun)
+    return utils.Symlink(jujud, jujuRun)
 }
 
 // APIWorker returns a Worker that connects to the API and starts any

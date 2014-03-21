@@ -21,7 +21,6 @@ import (
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/api/uniter"
 	utilexec "launchpad.net/juju-core/utils/exec"
-	unitdebug "launchpad.net/juju-core/worker/uniter/debug"
 	"launchpad.net/juju-core/worker/uniter/jujuc"
 )
 
@@ -210,23 +209,11 @@ func (ctx *HookContext) GetLogger(hookName string) loggo.Logger {
 	return loggo.GetLogger(fmt.Sprintf("unit.%s.%s", ctx.UnitName(), hookName))
 }
 
-// RunHook executes a hook in an environment which allows it to to call back
-// into the hook context to execute jujuc tools.
-func (ctx *HookContext) RunHook(hookName, charmDir, toolsDir, socketPath string) error {
-	var err error
-	env := ctx.hookVars(charmDir, toolsDir, socketPath)
-	debugctx := unitdebug.NewHooksContext(ctx.unit.Name())
-	if session, _ := debugctx.FindSession(); session != nil && session.MatchHook(hookName) {
-		logger.Infof("executing %s via debug-hooks", hookName)
-		err = session.RunHook(hookName, charmDir, env)
-	} else {
-		err = ctx.runCharmHook(hookName, charmDir, env)
-	}
-	return ctx.finalizeContext(hookName, err)
-}
-
 func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
-	ps := exec.Command(filepath.Join(charmDir, "hooks", hookName))
+	hookFile := filepath.Join(charmDir, "hooks", hookName)
+	hookFileSlash := filepath.ToSlash(hookFile)
+	logger.Infof("Running hook file: %q --> %q", hookFile, hookFileSlash)
+	ps := exec.Command(hookFileSlash)
 	ps.Env = env
 	ps.Dir = charmDir
 	outReader, outWriter, err := os.Pipe()
@@ -250,7 +237,7 @@ func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) er
 	if ee, ok := err.(*exec.Error); ok && err != nil {
 		if os.IsNotExist(ee.Err) {
 			// Missing hook is perfectly valid, but worth mentioning.
-			logger.Infof("skipped %q hook (not implemented)", hookName)
+			logger.Infof("skipped %q hook (not implemented) -->%q ", hookName, ee.Err)
 			return &missingHookError{hookName}
 		}
 	}

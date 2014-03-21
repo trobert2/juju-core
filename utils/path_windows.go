@@ -45,3 +45,7 @@ func CreateSymLink(link, target string) error{
 	defer syscall.FreeLibrary(kernel32)
     return nil
 }
+
+func Symlink(oldname, newname string) error {
+    return CreateSymLink(newname, oldname)
+}

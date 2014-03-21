@@ -12,6 +12,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+    "launchpad.net/juju-core/utils"
 )
 
 // FindAll returns the cleaned path of every file in the supplied zip reader.
@@ -155,7 +157,7 @@ func (x extractor) writeSymlink(targetPath string, zipFile *zip.File) error {
 			return err
 		}
 	}
-	return os.Symlink(symlinkTarget, targetPath)
+	return utils.Symlink(symlinkTarget, targetPath)
 }
 
 func (x extractor) checkSymlink(targetPath string, zipFile *zip.File) (string, error) {

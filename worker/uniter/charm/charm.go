@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path"
+	"runtime"
+	// "path"
+	"path/filepath"
 
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/downloader"
@@ -87,8 +89,13 @@ func (d *BundlesDir) download(info BundleInfo, abort <-chan struct{}) (err error
 				return st.Err
 			}
 			log.Infof("worker/uniter/charm: download complete")
-			defer st.File.Close()
 			actualSha256, _, err := utils.ReadSHA256(st.File)
+			// Renaming an open file is not possible on windows
+			if runtime.GOOS == "windows" {
+				st.File.Close()
+			}else{
+				defer st.File.Close()
+			}
 			if err != nil {
 				return err
 			}
@@ -119,11 +126,11 @@ func (d *BundlesDir) bundlePath(info BundleInfo) string {
 // bundleURLPath returns the path to the location where the verified charm
 // bundle identified by url will be, or has been, saved.
 func (d *BundlesDir) bundleURLPath(url *charm.URL) string {
-	return path.Join(d.path, charm.Quote(url.String()))
+	return filepath.Join(d.path, charm.Quote(url.String()))
 }
 
 // downloadsPath returns the path to the directory into which charms are
 // downloaded.
 func (d *BundlesDir) downloadsPath() string {
-	return path.Join(d.path, "downloads")
+	return filepath.Join(d.path, "downloads")
 }

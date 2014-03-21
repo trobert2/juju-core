@@ -246,7 +246,7 @@ func (s *UpstartSuite) TestInstallAlreadyRunning(c *gc.C) {
 		"rm %s; ln -s %s %s",
 		pathTo("status"), pathTo("status-started"), pathTo("status"),
 	))
-	err := os.Symlink(pathTo("status-started"), pathTo("status"))
+	err := utils.Symlink(pathTo("status-started"), pathTo("status"))
 	c.Assert(err, gc.IsNil)
 
 	conf := s.dummyConf(c)

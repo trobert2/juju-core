@@ -27,7 +27,7 @@ func (a *MachineAgent) initAgent() error {
         return err
     }
     jujud := filepath.Join(a.Conf.dataDir, "tools", a.Tag(), "jujud.exe")
-    return utils.CreateSymLink(jujuRun, jujud)
+    return utils.Symlink(jujud, jujuRun)
 }
 
 // APIWorker returns a Worker that connects to the API and starts any

@@ -15,6 +15,7 @@ import (
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/testing/testbase"
+    "launchpad.net/juju-core/utils"
 )
 
 func TestPackage(t *testing.T) {
@@ -106,7 +107,7 @@ type symlink struct {
 }
 
 func (s symlink) create(c *gc.C, basePath string) {
-	err := os.Symlink(s.data, join(basePath, s.path))
+	err := utils.Symlink(s.data, join(basePath, s.path))
 	c.Assert(err, gc.IsNil)
 }
 

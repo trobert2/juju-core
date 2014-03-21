@@ -21,7 +21,7 @@ func EnsureJujucSymlinks(dir string) (err error) {
             continue
         }
         jujudExe := filepath.Join(dir, "jujud.exe")
-        err := utils.CreateSymLink(filepath.FromSlash(file), jujudExe)
+        err := utils.Symlink(jujudExe, filepath.FromSlash(file))
         if err == nil {
             continue
         }

@@ -61,7 +61,7 @@ func (s *prereqsSuite) SetUpTest(c *gc.C) {
 
 	// symlink $temp/dpkg-query to /bin/true, to
 	// simulate package installation query responses.
-	err = os.Symlink("/bin/true", filepath.Join(s.tmpdir, "dpkg-query"))
+	err = utils.Symlink("/bin/true", filepath.Join(s.tmpdir, "dpkg-query"))
 	c.Assert(err, gc.IsNil)
 	s.PatchValue(&isPackageInstalled, utils.IsPackageInstalled)
 }
@@ -178,7 +178,7 @@ func (s *prereqsSuite) TestLxcPrereq(c *gc.C) {
 func (s *prereqsSuite) TestRsyslogGnutlsPrereq(c *gc.C) {
 	err := os.Remove(filepath.Join(s.tmpdir, "dpkg-query"))
 	c.Assert(err, gc.IsNil)
-	err = os.Symlink("/bin/false", filepath.Join(s.tmpdir, "dpkg-query"))
+	err = utils.Symlink("/bin/false", filepath.Join(s.tmpdir, "dpkg-query"))
 	c.Assert(err, gc.IsNil)
 
 	err = VerifyPrerequisites(instance.LXC)

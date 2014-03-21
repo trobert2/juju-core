@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"launchpad.net/juju-core/log"
+    "launchpad.net/juju-core/utils"
 )
 
 const (
@@ -118,7 +119,7 @@ func (d *gitDeployer) Stage(info BundleInfo, abort <-chan struct{}) error {
 
 	// Atomically rename fresh repository to current.
 	tmplink := filepath.Join(updatePath, "tmplink")
-	if err = os.Symlink(updatePath, tmplink); err != nil {
+	if err = utils.Symlink(updatePath, tmplink); err != nil {
 		return err
 	}
 	return os.Rename(tmplink, d.current.Path())

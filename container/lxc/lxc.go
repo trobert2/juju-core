@@ -19,6 +19,7 @@ import (
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/version"
+	"launchpad.net/juju-core/utils"
 )
 
 var logger = loggo.GetLogger("juju.container.lxc")
@@ -126,7 +127,7 @@ func (manager *containerManager) StartContainer(
 	// function below.
 	if useRestartDir() {
 		containerConfigFile := filepath.Join(LxcContainerDir, name, "config")
-		if err := os.Symlink(containerConfigFile, restartSymlink(name)); err != nil {
+		if err := utils.Symlink(containerConfigFile, restartSymlink(name)); err != nil {
 			return nil, nil, err
 		}
 		logger.Tracef("auto-restart link created")

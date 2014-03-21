@@ -21,6 +21,7 @@ import (
 	"launchpad.net/juju-core/testing"
 	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/utils/set"
+    "launchpad.net/juju-core/utils"
 )
 
 type BundleSuite struct {
@@ -95,7 +96,7 @@ func (s *BundleSuite) TestManifestNoRevision(c *gc.C) {
 
 func (s *BundleSuite) TestManifestSymlink(c *gc.C) {
 	srcPath := testing.Charms.ClonedDirPath(c.MkDir(), "dummy")
-	if err := os.Symlink("../target", filepath.Join(srcPath, "hooks/symlink")); err != nil {
+	if err := utils.Symlink("../target", filepath.Join(srcPath, "hooks/symlink")); err != nil {
 		c.Skip("cannot symlink")
 	}
 	expected := append([]string{"hooks/symlink"}, dummyManifest...)
@@ -197,7 +198,7 @@ func (s *BundleSuite) TestBundleFileModes(c *gc.C) {
 		c.Assert(err, gc.IsNil)
 	}
 	var haveSymlinks = true
-	if err := os.Symlink("../target", filepath.Join(srcPath, "hooks/symlink")); err != nil {
+	if err := utils.Symlink("../target", filepath.Join(srcPath, "hooks/symlink")); err != nil {
 		haveSymlinks = false
 	}
 
@@ -281,7 +282,7 @@ func (s *BundleSuite) TestExpandToWithBadLink(c *gc.C) {
 	badLink := filepath.Join(charmDir, "hooks", "badlink")
 
 	// Symlink targeting a path outside of the charm.
-	err := os.Symlink("../../target", badLink)
+	err := utils.Symlink("../../target", badLink)
 	c.Assert(err, gc.IsNil)
 
 	bundle := extBundleDir(c, charmDir)
@@ -293,7 +294,7 @@ func (s *BundleSuite) TestExpandToWithBadLink(c *gc.C) {
 
 	// Symlink targeting an absolute path.
 	os.Remove(badLink)
-	err = os.Symlink("/target", badLink)
+	err = utils.Symlink("/target", badLink)
 	c.Assert(err, gc.IsNil)
 
 	bundle = extBundleDir(c, charmDir)

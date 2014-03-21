@@ -6,6 +6,7 @@ import (
 
     coretools "launchpad.net/juju-core/tools"
     "launchpad.net/juju-core/version"
+    "launchpad.net/juju-core/utils"
 )
 
 
@@ -18,7 +19,7 @@ func ChangeAgentTools(dataDir string, agentName string, vers version.Binary) (*c
         return nil, err
     }
     tmpName := ToolsDir(dataDir, "tmplink-"+agentName)
-    err = os.Symlink(tools.Version.String(), tmpName)
+    err = utils.Symlink(tools.Version.String(), tmpName)
     if err != nil {
         return nil, fmt.Errorf("cannot create tools symlink: %v", err)
     }

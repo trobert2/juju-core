@@ -15,6 +15,7 @@ import (
 	"launchpad.net/juju-core/version"
 	"launchpad.net/juju-core/worker/uniter"
 	"launchpad.net/juju-core/worker/uniter/jujuc"
+    "launchpad.net/juju-core/utils"
 )
 
 type ToolsSuite struct {
@@ -28,7 +29,7 @@ func (s *ToolsSuite) SetUpTest(c *gc.C) {
 	s.toolsDir = tools.SharedToolsDir(s.dataDir, version.Current)
 	err := os.MkdirAll(s.toolsDir, 0755)
 	c.Assert(err, gc.IsNil)
-	err = os.Symlink(s.toolsDir, tools.ToolsDir(s.dataDir, "unit-u-123"))
+	err = utils.Symlink(s.toolsDir, tools.ToolsDir(s.dataDir, "unit-u-123"))
 	c.Assert(err, gc.IsNil)
 }
 

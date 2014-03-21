@@ -12,6 +12,7 @@ import (
 	gc "launchpad.net/gocheck"
 
 	jc "launchpad.net/juju-core/testing/checkers"
+    "launchpad.net/juju-core/utils"
 )
 
 type FileSuite struct{}
@@ -96,7 +97,7 @@ func (s *FileSuite) TestDoesNotExistWithSymlink(c *gc.C) {
 	dir := c.MkDir()
 	deadPath := filepath.Join(dir, "dead")
 	symlinkPath := filepath.Join(dir, "a-symlink")
-	err := os.Symlink(deadPath, symlinkPath)
+	err := utils.Symlink(deadPath, symlinkPath)
 	c.Assert(err, gc.IsNil)
 	// A valid symlink pointing to something that doesn't exist passes.
 	// Use SymlinkDoesNotExist to check for the non-existence of the link itself.
@@ -125,7 +126,7 @@ func (s *FileSuite) TestSymlinkDoesNotExistWithSymlink(c *gc.C) {
 	dir := c.MkDir()
 	deadPath := filepath.Join(dir, "dead")
 	symlinkPath := filepath.Join(dir, "a-symlink")
-	err := os.Symlink(deadPath, symlinkPath)
+	err := utils.Symlink(deadPath, symlinkPath)
 	c.Assert(err, gc.IsNil)
 
 	result, message := jc.SymlinkDoesNotExist.Check([]interface{}{symlinkPath}, nil)
@@ -145,7 +146,7 @@ func (s *FileSuite) TestIsSymlink(c *gc.C) {
 	c.Log(file.Name())
 	c.Log(filepath.Dir(file.Name()))
 	symlinkPath := filepath.Join(filepath.Dir(file.Name()), "a-symlink")
-	err = os.Symlink(file.Name(), symlinkPath)
+	err = utils.Symlink(file.Name(), symlinkPath)
 	c.Assert(err, gc.IsNil)
 
 	c.Assert(symlinkPath, jc.IsSymlink)

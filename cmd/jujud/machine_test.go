@@ -702,7 +702,7 @@ func (s *MachineSuite) TestMachineAgentSymlinkJujuRun(c *gc.C) {
 }
 
 func (s *MachineSuite) TestMachineAgentSymlinkJujuRunExists(c *gc.C) {
-	err := os.Symlink("/nowhere/special", jujuRun)
+	err := utils.Symlink("/nowhere/special", jujuRun)
 	c.Assert(err, gc.IsNil)
 	_, err = os.Stat(jujuRun)
 	c.Assert(err, jc.Satisfies, os.IsNotExist)

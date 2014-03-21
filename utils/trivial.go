@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"unicode"
+	"runtime"
 
 	"launchpad.net/goyaml"
 )
@@ -32,9 +33,14 @@ func WriteYaml(path string, obj interface{}) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	if runtime.GOOS != "windows"{
+		defer f.Close()
+	}
 	if _, err = f.Write(data); err != nil {
 		return err
+	}
+	if runtime.GOOS == "windows"{
+		f.Close()
 	}
 	return ReplaceFile(prep, path)
 }

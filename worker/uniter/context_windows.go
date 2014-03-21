@@ -5,7 +5,25 @@ import (
     "os"
     "path/filepath"
     "strings"
+
+    unitdebug "launchpad.net/juju-core/worker/uniter/debug"
 )
+
+// RunHook executes a hook in an environment which allows it to to call back
+// into the hook context to execute jujuc tools.
+func (ctx *HookContext) RunHook(hookName, charmDir, toolsDir, socketPath string) error {
+    var err error
+    winhookName := hookName + ".cmd"
+    env := ctx.hookVars(charmDir, toolsDir, socketPath)
+    debugctx := unitdebug.NewHooksContext(ctx.unit.Name())
+    if session, _ := debugctx.FindSession(); session != nil && session.MatchHook(winhookName) {
+        logger.Infof("executing %s via debug-hooks", winhookName)
+        err = session.RunHook(winhookName, charmDir, env)
+    } else {
+        err = ctx.runCharmHook(winhookName, charmDir, env)
+    }
+    return ctx.finalizeContext(winhookName, err)
+}
 
 func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
     environ := os.Environ()

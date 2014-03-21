@@ -18,6 +18,7 @@ import (
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/testing/testbase"
+    "launchpad.net/juju-core/utils"
 )
 
 type DirSuite struct {
@@ -47,7 +48,7 @@ func (s *DirSuite) TestBundleTo(c *gc.C) {
 	baseDir := c.MkDir()
 	charmDir := testing.Charms.ClonedDirPath(baseDir, "dummy")
 	var haveSymlinks = true
-	if err := os.Symlink("../target", filepath.Join(charmDir, "hooks/symlink")); err != nil {
+	if err := utils.Symlink("../target", filepath.Join(charmDir, "hooks/symlink")); err != nil {
 		haveSymlinks = false
 	}
 	dir, err := charm.ReadDir(charmDir)
@@ -175,7 +176,7 @@ func (s *DirSuite) TestBundleToWithBadType(c *gc.C) {
 	badFile := filepath.Join(charmDir, "hooks", "badfile")
 
 	// Symlink targeting a path outside of the charm.
-	err := os.Symlink("../../target", badFile)
+	err := utils.Symlink("../../target", badFile)
 	c.Assert(err, gc.IsNil)
 
 	dir, err := charm.ReadDir(charmDir)
@@ -186,7 +187,7 @@ func (s *DirSuite) TestBundleToWithBadType(c *gc.C) {
 
 	// Symlink targeting an absolute path.
 	os.Remove(badFile)
-	err = os.Symlink("/target", badFile)
+	err = utils.Symlink("/target", badFile)
 	c.Assert(err, gc.IsNil)
 
 	dir, err = charm.ReadDir(charmDir)

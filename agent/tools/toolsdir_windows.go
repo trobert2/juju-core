@@ -22,7 +22,7 @@ func ChangeAgentTools(dataDir string, agentName string, vers version.Binary) (*c
     tmpName := ToolsDir(dataDir, "tmplink-"+agentName)
     toolPath := ToolsDir(dataDir, tools.Version.String())
     logger.Infof("Create symlink %q --> %q", tmpName, tools.Version.String())
-    err = utils.CreateSymLink(tmpName, toolPath)
+    err = utils.Symlink(toolPath, tmpName)
     logger.Infof("-->Create symlink %q", err)
     if err != nil {
         return nil, fmt.Errorf("cannot create tools symlink: %v", err)
