@@ -15,6 +15,7 @@ import (
     "launchpad.net/juju-core/agent/tools"
     // "launchpad.net/juju-core/juju/osenv"
     "launchpad.net/juju-core/names"
+    "launchpad.net/juju-core/utils"
     "launchpad.net/juju-core/utils/exec"
     "launchpad.net/juju-core/state/api/params"
     // "launchpad.net/juju-core/upstart"
@@ -155,6 +156,12 @@ func (ctx *SimpleContext) RecallUnit(unitName string) error {
     tag := names.UnitTag(unitName)
     dataDir := ctx.agentConfig.DataDir()
     agentDir := agent.Dir(dataDir, tag)
+    // Recursivley change mode to 777 on windows to avoid
+    // Operation not permitted
+    err := utils.RChmod(agentDir, os.FileMode(0777))
+    if err != nil {
+        return err
+    }
     if err := os.RemoveAll(agentDir); err != nil {
         return err
     }

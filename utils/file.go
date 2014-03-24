@@ -137,10 +137,6 @@ func AtomicWriteFileAndChange(filename string, contents []byte, change func(*os.
 // path.
 func AtomicWriteFile(filename string, contents []byte, perms os.FileMode) (err error) {
 	return AtomicWriteFileAndChange(filename, contents, func(f *os.File) error {
-		// gsamfira: Windows does not support Chmod
-		if runtime.GOOS == "windows" {
-			return nil
-		}
 		if err := f.Chmod(perms); err != nil {
 			return fmt.Errorf("cannot set permissions: %v", err)
 		}
