@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"runtime"
 
 	"launchpad.net/juju-core/log"
     "launchpad.net/juju-core/utils"
@@ -121,6 +122,11 @@ func (d *gitDeployer) Stage(info BundleInfo, abort <-chan struct{}) error {
 	tmplink := filepath.Join(updatePath, "tmplink")
 	if err = utils.Symlink(updatePath, tmplink); err != nil {
 		return err
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(d.current.Path()); err == nil {
+	        _ = os.RemoveAll(d.current.Path())
+	    }
 	}
 	return os.Rename(tmplink, d.current.Path())
 }

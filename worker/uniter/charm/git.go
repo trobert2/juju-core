@@ -50,13 +50,8 @@ func (d *GitDir) Exists() (bool, error) {
 	return false, fmt.Errorf("%q is not a directory", d.path)
 }
 
-// Init ensures that a git repository exists in the directory.
-func (d *GitDir) Init() error {
-	if err := os.MkdirAll(d.path, 0755); err != nil {
-		return err
-	}
+func (d *GitDir) SetIdent() error {
 	commands := [][]string{
-		{"init"},
 		{"config", "user.email", "juju@localhost"},
 		{"config", "user.name", "juju"},
 	}
@@ -64,6 +59,25 @@ func (d *GitDir) Init() error {
 		if err := d.cmd(args...); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// Init ensures that a git repository exists in the directory.
+func (d *GitDir) Init() error {
+	if err := os.MkdirAll(d.path, 0755); err != nil {
+		return err
+	}
+	commands := [][]string{
+		{"init"},
+	}
+	for _, args := range commands {
+		if err := d.cmd(args...); err != nil {
+			return err
+		}
+	}
+	if err := d.SetIdent(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -123,6 +137,9 @@ func (d *GitDir) addAll() error {
 
 // Commitf commits a new revision to the repository with the supplied message.
 func (d *GitDir) Commitf(format string, args ...interface{}) error {
+	if err := d.SetIdent(); err != nil {
+		return err
+	}
 	return d.cmd("commit", "--allow-empty", "-m", fmt.Sprintf(format, args...))
 }
 

@@ -99,7 +99,8 @@ func (s *ProxySettings) SetEnvironmentValues() {
 // warning: get proxy setting (old juju version uses a string parameter, the 
 // key name, we don't need that)
 
-func getProxySetting() string {
+
+func getProxySetting(key string) string {
     value, err := getValueFromKey(key, "ProxyServer")
     if err != nil { 
         return value
