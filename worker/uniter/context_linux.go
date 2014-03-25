@@ -1,28 +1,46 @@
 package uniter
 
 import (
+    "fmt"
     "os"
+    "os/exec"
+    "path/filepath"
     "strings"
-
-    unitdebug "launchpad.net/juju-core/worker/uniter/debug"
 )
 
-
-// RunHook executes a hook in an environment which allows it to to call back
-// into the hook context to execute jujuc tools.
-func (ctx *HookContext) RunHook(hookName, charmDir, toolsDir, socketPath string) error {
-    var err error
-    env := ctx.hookVars(charmDir, toolsDir, socketPath)
-    debugctx := unitdebug.NewHooksContext(ctx.unit.Name())
-    if session, _ := debugctx.FindSession(); session != nil && session.MatchHook(hookName) {
-        logger.Infof("executing %s via debug-hooks", hookName)
-        err = session.RunHook(hookName, charmDir, env)
-    } else {
-        err = ctx.runCharmHook(hookName, charmDir, env)
+func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
+    hookFile := filepath.Join(charmDir, "hooks", hookName)
+    logger.Infof("Running hook file: %q", hookFile)
+    ps := exec.Command(hookFile)
+    ps.Env = env
+    ps.Dir = charmDir
+    outReader, outWriter, err := os.Pipe()
+    if err != nil {
+        return fmt.Errorf("cannot make logging pipe: %v", err)
     }
-    return ctx.finalizeContext(hookName, err)
+    ps.Stdout = outWriter
+    ps.Stderr = outWriter
+    hookLogger := &hookLogger{
+        r:      outReader,
+        done:   make(chan struct{}),
+        logger: ctx.GetLogger(hookName),
+    }
+    go hookLogger.run()
+    err = ps.Start()
+    outWriter.Close()
+    if err == nil {
+        err = ps.Wait()
+    }
+    hookLogger.stop()
+    if ee, ok := err.(*exec.Error); ok && err != nil {
+        if os.IsNotExist(ee.Err) {
+            // Missing hook is perfectly valid, but worth mentioning.
+            logger.Infof("skipped %q hook (not implemented) -->%q ", hookName, ee.Err)
+            return &missingHookError{hookName}
+        }
+    }
+    return err
 }
-
 
 // hookVars returns an os.Environ-style list of strings necessary to run a hook
 // such that it can know what environment it's operating in, and can call back
