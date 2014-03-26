@@ -16,6 +16,8 @@ import (
 type KeyUpdater interface {
 	AuthorisedKeys(args params.Entities) (params.StringsResults, error)
 	WatchAuthorisedKeys(args params.Entities) (params.NotifyWatchResults, error)
+	X509Keys(args params.Entities) (params.StringsResults, error)
+	WatchX509Keys(args params.Entities) (params.NotifyWatchResults, error)
 }
 
 // KeyUpdaterAPI implements the KeyUpdater interface and is the concrete
@@ -122,6 +124,81 @@ func (api *KeyUpdaterAPI) AuthorisedKeys(arg params.Entities) (params.StringsRes
 			continue
 		}
 		// 3. Get keys
+		var err error
+		if configErr == nil {
+			results[i].Result = keys
+		} else {
+			err = configErr
+		}
+		results[i].Error = common.ServerError(err)
+	}
+	return params.StringsResults{results}, nil
+}
+
+func (api *KeyUpdaterAPI) WatchX509Keys(arg params.Entities) (params.NotifyWatchResults, error) {
+	results := make([]params.NotifyWatchResult, len(arg.Entities))
+
+	canRead, err := api.getCanRead()
+	if err != nil {
+		return params.NotifyWatchResults{}, err
+	}
+	for i, entity := range arg.Entities {
+		if !canRead(entity.Tag) {
+			results[i].Error = common.ServerError(common.ErrPerm)
+			continue
+		}
+		if _, err := api.state.FindEntity(entity.Tag); err != nil {
+			if errors.IsNotFoundError(err) {
+				results[i].Error = common.ServerError(common.ErrPerm)
+			} else {
+				results[i].Error = common.ServerError(err)
+			}
+			continue
+		}
+		var err error
+		watch := api.state.WatchForEnvironConfigChanges()
+
+		if _, ok := <-watch.Changes(); ok {
+			results[i].NotifyWatcherId = api.resources.Register(watch)
+		} else {
+			err = watcher.MustErr(watch)
+		}
+		results[i].Error = common.ServerError(err)
+	}
+	return params.NotifyWatchResults{results}, nil
+}
+
+func (api *KeyUpdaterAPI) X509Keys(arg params.Entities) (params.StringsResults, error) {
+	if len(arg.Entities) == 0 {
+		return params.StringsResults{}, nil
+	}
+	results := make([]params.StringsResult, len(arg.Entities))
+
+	var keys []string
+	config, configErr := api.state.EnvironConfig()
+	if configErr == nil {
+		//This is where the key needs to be set X509Keys instead of AuthorisedKeys!!
+		//the keys are split using a method SplitKeys from ssh.
+		keys = ssh.SplitAuthorisedKeys(config.X509Keys())
+	}
+
+	canRead, err := api.getCanRead()
+	if err != nil {
+		return params.StringsResults{}, err
+	}
+	for i, entity := range arg.Entities {
+		if !canRead(entity.Tag) {
+			results[i].Error = common.ServerError(common.ErrPerm)
+			continue
+		}
+		if _, err := api.state.FindEntity(entity.Tag); err != nil {
+			if errors.IsNotFoundError(err) {
+				results[i].Error = common.ServerError(common.ErrPerm)
+			} else {
+				results[i].Error = common.ServerError(err)
+			}
+			continue
+		}
 		var err error
 		if configErr == nil {
 			results[i].Result = keys

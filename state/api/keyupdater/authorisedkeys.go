@@ -67,3 +67,42 @@ func (st *State) WatchAuthorisedKeys(machineTag string) (watcher.NotifyWatcher, 
 	w := watcher.NewNotifyWatcher(st.caller, result)
 	return w, nil
 }
+
+func (st *State) X509Keys(machineTag string) ([]string, error) {
+	var results params.StringsResults
+	args := params.Entities{
+		Entities: []params.Entity{{Tag: machineTag}},
+	}
+	err := st.caller.Call("KeyUpdater", "", "X509Keys", args, &results)
+	if err != nil {
+		return nil, err
+	}
+	if len(results.Results) != 1 {
+		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+	}
+	result := results.Results[0]
+	if err := result.Error; err != nil {
+		return nil, err
+	}
+	return result.Result, nil
+}
+
+func (st *State) WatchX509Keys(machineTag string) (watcher.NotifyWatcher, error) {
+	var results params.NotifyWatchResults
+	args := params.Entities{
+		Entities: []params.Entity{{Tag: machineTag}},
+	}
+	err := st.caller.Call("KeyUpdater", "", "WatchX509Keys", args, &results)
+	if err != nil {
+		return nil, err
+	}
+	if len(results.Results) != 1 {
+		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+	}
+	result := results.Results[0]
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	w := watcher.NewNotifyWatcher(st.caller, result)
+	return w, nil
+}
