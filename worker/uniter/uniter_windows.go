@@ -3,6 +3,7 @@ package uniter
 import (
     "math/rand"
     "os"
+    "os/exec"
     "path/filepath"
     "time"
     "fmt"
@@ -14,6 +15,8 @@ import (
     "launchpad.net/juju-core/worker/uniter/charm"
     "launchpad.net/juju-core/worker/uniter/jujuc"
     "launchpad.net/juju-core/worker/uniter/hook"
+
+    "launchpad.net/juju-core/windows"
 )
 
 
@@ -96,3 +99,76 @@ func (u *Uniter) startJujucServer(context *HookContext) (*jujuc.Server, string, 
     return srv, socketPath, nil
 }
 
+// runHook executes the supplied hook.Info in an appropriate hook context. If
+// the hook itself fails to execute, it returns errHookFailed.
+func (u *Uniter) runHook(hi hook.Info) (err error) {
+    // Prepare context.
+    if err = hi.Validate(); err != nil {
+        return err
+    }
+
+    hookName := string(hi.Kind)
+    relationId := -1
+    if hi.Kind.IsRelation() {
+        relationId = hi.RelationId
+        if hookName, err = u.relationers[relationId].PrepareHook(hi); err != nil {
+            return err
+        }
+    }
+    hctxId := fmt.Sprintf("%s:%s:%d", u.unit.Name(), hookName, u.rand.Int63())
+
+    lockMessage := fmt.Sprintf("%s: running hook %q", u.unit.Name(), hookName)
+    if err = u.acquireHookLock(lockMessage); err != nil {
+        return err
+    }
+    defer u.hookLock.Unlock()
+
+    hctx, err := u.getHookContext(hctxId, relationId, hi.RemoteUnit)
+    if err != nil {
+        return err
+    }
+    srv, socketPath, err := u.startJujucServer(hctx)
+    if err != nil {
+        return err
+    }
+    defer srv.Close()
+
+    // Run the hook.
+    if err := u.writeState(RunHook, Pending, &hi, nil); err != nil {
+        return err
+    }
+    logger.Infof("running %q hook", hookName)
+    ranHook := true
+    err = hctx.RunHook(hookName, u.charm.Path(), u.toolsDir, socketPath)
+    if RebootRequiredError(err){
+        logger.Infof("hook %q requested a reboot", hookName)
+        if err := u.writeState(RunHook, Queued, &hi, nil); err != nil {
+            return err
+        }
+        time := 60
+        logger.Infof("rebooting system in %q", time)
+        errReboot := windows.Reboot(time)
+        if eeReboot, ok := errReboot.(*exec.Error); ok && eeReboot != nil {
+            logger.Infof("Reboot returned error: %q", eeReboot.Err)
+        }
+        logger.Infof("Stopping uniter due to reboot")
+        u.Stop()
+    }
+    if IsMissingHookError(err) {
+        ranHook = false
+    } else if err != nil {
+        logger.Errorf("hook failed: %s", err)
+        u.notifyHookFailed(hookName, hctx)
+        return errHookFailed
+    }
+    if err := u.writeState(RunHook, Done, &hi, nil); err != nil {
+        return err
+    }
+    if ranHook {
+        logger.Infof("ran %q hook", hookName)
+        u.notifyHookCompleted(hookName, hctx)
+    } else {
+        logger.Infof("skipped %q hook (missing)", hookName)
+    }
+    return u.commitHook(hi)
+}

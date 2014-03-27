@@ -8,6 +8,19 @@ import (
 
 var CheckError = ";if($? -eq $false){ exit 11 };"
 
+
+func RunPSCommand(script string) (string, error){
+    cmd := []string{
+        "powershell",
+        "-Command",
+        `"`,
+        `$ErrorActionPreference = 'Stop';`,
+        script,
+        `"`,
+    }
+    return RunCommand(cmd)
+}
+
 func RunCommand(args []string) (string, error) {
     out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
     if err != nil {

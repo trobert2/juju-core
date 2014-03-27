@@ -8,6 +8,31 @@ import (
     "strings"
 )
 
+func RebootRequiredError(err error) bool {
+    // gsamfira: Only needed for windows so far
+    return false
+}
+
+func (ctx *HookContext) finalizeContext(process string, err error) error {
+    writeChanges := err == nil
+    for id, rctx := range ctx.relations {
+        if writeChanges {
+            if e := rctx.WriteSettings(); e != nil {
+                e = fmt.Errorf(
+                    "could not write settings from %q to relation %d: %v",
+                    process, id, e,
+                )
+                logger.Errorf("%v", e)
+                if err == nil {
+                    err = e
+                }
+            }
+        }
+        rctx.ClearCache()
+    }
+    return err
+}
+
 func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
     hookFile := filepath.Join(charmDir, "hooks", hookName)
     logger.Infof("Running hook file: %q", hookFile)

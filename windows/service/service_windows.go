@@ -1,4 +1,4 @@
-package winservice
+package service
 
 import (
     "errors"

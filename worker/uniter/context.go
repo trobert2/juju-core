@@ -174,26 +174,6 @@ func (ctx *HookContext) RelationIds() []int {
 	return ids
 }
 
-func (ctx *HookContext) finalizeContext(process string, err error) error {
-	writeChanges := err == nil
-	for id, rctx := range ctx.relations {
-		if writeChanges {
-			if e := rctx.WriteSettings(); e != nil {
-				e = fmt.Errorf(
-					"could not write settings from %q to relation %d: %v",
-					process, id, e,
-				)
-				logger.Errorf("%v", e)
-				if err == nil {
-					err = e
-				}
-			}
-		}
-		rctx.ClearCache()
-	}
-	return err
-}
-
 // RunCommands executes the commands in an environment which allows it to to
 // call back into the hook context to execute jujuc tools.
 func (ctx *HookContext) RunCommands(commands, charmDir, toolsDir, socketPath string) (*utilexec.ExecResponse, error) {

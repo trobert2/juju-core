@@ -20,7 +20,7 @@ import (
     "launchpad.net/juju-core/state/api/params"
     // "launchpad.net/juju-core/upstart"
     "launchpad.net/juju-core/version"
-    "launchpad.net/juju-core/winservice"
+    "launchpad.net/juju-core/windows/service"
 )
 
 // APICalls defines the interface to the API that the simple context needs.
@@ -118,7 +118,7 @@ func (ctx *SimpleContext) DeployUnit(unitName, initialPassword string) (err erro
         "--log-file", logPath,
     }, " ")
 
-    winCmd := &winservice.Cmd{
+    winCmd := &service.Cmd{
         Service:        *svc,
         Description:    "juju unit agent for " + unitName,
         Cmd:            cmd,
@@ -131,7 +131,7 @@ func (ctx *SimpleContext) DeployUnit(unitName, initialPassword string) (err erro
 // given unit name in one of these formats:
 //   jujud-<deployer-tag>:<unit-tag>.conf (for compatibility)
 //   jujud-<unit-tag>.conf (default)
-func (ctx *SimpleContext) findJob(unitName string) *winservice.Service {
+func (ctx *SimpleContext) findJob(unitName string) *service.Service {
     unitsAndJobs, err := ctx.deployedUnitsJobs()
     if err != nil {
         return nil
@@ -220,9 +220,9 @@ func (ctx *SimpleContext) getSvcName(unitName string) string {
 
 // upstartService returns an upstart.Service corresponding to the specified
 // unit.
-func (ctx *SimpleContext) winService(unitName string) *winservice.Service {
+func (ctx *SimpleContext) winService(unitName string) *service.Service {
     svcName := ctx.getSvcName(unitName)
-    svc := winservice.NewService(svcName)
+    svc := service.NewService(svcName)
     return svc
 }
 

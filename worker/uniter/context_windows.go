@@ -6,6 +6,9 @@ import (
     "os/exec"
     "path/filepath"
     "strings"
+    "syscall"
+
+    "launchpad.net/juju-core/windows"
 )
 
 var suffixOrder = []string{
@@ -37,6 +40,44 @@ func (ctx *HookContext) getCommand (hookFile, suffix string) []string {
     }
     command = append(command, hookFile)
     return command
+}
+
+func RebootRequiredError(err error) bool {
+    if err == nil {
+        return false
+    }
+    msg, _ := err.(*exec.ExitError)
+    code := msg.Sys().(syscall.WaitStatus).ExitStatus()
+    if code == windows.MUST_REBOOT {
+        return true
+    }
+    return false
+}
+
+func (ctx *HookContext) finalizeContext(process string, err error) error {
+    if err != nil{
+        // gsamfira: We need this later to requeue the hook
+        if RebootRequiredError(err){
+            return err
+        }
+    }
+    writeChanges := err == nil
+    for id, rctx := range ctx.relations {
+        if writeChanges {
+            if e := rctx.WriteSettings(); e != nil {
+                e = fmt.Errorf(
+                    "could not write settings from %q to relation %d: %v",
+                    process, id, e,
+                )
+                logger.Errorf("%v", e)
+                if err == nil {
+                    err = e
+                }
+            }
+        }
+        rctx.ClearCache()
+    }
+    return err
 }
 
 func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
@@ -77,23 +118,6 @@ func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) er
     }
     return err
 }
-
-
-// RunHook executes a hook in an environment which allows it to to call back
-// into the hook context to execute jujuc tools.
-// func (ctx *HookContext) RunHook(hookName, charmDir, toolsDir, socketPath string) error {
-//     var err error
-//     winhookName := hookName + ".cmd"
-//     env := ctx.hookVars(charmDir, toolsDir, socketPath)
-//     debugctx := unitdebug.NewHooksContext(ctx.unit.Name())
-//     if session, _ := debugctx.FindSession(); session != nil && session.MatchHook(winhookName) {
-//         logger.Infof("executing %s via debug-hooks", winhookName)
-//         err = session.RunHook(winhookName, charmDir, env)
-//     } else {
-//         err = ctx.runCharmHook(winhookName, charmDir, env)
-//     }
-//     return ctx.finalizeContext(winhookName, err)
-// }
 
 func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
     environ := os.Environ()

@@ -123,6 +123,7 @@ func (d *gitDeployer) Stage(info BundleInfo, abort <-chan struct{}) error {
 	if err = utils.Symlink(updatePath, tmplink); err != nil {
 		return err
 	}
+	// You cannot rename a symlink if destination exists
 	if runtime.GOOS == "windows" {
 		if _, err := os.Stat(d.current.Path()); err == nil {
 	        _ = os.RemoveAll(d.current.Path())
