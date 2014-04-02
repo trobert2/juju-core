@@ -75,7 +75,7 @@ func writeFileCommands(filename string, contents []byte, permission int) []strin
 
 func winWriteFileCommands(filename string, contents []byte, permission int) []string {
 	return []string{
-		fmt.Sprintf("Set-Content '%s' @\"\r\n%s\r\n\"@", filename, contents),
+		fmt.Sprintf("Set-Content '%s' @\"\n%s\n\"@", filename, contents),
 	}
 }
 

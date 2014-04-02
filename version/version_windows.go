@@ -10,6 +10,8 @@ import (
 var WindowsVersions = map[string]string{
     "Microsoft Hyper-V Server 2012 R2": "win2012hvr2",
     "Microsoft Hyper-V Server 2012": "win2012hv",
+    "Microsoft Windows Server 2012 R2": "win2012r2",
+    "Microsoft Windows Server 2012 Standard": "win2012",
 }
 
 

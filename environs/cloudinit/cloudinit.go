@@ -207,11 +207,11 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
 		fmt.Sprintf(`mkdir "%s"`, utils.PathToWindows(osenv.WinBinDir)),
 		fmt.Sprintf(`mkdir "%s\locks"`, utils.PathToWindows(osenv.WinLibDir)),
-		fmt.Sprintf(`setx PATH "$env:PATH;C:\ProgramFiles (x86)\Git\cmd;%s" /M`, utils.PathToWindows(osenv.WinBinDir)),
+		fmt.Sprintf(`setx PATH "$env:PATH;C:\Program Files (x86)\Git\cmd"`),
+		fmt.Sprintf(`setx PATH "$env:PATH;%s" /M`, utils.PathToWindows(osenv.WinBinDir)),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
 	c.AddPSScripts(
-        fmt.Sprintf(`mkdir '%s'`, utils.PathToWindows(cfg.DataDir)),
 		fmt.Sprintf(`Set-Content "%s" "%s"`, utils.PathToWindows(noncefile), shquote(cfg.MachineNonce)),
 	)
 	return nil
@@ -258,17 +258,16 @@ func ConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 // AddAptCommands update the cloudinit.Config instance with the necessary
 // packages, the request to do the apt-get update/upgrade on boot, and adds
 // the apt proxy settings if there are any.
-func AddAptCommands(proxy osenv.ProxySettings, c *cloudinit.Config, cfg *MachineConfig) {
+func AddAptCommands(proxy osenv.ProxySettings, c *cloudinit.Config) {
 	// Bring packages up-to-date.
 	c.SetAptUpdate(true)
 	c.SetAptUpgrade(true)
 
 	// juju requires git for managing charm directories.
-	targetRelease := cfg.TargetRelease()
-	c.AddPackage("git", targetRelease)
-	c.AddPackage("cpu-checker", targetRelease)
-	c.AddPackage("bridge-utils", targetRelease)
-	c.AddPackage("rsyslog-gnutls", targetRelease)
+	c.AddPackage("git")
+	c.AddPackage("cpu-checker")
+	c.AddPackage("bridge-utils")
+	c.AddPackage("rsyslog-gnutls")
 
 	// Write out the apt proxy settings
 	if (proxy != osenv.ProxySettings{}) {
@@ -347,7 +346,7 @@ func NixConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
 	}
 
 	if !cfg.DisablePackageCommands {
-		AddAptCommands(cfg.AptProxySettings, c, cfg)
+		AddAptCommands(cfg.AptProxySettings, c)
 	}
 
 	// Write out the normal proxy settings so that the settings are
@@ -444,7 +443,7 @@ func NixConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
 				const key = "" // key is loaded from PPA
 				c.AddAptSource("ppa:juju/stable", key, nil)
 			}
-			c.AddPackage("mongodb-server", cfg.TargetRelease())
+			c.AddPackageFromTargetRelease("mongodb-server", "precise-updates/cloud-tools")
 		}
 		certKey := string(cfg.StateServerCert) + string(cfg.StateServerKey)
 		c.AddFile(cfg.dataFile("server.pem"), certKey, 0600)
@@ -467,6 +466,7 @@ func NixConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
 			cons = " --constraints " + shquote(cons)
 		}
 		c.AddRunCmd(cloudinit.LogProgressCmd("Bootstrapping Juju machine agent"))
+		c.AddRunCmd(cloudinit.LogProgressCmd(fmt.Sprintf("%s", cfg.Config)))
 		c.AddScripts(
 			fmt.Sprintf("echo %s > %s", shquote(cfg.StateInfoURL), BootstrapStateURLFile),
 			// The bootstrapping is always run with debug on.
@@ -558,6 +558,25 @@ func (cfg *MachineConfig) addAgentInfo(c *cloudinit.Config, tag string) (agent.C
 	return acfg, nil
 }
 
+
+// MachineAgentWindowsService returns the powershell command for a machine agent service
+// based on the tag and machineId passed in.
+// TODO: gsamfira: find a better place for this
+func MachineAgentWindowsService(name, toolsDir, dataDir, logDir, tag, machineId string) []string {
+    jujuServiceWrapper := path.Join(toolsDir, "JujuService.exe")
+    logFile := path.Join(logDir, tag+".log")
+    jujud := path.Join(toolsDir, "jujud.exe")
+
+    serviceString := fmt.Sprintf(`"%s" "%s" "%s" machine --data-dir "%s" --machine-id "%s" --debug --log-file "%s"`,
+        utils.PathToWindows(jujuServiceWrapper), name, utils.PathToWindows(jujud), utils.PathToWindows(dataDir), machineId, utils.PathToWindows(logFile))
+
+    cmd := []string{
+    	fmt.Sprintf(`New-Service -Name '%s' -DisplayName 'Jujud machine agent' '%s'`, name, serviceString),
+    	fmt.Sprintf(`Start-Service %s`, name),
+    }
+    return cmd
+}
+
 //TODO: gsamfira: add agent to startup
 func (cfg *MachineConfig) winAddMachineAgentToBoot(c *cloudinit.Config, tag, machineId string) error {
 	// Make the agent run via a symbolic link to the actual tools
@@ -565,16 +584,10 @@ func (cfg *MachineConfig) winAddMachineAgentToBoot(c *cloudinit.Config, tag, mac
 	// the upstart script.
 	toolsDir := agenttools.ToolsDir(cfg.DataDir, tag)
 	// TODO(dfc) ln -nfs, so it doesn't fail if for some reason that the target already exists
-	c.AddPSScripts(fmt.Sprintf(`cmd.exe /C mklink %s %v`, cfg.Tools.Version, shquote(toolsDir)))
-	// TODO: port the bellow behavior.
-	/*
+	c.AddPSScripts(fmt.Sprintf(`cmd.exe /C mklink %s %v`, utils.PathToWindows(toolsDir), cfg.Tools.Version))
 	name := cfg.MachineAgentServiceName
-	conf := upstart.MachineAgentUpstartService(name, toolsDir, cfg.DataDir, cfg.LogDir, tag, machineId, nil)
-	cmds, err := conf.InstallCommands()
-	if err != nil {
-		return errgo.Annotatef(err, "cannot make cloud-init upstart script for the %s agent", tag)
-	}
-	c.AddScripts(cmds...) */
+	cmds := MachineAgentWindowsService(name, toolsDir, cfg.DataDir, cfg.LogDir, tag, machineId)
+	c.AddPSScripts(cmds...)
 	return nil
 }
 

@@ -145,8 +145,8 @@ func (u *Uniter) runHook(hi hook.Info) (err error) {
         if err := u.writeState(RunHook, Queued, &hi, nil); err != nil {
             return err
         }
-        time := 60
-        logger.Infof("rebooting system in %q", time)
+        time := 5
+        logger.Infof("rebooting system in %q seconds", time)
         errReboot := windows.Reboot(time)
         if eeReboot, ok := errReboot.(*exec.Error); ok && eeReboot != nil {
             logger.Infof("Reboot returned error: %q", eeReboot.Err)

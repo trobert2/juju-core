@@ -67,7 +67,7 @@ func (info *machineInfo) winCloudinitRunCmd() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	script := fmt.Sprintf("mkdir \"%s\"; Set-Content \"%s\" @\"%s\"@", utils.PathToWindows(osenv.WinDataDir), utils.PathToWindows(_MAASInstanceFilename), string(yaml))
+	script := fmt.Sprintf("mkdir \"%s\"\r\n Set-Content \"%s\" @\"\n%s\n\"@", utils.PathToWindows(osenv.WinDataDir), utils.PathToWindows(_MAASInstanceFilename), string(yaml))
 	return script, nil
 }
 

@@ -8,11 +8,6 @@ import (
     "strings"
 )
 
-func RebootRequiredError(err error) bool {
-    // gsamfira: Only needed for windows so far
-    return false
-}
-
 func (ctx *HookContext) finalizeContext(process string, err error) error {
     writeChanges := err == nil
     for id, rctx := range ctx.relations {
