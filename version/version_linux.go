@@ -3,21 +3,9 @@ package version
 import (
     "io/ioutil"
     "strings"
-    "runtime"
+    // "runtime"
 )
 
-// lsbReleaseFile is the name of the file that is read in order to determine
-// the release version of ubuntu.
-var lsbReleaseFile = "/etc/lsb-release"
-
-// Current gives the current version of the system.  If the file
-// "FORCE-VERSION" is present in the same directory as the running
-// binary, it will override this.
-var Current = Binary{
-    Number: MustParse(version),
-    Series: readSeries(lsbReleaseFile),
-    Arch:   ubuntuArch(runtime.GOARCH),
-}
 
 func readSeries(releaseFile string) string {
     data, err := ioutil.ReadFile(releaseFile)

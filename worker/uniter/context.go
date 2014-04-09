@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"io"
 	// "os"
-	// "os/exec"
+	"os/exec"
 	// "path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/juju/loggo"
@@ -27,6 +28,18 @@ import (
 
 type missingHookError struct {
 	hookName string
+}
+
+func RebootRequiredError(err error) bool {
+    if err == nil {
+        return false
+    }
+    msg, _ := err.(*exec.ExitError)
+    code := msg.Sys().(syscall.WaitStatus).ExitStatus()
+    if code == osenv.MustReboot {
+        return true
+    }
+    return false
 }
 
 func (e *missingHookError) Error() string {
@@ -172,6 +185,32 @@ func (ctx *HookContext) RelationIds() []int {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+func (ctx *HookContext) finalizeContext(process string, err error) error {
+    if err != nil{
+        // gsamfira: We need this later to requeue the hook
+        if RebootRequiredError(err){
+            return err
+        }
+    }
+    writeChanges := err == nil
+    for id, rctx := range ctx.relations {
+        if writeChanges {
+            if e := rctx.WriteSettings(); e != nil {
+                e = fmt.Errorf(
+                    "could not write settings from %q to relation %d: %v",
+                    process, id, e,
+                )
+                logger.Errorf("%v", e)
+                if err == nil {
+                    err = e
+                }
+            }
+        }
+        rctx.ClearCache()
+    }
+    return err
 }
 
 // RunCommands executes the commands in an environment which allows it to to

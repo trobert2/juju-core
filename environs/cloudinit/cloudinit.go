@@ -207,7 +207,7 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
 		fmt.Sprintf(`mkdir "%s"`, utils.PathToWindows(osenv.WinBinDir)),
 		fmt.Sprintf(`mkdir "%s\locks"`, utils.PathToWindows(osenv.WinLibDir)),
-		fmt.Sprintf(`setx PATH "$env:PATH;C:\Program Files (x86)\Git\cmd"`),
+		fmt.Sprintf(`setx PATH "$env:PATH;${env:ProgramFiles(x86)}\Git\cmd"`),
 		fmt.Sprintf(`setx PATH "$env:PATH;%s" /M`, utils.PathToWindows(osenv.WinBinDir)),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)

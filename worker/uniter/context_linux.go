@@ -6,27 +6,11 @@ import (
     "os/exec"
     "path/filepath"
     "strings"
+    "strconv"
+
+    "launchpad.net/juju-core/juju/osenv"
 )
 
-func (ctx *HookContext) finalizeContext(process string, err error) error {
-    writeChanges := err == nil
-    for id, rctx := range ctx.relations {
-        if writeChanges {
-            if e := rctx.WriteSettings(); e != nil {
-                e = fmt.Errorf(
-                    "could not write settings from %q to relation %d: %v",
-                    process, id, e,
-                )
-                logger.Errorf("%v", e)
-                if err == nil {
-                    err = e
-                }
-            }
-        }
-        rctx.ClearCache()
-    }
-    return err
-}
 
 func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
     hookFile := filepath.Join(charmDir, "hooks", hookName)
@@ -65,7 +49,6 @@ func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) er
 // hookVars returns an os.Environ-style list of strings necessary to run a hook
 // such that it can know what environment it's operating in, and can call back
 // into ctx.
-// TODO: gsamfira: env vars for windows
 func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
     vars := []string{
         "APT_LISTCHANGES_FRONTEND=none",
@@ -78,6 +61,7 @@ func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string
         "JUJU_ENV_UUID=" + ctx.uuid,
         "JUJU_ENV_NAME=" + ctx.envName,
         "JUJU_API_ADDRESSES=" + strings.Join(ctx.apiAddrs, " "),
+        "JUJU_MUST_REBOOT=" + strconv.Itoa(osenv.MustReboot),
     }
     if r, found := ctx.HookRelation(); found {
         vars = append(vars, "JUJU_RELATION="+r.Name())

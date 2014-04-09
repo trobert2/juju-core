@@ -6,9 +6,10 @@ import (
     "os/exec"
     "path/filepath"
     "strings"
-    "syscall"
+    "strconv"
+    // "syscall"
 
-    "launchpad.net/juju-core/windows"
+    "launchpad.net/juju-core/juju/osenv"
 )
 
 var suffixOrder = []string{
@@ -40,44 +41,6 @@ func (ctx *HookContext) getCommand (hookFile, suffix string) []string {
     }
     command = append(command, hookFile)
     return command
-}
-
-func RebootRequiredError(err error) bool {
-    if err == nil {
-        return false
-    }
-    msg, _ := err.(*exec.ExitError)
-    code := msg.Sys().(syscall.WaitStatus).ExitStatus()
-    if code == windows.MUST_REBOOT {
-        return true
-    }
-    return false
-}
-
-func (ctx *HookContext) finalizeContext(process string, err error) error {
-    if err != nil{
-        // gsamfira: We need this later to requeue the hook
-        if RebootRequiredError(err){
-            return err
-        }
-    }
-    writeChanges := err == nil
-    for id, rctx := range ctx.relations {
-        if writeChanges {
-            if e := rctx.WriteSettings(); e != nil {
-                e = fmt.Errorf(
-                    "could not write settings from %q to relation %d: %v",
-                    process, id, e,
-                )
-                logger.Errorf("%v", e)
-                if err == nil {
-                    err = e
-                }
-            }
-        }
-        rctx.ClearCache()
-    }
-    return err
 }
 
 func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
@@ -122,8 +85,14 @@ func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) er
 func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
     environ := os.Environ()
     for i:=0; i<len(environ); i++ {
-        if environ[i][:5] == "Path=" {
+        if strings.ToUpper(environ[i][:5]) == "PATH=" {
             environ[i] = fmt.Sprintf("Path=%s", filepath.FromSlash(toolsDir) + ";" + os.Getenv("PATH"))
+        }
+        if strings.ToUpper(environ[i][:13]) == "PSMODULEPATH=" {
+            charmModules := filepath.Join(charmDir, "Modules")
+            hookModules := filepath.Join(charmDir, "hooks", "Modules")
+            psModulePath := os.Getenv("PSMODULEPATH") + ";" + charmModules + ";" + hookModules
+            environ[i] = fmt.Sprintf("PSModulePath=%s", psModulePath)
         }
     }
 
@@ -134,6 +103,7 @@ func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string
     environ = append(environ, "JUJU_ENV_UUID=" + ctx.uuid)
     environ = append(environ, "JUJU_ENV_NAME=" + ctx.envName)
     environ = append(environ, "JUJU_API_ADDRESSES=" + strings.Join(ctx.apiAddrs, " "))
+    environ = append(environ, "JUJU_MUST_REBOOT=" + strconv.Itoa(osenv.MustReboot))
 
     if r, found := ctx.HookRelation(); found {
         environ = append(environ, "JUJU_RELATION="+r.Name())

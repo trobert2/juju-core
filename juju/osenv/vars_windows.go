@@ -16,6 +16,7 @@ var (
     DataDir    = WinDataDir
     JujuRun    = path.Join(WinBinDir, "juju-run.exe")
     SocketType = "tcp"
+    MustReboot = 1001
 )
 
 // Home returns the os-specific home path as specified in the environment

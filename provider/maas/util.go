@@ -61,13 +61,16 @@ func (info *machineInfo) cloudinitRunCmd() (string, error) {
 	return script, nil
 }
 
+// winCloudinitRunCmd returns the shell command that, when run, will create the
+// "machine info" file containing the hostname of a machine on a winows system.
+// That command is destined to be used by cloudinit.
 func (info *machineInfo) winCloudinitRunCmd() (string, error) {
-	_MAASInstanceFilename = path.Join(osenv.WinDataDir, "MAASmachine.txt")
+	_MAASInstanceFilenameWin := path.Join(osenv.WinDataDir, "MAASmachine.txt")
 	yaml, err := goyaml.Marshal(info)
 	if err != nil {
 		return "", err
 	}
-	script := fmt.Sprintf("mkdir \"%s\"\r\n Set-Content \"%s\" @\"\n%s\n\"@", utils.PathToWindows(osenv.WinDataDir), utils.PathToWindows(_MAASInstanceFilename), string(yaml))
+	script := fmt.Sprintf("mkdir \"%s\"\r\n Set-Content \"%s\" @\"\n%s\n\"@", utils.PathToWindows(osenv.WinDataDir), utils.PathToWindows(_MAASInstanceFilenameWin), string(yaml))
 	return script, nil
 }
 

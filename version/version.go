@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"runtime"
 
 	"labix.org/v2/mgo/bson"
 
@@ -27,6 +28,19 @@ var logger = loggo.GetLogger("juju.version.version")
 // The debian/rules build recipe uses this value for the version
 // number of the release package.
 const version = "1.17.5"
+
+// lsbReleaseFile is the name of the file that is read in order to determine
+// the release version of ubuntu.
+var lsbReleaseFile = "/etc/lsb-release"
+
+// Current gives the current version of the system.  If the file
+// "FORCE-VERSION" is present in the same directory as the running
+// binary, it will override this.
+var Current = Binary{
+    Number: MustParse(version),
+    Series: readSeries(lsbReleaseFile),
+    Arch:   ubuntuArch(runtime.GOARCH),
+}
 
 func init() {
 	toolsDir := filepath.Dir(os.Args[0])
