@@ -17,6 +17,8 @@ var WindowsVersions = map[string]string{
     "Microsoft Hyper-V Server 2012": "win2012hv",
     "Microsoft Windows Server 2012 R2": "win2012r2",
     "Microsoft Windows Server 2012": "win2012",
+    "Windows Storage Server 2012 R2": "win2012r2",
+    "Windows Storage Server 2012": "win2012",
 }
 
 
@@ -37,6 +39,9 @@ func readSeries(releaseFile string) string {
         return "unknown"
     }
     serie := strings.TrimSpace(out)
+    if val,ok := WindowsVersions[serie]; ok {
+        return val
+    }
     for key, value := range WindowsVersions {
         reg := regexp.MustCompile(fmt.Sprintf("^%s", key))
         match := reg.MatchString(serie)

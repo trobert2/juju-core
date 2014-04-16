@@ -182,6 +182,134 @@ func Configure(cfg *MachineConfig, c *cloudinit.Config) error {
 // relative to the Juju data-dir.
 const NonceFile = "nonce.txt"
 
+var WinPowershellHelperFunctions = `
+
+function ExecRetry($command, $maxRetryCount = 10, $retryInterval=2)
+{
+    $currErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+
+    $retryCount = 0
+    while ($true)
+    {
+        try
+        {
+            & $command
+            break
+        }
+        catch [System.Exception]
+        {
+            $retryCount++
+            if ($retryCount -ge $maxRetryCount)
+            {
+                $ErrorActionPreference = $currErrorActionPreference
+                throw
+            }
+            else
+            {
+                Write-Error $_.Exception
+                Start-Sleep $retryInterval
+            }
+        }
+    }
+
+    $ErrorActionPreference = $currErrorActionPreference
+}
+
+function create-account ([string]$accountName, [string]$accountDescription, [string]$password) {
+	$hostname = hostname
+	$comp = [adsi]"WinNT://$hostname"
+	$user = $comp.Create("User", $accountName)
+	$user.SetPassword($password)
+	$user.SetInfo()
+	$user.description = $accountDescription
+	$user.SetInfo()
+	$User.UserFlags[0] = $User.UserFlags[0] -bor 0x10000
+	$user.SetInfo()
+
+	$objOU = [ADSI]"WinNT://$hostname/Administrators,group"
+	$objOU.add("WinNT://$hostname/$accountName")
+}
+
+$Source = @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+
+namespace PSCloudbase
+{
+    public sealed class Win32CryptApi
+    {
+        public static long CRYPT_SILENT                     = 0x00000040;
+        public static long CRYPT_VERIFYCONTEXT              = 0xF0000000;
+        public static int PROV_RSA_FULL                     = 1;
+
+        [DllImport("advapi32.dll", CharSet=CharSet.Auto, SetLastError=true)]
+        [return : MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CryptAcquireContext(ref IntPtr hProv,
+                                                      StringBuilder pszContainer, // Don't use string, as Powershell replaces $null with an empty string
+                                                      StringBuilder pszProvider, // Don't use string, as Powershell replaces $null with an empty string
+                                                      uint dwProvType,
+                                                      uint dwFlags);
+
+        [DllImport("Advapi32.dll", EntryPoint = "CryptReleaseContext", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool CryptReleaseContext(IntPtr hProv, Int32 dwFlags);
+
+        [DllImport("advapi32.dll", SetLastError=true)]
+        public static extern bool CryptGenRandom(IntPtr hProv, uint dwLen, byte[] pbBuffer);
+
+        [DllImport("Kernel32.dll")]
+        public static extern uint GetLastError();
+    }
+}
+"@
+
+Add-Type -TypeDefinition $Source -Language CSharp
+
+function Get-RandomPassword
+{
+    [CmdletBinding()]
+    param
+    (
+        [parameter(Mandatory=$true)]
+        [int]$Length
+    )
+    process
+    {
+        $hProvider = 0
+        try
+        {
+            if(![PSCloudbase.Win32CryptApi]::CryptAcquireContext([ref]$hProvider, $null, $null,
+                                                                 [PSCloudbase.Win32CryptApi]::PROV_RSA_FULL,
+                                                                 ([PSCloudbase.Win32CryptApi]::CRYPT_VERIFYCONTEXT -bor
+                                                                  [PSCloudbase.Win32CryptApi]::CRYPT_SILENT)))
+            {
+                throw "CryptAcquireContext failed with error: 0x" + "{0:X0}" -f [PSCloudbase.Win32CryptApi]::GetLastError()
+            }
+
+            $buffer = New-Object byte[] $Length
+            if(![PSCloudbase.Win32CryptApi]::CryptGenRandom($hProvider, $Length, $buffer))
+            {
+                throw "CryptGenRandom failed with error: 0x" + "{0:X0}" -f [PSCloudbase.Win32CryptApi]::GetLastError()
+            }
+
+            $buffer | ForEach-Object { $password += "{0:X0}" -f $_ }
+            return $password
+        }
+        finally
+        {
+            if($hProvider)
+            {
+                $retVal = [PSCloudbase.Win32CryptApi]::CryptReleaseContext($hProvider, 0)
+            }
+        }
+    }
+}
+
+
+
+`
+
 func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 	// Create a file in a well-defined location containing the machine's
 	// nonce. The presence and contents of this file will be verified
@@ -190,25 +318,29 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 	// Note: this must be the last runcmd we do in ConfigureBasic, as
 	// the presence of the nonce file is used to gate the remainder
 	// of synchronous bootstrap.
-	zipUrl := "http://freefr.dl.sourceforge.net/project/sevenzip/7-Zip/9.20/7z920-x64.msi"
-	gitUrl := "http://msysgit.googlecode.com/files/Git-1.8.5.2-preview20131230.exe"
-	var zipDst = path.Join(osenv.WinTempDir, "7z920.x64.msi")
+	zipUrl := "https://www.cloudbase.it/downloads/7z920-x64.msi"
+	gitUrl := "https://www.cloudbase.it/downloads/Git-1.8.5.2-preview20131230.exe"
+	var zipDst = path.Join(osenv.WinTempDir, "7z920-x64.msi")
 	var gitDst = path.Join(osenv.WinTempDir, "Git-1.8.5.2-preview20131230.exe")
 
 	c.AddPSScripts(
+		fmt.Sprintf(`%s`, WinPowershellHelperFunctions),
         fmt.Sprintf(`mkdir %s`, utils.PathToWindows(osenv.WinTempDir)),
-		fmt.Sprintf(`Invoke-WebRequest "%s" -OutFile "%s"`,
-			zipUrl, utils.PathToWindows(zipDst)),
-		fmt.Sprintf(`msiexec.exe /i "%s" /qb`, utils.PathToWindows(zipDst)),
+        fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`, 
+        	zipUrl, utils.PathToWindows(zipDst)),
+		fmt.Sprintf(`cmd.exe /C call msiexec.exe /i "%s" /qb`, utils.PathToWindows(zipDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install 7zip" }`),
-		fmt.Sprintf(`Invoke-WebRequest "%s" -OutFile "%s"`,
-			gitUrl, utils.PathToWindows(gitDst)),
-		fmt.Sprintf(`& "%s" /SILENT`, utils.PathToWindows(gitDst)),
+		fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`, 
+        	gitUrl, utils.PathToWindows(gitDst)),
+		fmt.Sprintf(`cmd.exe /C call "%s" /SILENT`, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
+		fmt.Sprintf(`$juju_passwd = Get-RandomPassword 20`),
+		fmt.Sprintf(`$juju_passwd += "^"`),
+		fmt.Sprintf(`create-account jujud-user "Juju Admin user" $juju_passwd`),
 		fmt.Sprintf(`mkdir "%s"`, utils.PathToWindows(osenv.WinBinDir)),
 		fmt.Sprintf(`mkdir "%s\locks"`, utils.PathToWindows(osenv.WinLibDir)),
-		fmt.Sprintf(`setx PATH "$env:PATH;${env:ProgramFiles(x86)}\Git\cmd"`),
-		fmt.Sprintf(`setx PATH "$env:PATH;%s" /M`, utils.PathToWindows(osenv.WinBinDir)),
+		fmt.Sprintf(`$env:PATH = "$env:PATH;%s;${env:ProgramFiles(x86)}\Git\cmd"`, utils.PathToWindows(osenv.WinBinDir)),
+		fmt.Sprintf(`setx /U jujud-user /P $juju_passwd PATH "$env:PATH"`),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
 	c.AddPSScripts(
@@ -304,7 +436,7 @@ func WinConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
 		fmt.Sprintf(`mkdir $binDir`),
 		fmt.Sprintf(`$WebClient = New-Object System.Net.WebClient`),
 		fmt.Sprintf(`[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}`),
-		fmt.Sprintf(`$WebClient.DownloadFile('%s', "$binDir\tools.tar.gz")`, cfg.Tools.URL),
+		fmt.Sprintf(`ExecRetry { $WebClient.DownloadFile('%s', "$binDir\tools.tar.gz") }`, cfg.Tools.URL),
 		fmt.Sprintf(`$dToolsHash = (Get-FileHash -Algorithm SHA256 "$binDir\tools.tar.gz").hash`),
 		fmt.Sprintf(`$dToolsHash > "$binDir\juju%s.sha256"`,
 			cfg.Tools.Version),
@@ -571,7 +703,9 @@ func MachineAgentWindowsService(name, toolsDir, dataDir, logDir, tag, machineId 
         utils.PathToWindows(jujuServiceWrapper), name, utils.PathToWindows(jujud), utils.PathToWindows(dataDir), machineId, utils.PathToWindows(logFile))
 
     cmd := []string{
-    	fmt.Sprintf(`New-Service -Name '%s' -DisplayName 'Jujud machine agent' '%s'`, name, serviceString),
+    	fmt.Sprintf(`$secpasswd = ConvertTo-SecureString $juju_passwd -AsPlainText -Force`),
+    	fmt.Sprintf(`$jujuCreds = New-Object System.Management.Automation.PSCredential ("jujud-user", $secpasswd)`),
+    	fmt.Sprintf(`New-Service -Credential $jujuCreds -Name '%s' -DisplayName 'Jujud machine agent' '%s'`, name, serviceString),
     	fmt.Sprintf(`Start-Service %s`, name),
     }
     return cmd

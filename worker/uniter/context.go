@@ -35,10 +35,14 @@ func RebootRequiredError(err error) bool {
         return false
     }
     msg, _ := err.(*exec.ExitError)
+    if msg == nil {
+    	return false
+    }
     code := msg.Sys().(syscall.WaitStatus).ExitStatus()
     if code == osenv.MustReboot {
         return true
     }
+
     return false
 }
 
@@ -190,10 +194,13 @@ func (ctx *HookContext) RelationIds() []int {
 func (ctx *HookContext) finalizeContext(process string, err error) error {
     if err != nil{
         // gsamfira: We need this later to requeue the hook
+        logger.Infof("Checking if reboot is needed")
         if RebootRequiredError(err){
+        	logger.Infof("Error code is reboot code")
             return err
         }
     }
+    logger.Infof("Continuing without reboot")
     writeChanges := err == nil
     for id, rctx := range ctx.relations {
         if writeChanges {
