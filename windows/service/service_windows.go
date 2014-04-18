@@ -145,19 +145,25 @@ func (c *Cmd) Install() error{
     if c.Service.Installed(){
         return errors.New(fmt.Sprintf("Service %s already installed", c.Service.Name))
     }
+    logger.Infof("Installing Service %v", c.Service.Name)
     serviceString := fmt.Sprintf(`"%s" "%s" %s`, c.ServiceBin, c.Service.Name, c.Cmd)
     cmd := []string{
-        fmt.Sprintf("powershell"),
-        fmt.Sprintf("-Command"),
-        fmt.Sprintf("{"),
-        fmt.Sprintf(`$data = Get-Content C:\Juju\Jujud.pass;`),
-        fmt.Sprintf(`$secpasswd = $data | convertto-securestring;`),
-        fmt.Sprintf(`$juju_user = whoami;`),
-        fmt.Sprintf(`$jujuCreds = New-Object System.Management.Automation.PSCredential ($juju_user, $secpasswd);`),
+        "powershell",
+        "Invoke-Command {",
+        fmt.Sprintf(`$data = Get-Content C:\Juju\Jujud.pass`),
+        exec.CheckError,
+        fmt.Sprintf(`$secpasswd = $data | convertto-securestring`),
+        exec.CheckError,
+        fmt.Sprintf(`$juju_user = whoami`),
+        exec.CheckError,
+        fmt.Sprintf(`$jujuCreds = New-Object System.Management.Automation.PSCredential($juju_user, $secpasswd)`),
+        exec.CheckError,
         fmt.Sprintf(`New-Service -Credential $jujuCreds -Name '%s' -DisplayName '%s' '%s'`, c.Service.Name, c.Description, serviceString),
-        fmt.Sprintf(`}`),
+        exec.CheckError,
+        "}",
     }
-    _, errCmd := exec.RunCommand(cmd)
+    outCmd, errCmd := exec.RunCommand(cmd)
+    logger.Infof("ERROR installing service %v --> %v", outCmd, errCmd)
     if errCmd != nil {
         return errCmd
     }
