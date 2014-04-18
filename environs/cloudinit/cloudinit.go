@@ -182,7 +182,9 @@ func Configure(cfg *MachineConfig, c *cloudinit.Config) error {
 // relative to the Juju data-dir.
 const NonceFile = "nonce.txt"
 
-var WinPowershellHelperFunctions = `
+var winPowershellHelperFunctions = `
+
+$ErrorActionPreference = "Stop"
 
 function ExecRetry($command, $maxRetryCount = 10, $retryInterval=2)
 {
@@ -306,7 +308,587 @@ function Get-RandomPassword
     }
 }
 
+$SourcePolicy = @"
+/*
+Original sources available at: https://bitbucket.org/splatteredbits/carbon
+*/
 
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+
+namespace PSCarbon
+{
+    public sealed class Lsa
+    {
+        // ReSharper disable InconsistentNaming
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct LSA_UNICODE_STRING
+        {
+            internal LSA_UNICODE_STRING(string inputString)
+            {
+                if (inputString == null)
+                {
+                    Buffer = IntPtr.Zero;
+                    Length = 0;
+                    MaximumLength = 0;
+                }
+                else
+                {
+                    Buffer = Marshal.StringToHGlobalAuto(inputString);
+                    Length = (ushort)(inputString.Length * UnicodeEncoding.CharSize);
+                    MaximumLength = (ushort)((inputString.Length + 1) * UnicodeEncoding.CharSize);
+                }
+            }
+
+            internal ushort Length;
+            internal ushort MaximumLength;
+            internal IntPtr Buffer;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct LSA_OBJECT_ATTRIBUTES
+        {
+            internal uint Length;
+            internal IntPtr RootDirectory;
+            internal LSA_UNICODE_STRING ObjectName;
+            internal uint Attributes;
+            internal IntPtr SecurityDescriptor;
+            internal IntPtr SecurityQualityOfService;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LUID
+        {
+            public uint LowPart;
+            public int HighPart;
+        }
+
+        // ReSharper disable UnusedMember.Local
+        private const uint POLICY_VIEW_LOCAL_INFORMATION = 0x00000001;
+        private const uint POLICY_VIEW_AUDIT_INFORMATION = 0x00000002;
+        private const uint POLICY_GET_PRIVATE_INFORMATION = 0x00000004;
+        private const uint POLICY_TRUST_ADMIN = 0x00000008;
+        private const uint POLICY_CREATE_ACCOUNT = 0x00000010;
+        private const uint POLICY_CREATE_SECRET = 0x00000014;
+        private const uint POLICY_CREATE_PRIVILEGE = 0x00000040;
+        private const uint POLICY_SET_DEFAULT_QUOTA_LIMITS = 0x00000080;
+        private const uint POLICY_SET_AUDIT_REQUIREMENTS = 0x00000100;
+        private const uint POLICY_AUDIT_LOG_ADMIN = 0x00000200;
+        private const uint POLICY_SERVER_ADMIN = 0x00000400;
+        private const uint POLICY_LOOKUP_NAMES = 0x00000800;
+        private const uint POLICY_NOTIFICATION = 0x00001000;
+        // ReSharper restore UnusedMember.Local
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern bool LookupPrivilegeValue(
+            [MarshalAs(UnmanagedType.LPTStr)] string lpSystemName,
+            [MarshalAs(UnmanagedType.LPTStr)] string lpName,
+            out LUID lpLuid);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint LsaAddAccountRights(
+            IntPtr PolicyHandle,
+            IntPtr AccountSid,
+            LSA_UNICODE_STRING[] UserRights,
+            uint CountOfRights);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
+        private static extern uint LsaClose(IntPtr ObjectHandle);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern uint LsaEnumerateAccountRights(IntPtr PolicyHandle,
+            IntPtr AccountSid,
+            out IntPtr UserRights,
+            out uint CountOfRights
+            );
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern uint LsaFreeMemory(IntPtr pBuffer);
+
+        [DllImport("advapi32.dll")]
+        private static extern int LsaNtStatusToWinError(long status);
+
+        [DllImport("advapi32.dll", SetLastError = true, PreserveSig = true)]
+        private static extern uint LsaOpenPolicy(ref LSA_UNICODE_STRING SystemName, ref LSA_OBJECT_ATTRIBUTES ObjectAttributes, uint DesiredAccess, out IntPtr PolicyHandle );
+
+        [DllImport("advapi32.dll", SetLastError = true, PreserveSig = true)]
+        static extern uint LsaRemoveAccountRights(
+            IntPtr PolicyHandle,
+            IntPtr AccountSid,
+            [MarshalAs(UnmanagedType.U1)]
+            bool AllRights,
+            LSA_UNICODE_STRING[] UserRights,
+            uint CountOfRights);
+        // ReSharper restore InconsistentNaming
+
+        private static IntPtr GetIdentitySid(string identity)
+        {
+            var sid =
+                new NTAccount(identity).Translate(typeof (SecurityIdentifier)) as SecurityIdentifier;
+            if (sid == null)
+            {
+                throw new ArgumentException(string.Format("Account {0} not found.", identity));
+            }
+            var sidBytes = new byte[sid.BinaryLength];
+            sid.GetBinaryForm(sidBytes, 0);
+            var sidPtr = Marshal.AllocHGlobal(sidBytes.Length);
+            Marshal.Copy(sidBytes, 0, sidPtr, sidBytes.Length);
+            return sidPtr;
+        }
+
+        private static IntPtr GetLsaPolicyHandle()
+        {
+            var computerName = Environment.MachineName;
+            IntPtr hPolicy;
+            var objectAttributes = new LSA_OBJECT_ATTRIBUTES
+            {
+                Length = 0,
+                RootDirectory = IntPtr.Zero,
+                Attributes = 0,
+                SecurityDescriptor = IntPtr.Zero,
+                SecurityQualityOfService = IntPtr.Zero
+            };
+
+            const uint ACCESS_MASK = POLICY_CREATE_SECRET | POLICY_LOOKUP_NAMES | POLICY_VIEW_LOCAL_INFORMATION;
+            var machineNameLsa = new LSA_UNICODE_STRING(computerName);
+            var result = LsaOpenPolicy(ref machineNameLsa, ref objectAttributes, ACCESS_MASK, out hPolicy);
+            HandleLsaResult(result);
+            return hPolicy;
+        }
+
+        public static string[] GetPrivileges(string identity)
+        {
+            var sidPtr = GetIdentitySid(identity);
+            var hPolicy = GetLsaPolicyHandle();
+            var rightsPtr = IntPtr.Zero;
+
+            try
+            {
+
+                var privileges = new List<string>();
+
+                uint rightsCount;
+                var result = LsaEnumerateAccountRights(hPolicy, sidPtr, out rightsPtr, out rightsCount);
+                var win32ErrorCode = LsaNtStatusToWinError(result);
+                // the user has no privileges
+                if( win32ErrorCode == STATUS_OBJECT_NAME_NOT_FOUND )
+                {
+                    return new string[0];
+                }
+                HandleLsaResult(result);
+
+                var myLsaus = new LSA_UNICODE_STRING();
+                for (ulong i = 0; i < rightsCount; i++)
+                {
+                    var itemAddr = new IntPtr(rightsPtr.ToInt64() + (long) (i*(ulong) Marshal.SizeOf(myLsaus)));
+                    myLsaus = (LSA_UNICODE_STRING) Marshal.PtrToStructure(itemAddr, myLsaus.GetType());
+                    var cvt = new char[myLsaus.Length/UnicodeEncoding.CharSize];
+                    Marshal.Copy(myLsaus.Buffer, cvt, 0, myLsaus.Length/UnicodeEncoding.CharSize);
+                    var thisRight = new string(cvt);
+                    privileges.Add(thisRight);
+                }
+                return privileges.ToArray();
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(sidPtr);
+                var result = LsaClose(hPolicy);
+                HandleLsaResult(result);
+                result = LsaFreeMemory(rightsPtr);
+                HandleLsaResult(result);
+            }
+        }
+
+        public static void GrantPrivileges(string identity, string[] privileges)
+        {
+            var sidPtr = GetIdentitySid(identity);
+            var hPolicy = GetLsaPolicyHandle();
+
+            try
+            {
+                var lsaPrivileges = StringsToLsaStrings(privileges);
+                var result = LsaAddAccountRights(hPolicy, sidPtr, lsaPrivileges, (uint)lsaPrivileges.Length);
+                HandleLsaResult(result);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(sidPtr);
+                var result = LsaClose(hPolicy);
+                HandleLsaResult(result);
+            }
+        }
+
+        const int STATUS_SUCCESS = 0x0;
+        const int STATUS_OBJECT_NAME_NOT_FOUND = 0x00000002;
+        const int STATUS_ACCESS_DENIED = 0x00000005;
+        const int STATUS_INVALID_HANDLE = 0x00000006;
+        const int STATUS_UNSUCCESSFUL = 0x0000001F;
+        const int STATUS_INVALID_PARAMETER = 0x00000057;
+        const int STATUS_NO_SUCH_PRIVILEGE = 0x00000521;
+        const int STATUS_INVALID_SERVER_STATE = 0x00000548;
+        const int STATUS_INTERNAL_DB_ERROR = 0x00000567;
+        const int STATUS_INSUFFICIENT_RESOURCES = 0x000005AA;
+
+        private static readonly Dictionary<int, string> ErrorMessages = new Dictionary<int, string>
+                                    {
+                                        {STATUS_OBJECT_NAME_NOT_FOUND, "Object name not found. An object in the LSA policy database was not found. The object may have been specified either by SID or by name, depending on its type."},
+                                        {STATUS_ACCESS_DENIED, "Access denied. Caller does not have the appropriate access to complete the operation."},
+                                        {STATUS_INVALID_HANDLE, "Invalid handle. Indicates an object or RPC handle is not valid in the context used."},
+                                        {STATUS_UNSUCCESSFUL, "Unsuccessful. Generic failure, such as RPC connection failure."},
+                                        {STATUS_INVALID_PARAMETER, "Invalid parameter. One of the parameters is not valid."},
+                                        {STATUS_NO_SUCH_PRIVILEGE, "No such privilege. Indicates a specified privilege does not exist."},
+                                        {STATUS_INVALID_SERVER_STATE, "Invalid server state. Indicates the LSA server is currently disabled."},
+                                        {STATUS_INTERNAL_DB_ERROR, "Internal database error. The LSA database contains an internal inconsistency."},
+                                        {STATUS_INSUFFICIENT_RESOURCES, "Insufficient resources. There are not enough system resources (such as memory to allocate buffers) to complete the call."}
+                                    };
+
+        private static void HandleLsaResult(uint returnCode)
+        {
+            var win32ErrorCode = LsaNtStatusToWinError(returnCode);
+
+            if( win32ErrorCode == STATUS_SUCCESS)
+                return;
+
+            if( ErrorMessages.ContainsKey(win32ErrorCode) )
+            {
+                throw new Win32Exception(win32ErrorCode, ErrorMessages[win32ErrorCode]);
+            }
+
+            throw new Win32Exception(win32ErrorCode);
+        }
+
+        public static void RevokePrivileges(string identity, string[] privileges)
+        {
+            var sidPtr = GetIdentitySid(identity);
+            var hPolicy = GetLsaPolicyHandle();
+
+            try
+            {
+                var currentPrivileges = GetPrivileges(identity);
+                if (currentPrivileges.Length == 0)
+                {
+                    return;
+                }
+                var lsaPrivileges = StringsToLsaStrings(privileges);
+                var result = LsaRemoveAccountRights(hPolicy, sidPtr, false, lsaPrivileges, (uint)lsaPrivileges.Length);
+                HandleLsaResult(result);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(sidPtr);
+                var result = LsaClose(hPolicy);
+                HandleLsaResult(result);
+            }
+
+        }
+
+        private static LSA_UNICODE_STRING[] StringsToLsaStrings(string[] privileges)
+        {
+            var lsaPrivileges = new LSA_UNICODE_STRING[privileges.Length];
+            for (var idx = 0; idx < privileges.Length; ++idx)
+            {
+                lsaPrivileges[idx] = new LSA_UNICODE_STRING(privileges[idx]);
+            }
+            return lsaPrivileges;
+        }
+    }
+}
+"@
+
+Add-Type -TypeDefinition $SourcePolicy -Language CSharp
+
+$ServiceChangeErrors = @{}
+$ServiceChangeErrors.Add(1, "Not Supported")
+$ServiceChangeErrors.Add(2, "Access Denied")
+$ServiceChangeErrors.Add(3, "Dependent Services Running")
+$ServiceChangeErrors.Add(4, "Invalid Service Control")
+$ServiceChangeErrors.Add(5, "Service Cannot Accept Control")
+$ServiceChangeErrors.Add(6, "Service Not Active")
+$ServiceChangeErrors.Add(7, "Service Request Timeout")
+$ServiceChangeErrors.Add(8, "Unknown Failure")
+$ServiceChangeErrors.Add(9, "Path Not Found")
+$ServiceChangeErrors.Add(10, "Service Already Running")
+$ServiceChangeErrors.Add(11, "Service Database Locked")
+$ServiceChangeErrors.Add(12, "Service Dependency Deleted")
+$ServiceChangeErrors.Add(13, "Service Dependency Failure")
+$ServiceChangeErrors.Add(14, "Service Disabled")
+$ServiceChangeErrors.Add(15, "Service Logon Failure")
+$ServiceChangeErrors.Add(16, "Service Marked For Deletion")
+$ServiceChangeErrors.Add(17, "Service No Thread")
+$ServiceChangeErrors.Add(18, "Status Circular Dependency")
+$ServiceChangeErrors.Add(19, "Status Duplicate Name")
+$ServiceChangeErrors.Add(20, "Status Invalid Name")
+$ServiceChangeErrors.Add(21, "Status Invalid Parameter")
+$ServiceChangeErrors.Add(22, "Status Invalid Service Account")
+$ServiceChangeErrors.Add(23, "Status Service Exists")
+$ServiceChangeErrors.Add(24, "Service Already Paused")
+
+
+function SetAssignPrimaryTokenPrivilege($UserName)
+{
+    $privilege = "SeAssignPrimaryTokenPrivilege"
+    if (![PSCarbon.Lsa]::GetPrivileges($UserName).Contains($privilege))
+    {
+        [PSCarbon.Lsa]::GrantPrivileges($UserName, $privilege)
+    }
+}
+
+function SetUserLogonAsServiceRights($UserName)
+{
+    $privilege = "SeServiceLogonRight"
+    if (![PSCarbon.Lsa]::GetPrivileges($UserName).Contains($privilege))
+    {
+        [PSCarbon.Lsa]::GrantPrivileges($UserName, $privilege)
+    }
+}
+
+$SourceAsUser = @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.ComponentModel;
+
+namespace PSCloudbase
+{
+    public class ProcessManager
+    {
+        const int LOGON32_LOGON_SERVICE = 5;
+        const int LOGON32_PROVIDER_DEFAULT = 0;
+
+        const uint GENERIC_ALL_ACCESS = 0x10000000;
+
+        const uint INFINITE = 0xFFFFFFFF;
+
+        enum SECURITY_IMPERSONATION_LEVEL
+        {
+            SecurityAnonymous,
+            SecurityIdentification,
+            SecurityImpersonation,
+            SecurityDelegation
+        }
+
+        enum TOKEN_TYPE
+        {
+            TokenPrimary = 1,
+            TokenImpersonation
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SECURITY_ATTRIBUTES
+        {
+            public int nLength;
+            public IntPtr lpSecurityDescriptor;
+            public int bInheritHandle;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess;
+            public IntPtr hThread;
+            public int dwProcessId;
+            public int dwThreadId;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct STARTUPINFO
+        {
+            public Int32 cb;
+            public string lpReserved;
+            public string lpDesktop;
+            public string lpTitle;
+            public Int32 dwX;
+            public Int32 dwY;
+            public Int32 dwXSize;
+            public Int32 dwYSize;
+            public Int32 dwXCountChars;
+            public Int32 dwYCountChars;
+            public Int32 dwFillAttribute;
+            public Int32 dwFlags;
+            public Int16 wShowWindow;
+            public Int16 cbReserved2;
+            public IntPtr lpReserved2;
+            public IntPtr hStdInput;
+            public IntPtr hStdOutput;
+            public IntPtr hStdError;
+        }
+
+        [DllImport("advapi32.dll", CharSet=CharSet.Auto, SetLastError=true)]
+        extern static bool DuplicateTokenEx(
+            IntPtr hExistingToken,
+            uint dwDesiredAccess,
+            ref SECURITY_ATTRIBUTES lpTokenAttributes,
+            SECURITY_IMPERSONATION_LEVEL ImpersonationLevel,
+            TOKEN_TYPE TokenType,
+            out IntPtr phNewToken);
+
+        [DllImport("advapi32.dll", SetLastError=true)]
+        static extern bool LogonUser(
+            string lpszUsername,
+            string lpszDomain,
+            string lpszPassword,
+            int dwLogonType,
+            int dwLogonProvider,
+            out IntPtr phToken);
+
+        [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+        static extern bool CreateProcessAsUser(
+            IntPtr hToken,
+            string lpApplicationName,
+            string lpCommandLine,
+            ref SECURITY_ATTRIBUTES lpProcessAttributes,
+            ref SECURITY_ATTRIBUTES lpThreadAttributes,
+            bool bInheritHandles,
+            uint dwCreationFlags,
+            IntPtr lpEnvironment,
+            string lpCurrentDirectory,
+            ref STARTUPINFO lpStartupInfo,
+            out PROCESS_INFORMATION lpProcessInformation);
+
+        [DllImport("kernel32.dll", SetLastError=true)]
+        static extern UInt32 WaitForSingleObject(IntPtr hHandle,
+                                                 UInt32 dwMilliseconds);
+
+        [DllImport("Kernel32.dll")]
+        static extern int GetLastError();
+
+        [DllImport("Kernel32.dll")]
+        extern static int CloseHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool GetExitCodeProcess(IntPtr hProcess,
+                                              out uint lpExitCode);
+
+        public static uint RunProcess(string userName, string password,
+                                      string domain, string cmd,
+                                      string arguments)
+        {
+            bool retValue;
+            IntPtr phToken = IntPtr.Zero;
+            IntPtr phTokenDup = IntPtr.Zero;
+            PROCESS_INFORMATION pInfo = new PROCESS_INFORMATION();
+
+            try
+            {
+                retValue = LogonUser(userName, domain, password,
+                                     LOGON32_LOGON_SERVICE,
+                                     LOGON32_PROVIDER_DEFAULT,
+                                     out phToken);
+                if(!retValue)
+                    throw new Win32Exception(GetLastError());
+
+                var sa = new SECURITY_ATTRIBUTES();
+                sa.nLength = Marshal.SizeOf(sa);
+
+                retValue = DuplicateTokenEx(
+                    phToken, GENERIC_ALL_ACCESS, ref sa,
+                    SECURITY_IMPERSONATION_LEVEL.SecurityImpersonation,
+                    TOKEN_TYPE.TokenPrimary, out phTokenDup);
+                if(!retValue)
+                    throw new Win32Exception(GetLastError());
+
+                STARTUPINFO sInfo = new STARTUPINFO();
+                sInfo.lpDesktop = "";
+
+                retValue = CreateProcessAsUser(phTokenDup, cmd, arguments,
+                                               ref sa, ref sa, false, 0,
+                                               IntPtr.Zero, null,
+                                               ref sInfo, out pInfo);
+                if(!retValue)
+                    throw new Win32Exception(GetLastError());
+
+                WaitForSingleObject(pInfo.hProcess, INFINITE);
+
+                var lastErr = GetLastError();
+                if(lastErr != 0)
+                    throw new Win32Exception(GetLastError());
+
+                uint exitCode;
+                retValue = GetExitCodeProcess(pInfo.hProcess, out exitCode);
+                if(!retValue)
+                    throw new Win32Exception(GetLastError());
+
+                return exitCode;
+            }
+            finally
+            {
+                if(phToken != IntPtr.Zero)
+                    CloseHandle(phToken);
+                if(phTokenDup != IntPtr.Zero)
+                    CloseHandle(phTokenDup);
+                if(pInfo.hProcess != IntPtr.Zero)
+                    CloseHandle(pInfo.hProcess);
+            }
+        }
+    }
+}
+"@
+
+Add-Type -TypeDefinition $SourceAsUser -Language CSharp
+
+function Start-ProcessAsUser
+{
+    [CmdletBinding()]
+    param
+    (
+        [parameter(Mandatory=$true, ValueFromPipeline=$true)]
+        [string]$Command,
+
+        [parameter()]
+        [string]$Arguments,
+
+        [parameter(Mandatory=$true)]
+        [PSCredential]$Credential
+    )
+    process
+    {
+        $nc = $Credential.GetNetworkCredential()
+
+        $domain = "."
+        if($nc.Domain)
+        {
+            $domain = $nc.Domain
+        }
+
+        [PSCloudbase.ProcessManager]::RunProcess($nc.UserName, $nc.Password,
+                                                 $domain, $Command,
+                                                 $Arguments)
+    }
+}
+
+$powershell = "$ENV:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$cmdExe = "$ENV:SystemRoot\System32\cmd.exe"
+
+$juju_passwd = Get-RandomPassword 20
+$juju_passwd += "^"
+create-account jujud "Juju Admin user" $juju_passwd
+$hostname = hostname
+$juju_user = "$hostname\jujud"
+
+SetUserLogonAsServiceRights $juju_user
+
+$secpasswd = ConvertTo-SecureString $juju_passwd -AsPlainText -Force
+$jujuCreds = New-Object System.Management.Automation.PSCredential ($juju_user, $secpasswd)
+
+`
+
+var winSetPasswdScript = `
+
+Set-Content "C:\juju\bin\save_pass.ps1" @"
+Param (
+	[Parameter(Mandatory=` + "`$true" + `)]
+	[string]` + "`$pass" + `
+)
+
+` + "`$secpasswd" + ` = ConvertTo-SecureString ` + "`$pass" + ` -AsPlainText -Force
+` + "`$secpasswd" + ` | convertfrom-securestring | Add-Content C:\Juju\Jujud.pass 
+"@
 
 `
 
@@ -324,7 +906,8 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 	var gitDst = path.Join(osenv.WinTempDir, "Git-1.8.5.2-preview20131230.exe")
 
 	c.AddPSScripts(
-		fmt.Sprintf(`%s`, WinPowershellHelperFunctions),
+		fmt.Sprintf(`%s`, winPowershellHelperFunctions),
+		fmt.Sprintf(`icacls "%s" /grant "jujud:(OI)(CI)(F)" /T`, utils.PathToWindows(osenv.WinBaseDir)),
         fmt.Sprintf(`mkdir %s`, utils.PathToWindows(osenv.WinTempDir)),
         fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`, 
         	zipUrl, utils.PathToWindows(zipDst)),
@@ -334,13 +917,13 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
         	gitUrl, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`cmd.exe /C call "%s" /SILENT`, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
-		fmt.Sprintf(`$juju_passwd = Get-RandomPassword 20`),
-		fmt.Sprintf(`$juju_passwd += "^"`),
-		fmt.Sprintf(`create-account jujud-user "Juju Admin user" $juju_passwd`),
 		fmt.Sprintf(`mkdir "%s"`, utils.PathToWindows(osenv.WinBinDir)),
+		fmt.Sprintf(`%s`, winSetPasswdScript),
+		// fmt.Sprintf(`Start-Process -FilePath powershell.exe -LoadUserProfile -WorkingDirectory '/' -Wait -Credential $jujuCreds -ArgumentList "C:\juju\bin\save_pass.ps1 -pass $juju_passwd"`),
+        fmt.Sprintf(`Start-ProcessAsUser -Command $powershell -Arguments "-File C:\juju\bin\save_pass.ps1 $juju_passwd" -Credential $jujuCreds`),
 		fmt.Sprintf(`mkdir "%s\locks"`, utils.PathToWindows(osenv.WinLibDir)),
-		fmt.Sprintf(`$env:PATH = "$env:PATH;%s;${env:ProgramFiles(x86)}\Git\cmd"`, utils.PathToWindows(osenv.WinBinDir)),
-		fmt.Sprintf(`setx /U jujud-user /P $juju_passwd PATH "$env:PATH"`),
+        fmt.Sprintf(`Start-ProcessAsUser -Command $cmdExe -Arguments '/C setx PATH "%%PATH%%;%%PROGRAMFILES(x86)%%\Git\cmd;C:\Juju\bin"' -Credential $jujuCreds`),
+		// fmt.Sprintf(`Start-Process -FilePath cmd.exe -LoadUserProfile -WorkingDirectory '/' -Wait -Credential $jujuCreds -ArgumentList '/C call setx PATH "%%PATH%%;%%PROGRAMFILES(x86)%%\Git\cmd;C:\Juju\bin"'`),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
 	c.AddPSScripts(
@@ -703,8 +1286,6 @@ func MachineAgentWindowsService(name, toolsDir, dataDir, logDir, tag, machineId 
         utils.PathToWindows(jujuServiceWrapper), name, utils.PathToWindows(jujud), utils.PathToWindows(dataDir), machineId, utils.PathToWindows(logFile))
 
     cmd := []string{
-    	fmt.Sprintf(`$secpasswd = ConvertTo-SecureString $juju_passwd -AsPlainText -Force`),
-    	fmt.Sprintf(`$jujuCreds = New-Object System.Management.Automation.PSCredential ("jujud-user", $secpasswd)`),
     	fmt.Sprintf(`New-Service -Credential $jujuCreds -Name '%s' -DisplayName 'Jujud machine agent' '%s'`, name, serviceString),
     	fmt.Sprintf(`Start-Service %s`, name),
     }

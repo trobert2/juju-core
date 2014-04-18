@@ -148,7 +148,14 @@ func (c *Cmd) Install() error{
     serviceString := fmt.Sprintf(`"%s" "%s" %s`, c.ServiceBin, c.Service.Name, c.Cmd)
     cmd := []string{
         fmt.Sprintf("powershell"),
-        fmt.Sprintf(`New-Service -Name '%s' -DisplayName '%s' '%s'`, c.Service.Name, c.Description, serviceString),
+        fmt.Sprintf("-Command"),
+        fmt.Sprintf("{"),
+        fmt.Sprintf(`$data = Get-Content C:\Juju\Jujud.pass;`),
+        fmt.Sprintf(`$secpasswd = $data | convertto-securestring;`),
+        fmt.Sprintf(`$juju_user = whoami;`),
+        fmt.Sprintf(`$jujuCreds = New-Object System.Management.Automation.PSCredential ($juju_user, $secpasswd);`),
+        fmt.Sprintf(`New-Service -Credential $jujuCreds -Name '%s' -DisplayName '%s' '%s'`, c.Service.Name, c.Description, serviceString),
+        fmt.Sprintf(`}`),
     }
     _, errCmd := exec.RunCommand(cmd)
     if errCmd != nil {
