@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
@@ -35,13 +35,14 @@ type machine interface {
 	Id() string
 	InstanceId() (instance.Id, error)
 	Addresses() []instance.Address
-	SetAddresses([]instance.Address) error
+	SetAddresses(...instance.Address) error
 	InstanceStatus() (string, error)
 	SetInstanceStatus(status string) error
 	String() string
 	Refresh() error
 	Life() state.Life
 	Status() (status params.Status, info string, data params.StatusData, err error)
+	IsManual() (bool, error)
 }
 
 type instanceInfo struct {
@@ -125,12 +126,20 @@ func (p *updater) startMachines(ids []string) error {
 			// We don't know about the machine - start
 			// a goroutine to deal with it.
 			m, err := p.context.getMachine(id)
-			if errors.IsNotFoundError(err) {
+			if errors.IsNotFound(err) {
 				logger.Warningf("watcher gave notification of non-existent machine %q", id)
 				continue
 			}
 			if err != nil {
 				return err
+			}
+			// We don't poll manual machines.
+			isManual, err := m.IsManual()
+			if err != nil {
+				return err
+			}
+			if isManual {
+				continue
 			}
 			c = make(chan struct{})
 			p.machines[id] = c
@@ -171,7 +180,7 @@ func machineLoop(context machineContext, m machine, changed <-chan struct{}) err
 	for {
 		if pollInstance {
 			instInfo, err := pollInstanceInfo(context, m)
-			if err != nil {
+			if err != nil && !state.IsNotProvisionedError(err) {
 				// If the provider doesn't implement Addresses/Status now,
 				// it never will until we're upgraded, so don't bother
 				// asking any more. We could use less resources
@@ -179,15 +188,17 @@ func machineLoop(context machineContext, m machine, changed <-chan struct{}) err
 				// (and hopefully the local provider will implement
 				// Addresses/Status in the not-too-distant future),
 				// so we won't need to worry about this case at all.
-				if errors.IsNotImplementedError(err) {
+				if errors.IsNotImplemented(err) {
 					pollInterval = 365 * 24 * time.Hour
 				} else {
 					return err
 				}
 			}
-			machineStatus, _, _, err := m.Status()
-			if err != nil {
-				logger.Warningf("cannot get current machine status for machine %v: %v", m.Id(), err)
+			machineStatus := params.StatusPending
+			if err == nil {
+				if machineStatus, _, _, err = m.Status(); err != nil {
+					logger.Warningf("cannot get current machine status for machine %v: %v", m.Id(), err)
+				}
 			}
 			if len(instInfo.addresses) > 0 && instInfo.status != "" && machineStatus == params.StatusStarted {
 				// We've got at least one address and a status and instance is started, so poll infrequently.
@@ -220,12 +231,16 @@ func machineLoop(context machineContext, m machine, changed <-chan struct{}) err
 func pollInstanceInfo(context machineContext, m machine) (instInfo instanceInfo, err error) {
 	instInfo = instanceInfo{}
 	instId, err := m.InstanceId()
-	if err != nil && !state.IsNotProvisionedError(err) {
+	// We can't ask the machine for its addresses if it isn't provisioned yet.
+	if state.IsNotProvisionedError(err) {
+		return instInfo, err
+	}
+	if err != nil {
 		return instInfo, fmt.Errorf("cannot get machine's instance id: %v", err)
 	}
 	instInfo, err = context.instanceInfo(instId)
 	if err != nil {
-		if errors.IsNotImplementedError(err) {
+		if errors.IsNotImplemented(err) {
 			return instInfo, err
 		}
 		logger.Warningf("cannot get instance info for instance %q: %v", instId, err)
@@ -247,7 +262,7 @@ func pollInstanceInfo(context machineContext, m machine) (instInfo instanceInfo,
 	}
 	if !addressesEqual(m.Addresses(), instInfo.addresses) {
 		logger.Infof("machine %q has new addresses: %v", m.Id(), instInfo.addresses)
-		if err = m.SetAddresses(instInfo.addresses); err != nil {
+		if err = m.SetAddresses(instInfo.addresses...); err != nil {
 			logger.Errorf("cannot set addresses on %q: %v", m, err)
 		}
 	}

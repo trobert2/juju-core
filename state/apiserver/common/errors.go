@@ -7,7 +7,8 @@ import (
 	stderrors "errors"
 	"fmt"
 
-	"launchpad.net/juju-core/errors"
+	"github.com/juju/errors"
+
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
 )
@@ -52,6 +53,7 @@ var (
 	ErrUnknownPinger  = stderrors.New("unknown pinger id")
 	ErrStoppedWatcher = stderrors.New("watcher has been stopped")
 	ErrBadRequest     = stderrors.New("invalid request")
+	ErrTryAgain       = stderrors.New("try again")
 )
 
 var singletonErrorCodes = map[error]string{
@@ -65,6 +67,7 @@ var singletonErrorCodes = map[error]string{
 	ErrNotLoggedIn:               params.CodeUnauthorized,
 	ErrUnknownWatcher:            params.CodeNotFound,
 	ErrStoppedWatcher:            params.CodeStopped,
+	ErrTryAgain:                  params.CodeTryAgain,
 }
 
 func singletonCode(err error) (string, bool) {
@@ -88,10 +91,12 @@ func ServerError(err error) *params.Error {
 	code, ok := singletonCode(err)
 	switch {
 	case ok:
-	case errors.IsUnauthorizedError(err):
+	case errors.IsUnauthorized(err):
 		code = params.CodeUnauthorized
-	case errors.IsNotFoundError(err):
+	case errors.IsNotFound(err):
 		code = params.CodeNotFound
+	case errors.IsAlreadyExists(err):
+		code = params.CodeAlreadyExists
 	case state.IsNotAssigned(err):
 		code = params.CodeNotAssigned
 	case state.IsHasAssignedUnitsError(err):

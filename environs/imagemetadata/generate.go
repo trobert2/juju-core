@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/juju/errors"
+
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/storage"
-	"launchpad.net/juju-core/errors"
+	"launchpad.net/juju-core/version/ubuntu"
 )
 
 // MergeAndWriteMetadata reads the existing metadata from storage (if any),
@@ -23,7 +25,7 @@ func MergeAndWriteMetadata(series string, metadata []*ImageMetadata, cloudSpec *
 	if err != nil {
 		return err
 	}
-	seriesVersion, err := simplestreams.SeriesVersion(series)
+	seriesVersion, err := ubuntu.SeriesVersion(series)
 	if err != nil {
 		return err
 	}
@@ -38,7 +40,7 @@ func readMetadata(metadataStore storage.Storage) ([]*ImageMetadata, error) {
 	imageConstraint := NewImageConstraint(simplestreams.LookupParams{})
 	existingMetadata, _, err := Fetch(
 		[]simplestreams.DataSource{dataSource}, simplestreams.DefaultIndexPath, imageConstraint, false)
-	if err != nil && !errors.IsNotFoundError(err) {
+	if err != nil && !errors.IsNotFound(err) {
 		return nil, err
 	}
 	return existingMetadata, nil
@@ -73,7 +75,10 @@ func mergeMetadata(seriesVersion string, cloudSpec *simplestreams.CloudSpec, new
 			continue
 		}
 		regions[im.RegionName] = true
-		existingCloudSpec := simplestreams.CloudSpec{im.RegionName, im.Endpoint}
+		existingCloudSpec := simplestreams.CloudSpec{
+			Region:   im.RegionName,
+			Endpoint: im.Endpoint,
+		}
 		allCloudSpecs = append(allCloudSpecs, existingCloudSpec)
 	}
 	return toWrite, allCloudSpecs

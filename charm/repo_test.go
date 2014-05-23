@@ -15,12 +15,12 @@ import (
 	charmtesting "launchpad.net/juju-core/charm/testing"
 	env_config "launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
-    "launchpad.net/juju-core/utils"
+
+	"launchpad.net/juju-core/utils"
 )
 
 type StoreSuite struct {
-	testbase.LoggingSuite
+	testing.FakeHomeSuite
 	server *charmtesting.MockStore
 	store  *charm.CharmStore
 }
@@ -28,7 +28,7 @@ type StoreSuite struct {
 var _ = gc.Suite(&StoreSuite{})
 
 func (s *StoreSuite) SetUpSuite(c *gc.C) {
-	s.LoggingSuite.SetUpSuite(c)
+	s.FakeHomeSuite.SetUpSuite(c)
 	s.server = charmtesting.NewMockStore(c, map[string]int{
 		"cs:series/good":   23,
 		"cs:series/unwise": 23,
@@ -38,7 +38,7 @@ func (s *StoreSuite) SetUpSuite(c *gc.C) {
 }
 
 func (s *StoreSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.FakeHomeSuite.SetUpTest(c)
 	s.PatchValue(&charm.CacheDir, c.MkDir())
 	s.store = charm.NewStore(s.server.Address())
 	s.server.Downloads = nil
@@ -49,11 +49,9 @@ func (s *StoreSuite) SetUpTest(c *gc.C) {
 	s.server.InfoRequestCountNoStats = 0
 }
 
-// Uses the TearDownTest from testbase.LoggingSuite
-
 func (s *StoreSuite) TearDownSuite(c *gc.C) {
 	s.server.Close()
-	s.LoggingSuite.TearDownSuite(c)
+	s.FakeHomeSuite.TearDownSuite(c)
 }
 
 func (s *StoreSuite) TestMissing(c *gc.C) {
@@ -76,7 +74,7 @@ func (s *StoreSuite) TestError(c *gc.C) {
 
 func (s *StoreSuite) TestWarning(c *gc.C) {
 	charmURL := charm.MustParseURL("cs:series/unwise")
-	expect := `.* WARNING juju charm store reports for "cs:series/unwise": foolishness` + "\n"
+	expect := `.* WARNING juju.charm charm store reports for "cs:series/unwise": foolishness` + "\n"
 	r, err := charm.Latest(s.store, charmURL)
 	c.Assert(r, gc.Equals, 23)
 	c.Assert(err, gc.IsNil)
@@ -174,7 +172,7 @@ func (s *StoreSuite) TestGetTestModeFlag(c *gc.C) {
 // The following tests cover the low-level CharmStore-specific API.
 
 func (s *StoreSuite) TestInfo(c *gc.C) {
-	charmURLs := []*charm.URL{
+	charmURLs := []charm.Location{
 		charm.MustParseURL("cs:series/good"),
 		charm.MustParseURL("cs:series/better"),
 		charm.MustParseURL("cs:series/best"),
@@ -230,11 +228,11 @@ func (s *StoreSuite) TestInfoTestModeFlag(c *gc.C) {
 }
 
 func (s *StoreSuite) TestInfoDNSError(c *gc.C) {
-	store := charm.NewStore("http://0.1.2.3")
+	store := charm.NewStore("http://127.1.2.3")
 	charmURL := charm.MustParseURL("cs:series/good")
 	resp, err := store.Info(charmURL)
 	c.Assert(resp, gc.IsNil)
-	expect := `Cannot access the charm store. Are you connected to the internet. Error details:.*`
+	expect := `Cannot access the charm store. .*`
 	c.Assert(err, gc.ErrorMatches, expect)
 }
 
@@ -378,7 +376,7 @@ func (s *StoreSuite) TestCharmURL(c *gc.C) {
 }
 
 type LocalRepoSuite struct {
-	testbase.LoggingSuite
+	testing.FakeHomeSuite
 	repo       *charm.LocalRepository
 	seriesPath string
 }
@@ -386,9 +384,9 @@ type LocalRepoSuite struct {
 var _ = gc.Suite(&LocalRepoSuite{})
 
 func (s *LocalRepoSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.FakeHomeSuite.SetUpTest(c)
 	root := c.MkDir()
-	s.repo = &charm.LocalRepository{root}
+	s.repo = &charm.LocalRepository{Path: root}
 	s.seriesPath = filepath.Join(root, "quantal")
 	c.Assert(os.Mkdir(s.seriesPath, 0777), gc.IsNil)
 }
@@ -494,9 +492,9 @@ func (s *LocalRepoSuite) TestLogsErrors(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 	c.Assert(ch.Revision(), gc.Equals, 1)
 	c.Assert(c.GetTestLog(), gc.Matches, `
-.* WARNING juju failed to load charm at ".*/quantal/blah": .*
-.* WARNING juju failed to load charm at ".*/quantal/blah.charm": .*
-.* WARNING juju failed to load charm at ".*/quantal/upgrade2": .*
+.* WARNING juju.charm failed to load charm at ".*/quantal/blah": .*
+.* WARNING juju.charm failed to load charm at ".*/quantal/blah.charm": .*
+.* WARNING juju.charm failed to load charm at ".*/quantal/upgrade2": .*
 `[1:])
 }
 

@@ -5,17 +5,16 @@ package main
 
 import (
 	"fmt"
-	"strings"
 
 	"launchpad.net/gnuflag"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs/manual"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/juju"
 	"launchpad.net/juju-core/names"
-	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
 )
 
@@ -56,14 +55,13 @@ See Also:
 
 // AddMachineCommand starts a new machine and registers it in the environment.
 type AddMachineCommand struct {
-	cmd.EnvCommandBase
+	envcmd.EnvCommandBase
 	// If specified, use this series, else use the environment default-series
 	Series string
 	// If specified, these constraints are merged with those already in the environment.
-	Constraints   constraints.Value
-	MachineId     string
-	ContainerType instance.ContainerType
-	SSHHost       string
+	Constraints constraints.Value
+	// Placement is passed verbatim to the API, to be parsed and evaluated server-side.
+	Placement *instance.Placement
 }
 
 func (c *AddMachineCommand) Info() *cmd.Info {
@@ -76,82 +74,33 @@ func (c *AddMachineCommand) Info() *cmd.Info {
 }
 
 func (c *AddMachineCommand) SetFlags(f *gnuflag.FlagSet) {
-	c.EnvCommandBase.SetFlags(f)
 	f.StringVar(&c.Series, "series", "", "the charm series")
-	f.Var(constraints.ConstraintsValue{&c.Constraints}, "constraints", "additional machine constraints")
+	f.Var(constraints.ConstraintsValue{Target: &c.Constraints}, "constraints", "additional machine constraints")
 }
 
 func (c *AddMachineCommand) Init(args []string) error {
 	if c.Constraints.Container != nil {
 		return fmt.Errorf("container constraint %q not allowed when adding a machine", *c.Constraints.Container)
 	}
-	containerSpec, err := cmd.ZeroOrOneArgs(args)
+	placement, err := cmd.ZeroOrOneArgs(args)
 	if err != nil {
 		return err
 	}
-	if containerSpec == "" {
-		return nil
-	}
-	if strings.HasPrefix(containerSpec, sshHostPrefix) {
-		c.SSHHost = containerSpec[len(sshHostPrefix):]
-	} else {
-		// container arg can either be 'type:machine' or 'type'
-		if c.ContainerType, err = instance.ParseContainerType(containerSpec); err != nil {
-			if names.IsMachine(containerSpec) || !cmd.IsMachineOrNewContainer(containerSpec) {
-				return fmt.Errorf("malformed container argument %q", containerSpec)
-			}
-			sep := strings.Index(containerSpec, ":")
-			c.MachineId = containerSpec[sep+1:]
-			c.ContainerType, err = instance.ParseContainerType(containerSpec[:sep])
-		}
-	}
-	return err
-}
-
-// addMachine1dot16 runs Client.AddMachines using a direct DB connection to maintain
-// compatibility with an API server running 1.16 or older (when AddMachines
-// was not available). This fallback can be removed when we no longer maintain
-// 1.16 compatibility.
-// This was copied directly from the code in AddMachineCommand.Run in 1.16
-func (c *AddMachineCommand) addMachine1dot16() (string, error) {
-	conn, err := juju.NewConnFromName(c.EnvName)
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-
-	series := c.Series
-	if series == "" {
-		conf, err := conn.State.EnvironConfig()
-		if err != nil {
-			return "", err
-		}
-		series = conf.DefaultSeries()
-	}
-	template := state.MachineTemplate{
-		Series:      series,
-		Constraints: c.Constraints,
-		Jobs:        []state.MachineJob{state.JobHostUnits},
-	}
-	var m *state.Machine
-	switch {
-	case c.ContainerType == "":
-		m, err = conn.State.AddOneMachine(template)
-	case c.MachineId != "":
-		m, err = conn.State.AddMachineInsideMachine(template, c.MachineId, c.ContainerType)
-	default:
-		m, err = conn.State.AddMachineInsideNewMachine(template, template, c.ContainerType)
+	c.Placement, err = instance.ParsePlacement(placement)
+	if err == instance.ErrPlacementScopeMissing {
+		placement = c.EnvName + ":" + placement
+		c.Placement, err = instance.ParsePlacement(placement)
 	}
 	if err != nil {
-		return "", err
+		return err
 	}
-	return m.String(), err
+	return nil
 }
 
 func (c *AddMachineCommand) Run(ctx *cmd.Context) error {
-	if c.SSHHost != "" {
+	if c.Placement != nil && c.Placement.Scope == "ssh" {
 		args := manual.ProvisionMachineArgs{
-			Host:    c.SSHHost,
+			Host:    c.Placement.Directive,
 			EnvName: c.EnvName,
 			Stdin:   ctx.Stdin,
 			Stdout:  ctx.Stdout,
@@ -167,37 +116,51 @@ func (c *AddMachineCommand) Run(ctx *cmd.Context) error {
 	}
 	defer client.Close()
 
+	if c.Placement != nil && c.Placement.Scope == instance.MachineScope {
+		// It does not make sense to add-machine <id>.
+		return fmt.Errorf("machine-id cannot be specified when adding machines")
+	}
+
 	machineParams := params.AddMachineParams{
-		ParentId:      c.MachineId,
-		ContainerType: c.ContainerType,
-		Series:        c.Series,
-		Constraints:   c.Constraints,
-		Jobs:          []params.MachineJob{params.JobHostUnits},
+		Placement:   c.Placement,
+		Series:      c.Series,
+		Constraints: c.Constraints,
+		Jobs:        []params.MachineJob{params.JobHostUnits},
 	}
 	results, err := client.AddMachines([]params.AddMachineParams{machineParams})
-	var machineId string
 	if params.IsCodeNotImplemented(err) {
-		logger.Infof("AddMachines not supported by the API server, " +
-			"falling back to 1.16 compatibility mode (direct DB access)")
-		machineId, err = c.addMachine1dot16()
-	} else if err != nil {
-		return err
-	} else {
-		// Currently, only one machine is added, but in future there may be several added in one call.
-		machineInfo := results[0]
-		var machineErr *params.Error
-		machineId, machineErr = machineInfo.Machine, machineInfo.Error
-		if machineErr != nil {
-			err = machineErr
+		if c.Placement != nil {
+			containerType, parseErr := instance.ParseContainerType(c.Placement.Scope)
+			if parseErr != nil {
+				// The user specified a non-container placement directive:
+				// return original API not implemented error.
+				return err
+			}
+			machineParams.ContainerType = containerType
+			machineParams.ParentId = c.Placement.Directive
+			machineParams.Placement = nil
 		}
+		logger.Infof(
+			"AddMachinesWithPlacement not supported by the API server, " +
+				"falling back to 1.18 compatibility mode",
+		)
+		results, err = client.AddMachines1dot18([]params.AddMachineParams{machineParams})
 	}
 	if err != nil {
 		return err
 	}
-	if c.ContainerType == "" {
-		logger.Infof("created machine %v", machineId)
+
+	// Currently, only one machine is added, but in future there may be several added in one call.
+	machineInfo := results[0]
+	if machineInfo.Error != nil {
+		return machineInfo.Error
+	}
+	machineId := machineInfo.Machine
+
+	if names.IsContainerMachine(machineId) {
+		ctx.Infof("created container %v", machineId)
 	} else {
-		logger.Infof("created %q container on machine %v", c.ContainerType, machineId)
+		ctx.Infof("created machine %v", machineId)
 	}
 	return nil
 }

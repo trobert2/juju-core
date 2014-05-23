@@ -7,14 +7,15 @@ import (
 	stdtesting "testing"
 	"time"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/charm"
+	jujutesting "launchpad.net/juju-core/juju/testing"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
 	"launchpad.net/juju-core/state/apiserver/charmrevisionupdater/testing"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/worker/charmrevisionworker"
 )
@@ -25,6 +26,7 @@ func TestPackage(t *stdtesting.T) {
 
 type RevisionUpdateSuite struct {
 	testing.CharmSuite
+	jujutesting.JujuConnSuite
 
 	st             *api.State
 	versionUpdater *charmrevisionworker.RevisionUpdateWorker
@@ -34,10 +36,16 @@ var _ = gc.Suite(&RevisionUpdateSuite{})
 
 func (s *RevisionUpdateSuite) SetUpSuite(c *gc.C) {
 	c.Assert(*charmrevisionworker.Interval, gc.Equals, 24*time.Hour)
-	s.CharmSuite.SetUpSuite(c)
+	s.JujuConnSuite.SetUpSuite(c)
+	s.CharmSuite.SetUpSuite(c, &s.JujuConnSuite)
+}
+
+func (s *RevisionUpdateSuite) TearDownSuite(c *gc.C) {
+	s.JujuConnSuite.TearDownSuite(c)
 }
 
 func (s *RevisionUpdateSuite) SetUpTest(c *gc.C) {
+	s.JujuConnSuite.SetUpTest(c)
 	s.CharmSuite.SetUpTest(c)
 
 	machine, err := s.State.AddMachine("quantal", state.JobManageEnviron)
@@ -50,6 +58,10 @@ func (s *RevisionUpdateSuite) SetUpTest(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 	s.st = s.OpenAPIAsMachine(c, machine.Tag(), password, "fake_nonce")
 	c.Assert(s.st, gc.NotNil)
+}
+
+func (s *RevisionUpdateSuite) TearDownTest(c *gc.C) {
+	s.JujuConnSuite.TearDownTest(c)
 }
 
 func (s *RevisionUpdateSuite) runUpdater(c *gc.C, updateInterval time.Duration) {

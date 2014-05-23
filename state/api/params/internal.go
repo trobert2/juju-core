@@ -7,21 +7,12 @@ import (
 	"time"
 
 	"launchpad.net/juju-core/constraints"
+	"launchpad.net/juju-core/environs/network"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/version"
 )
-
-// Entity identifies a single entity.
-type Entity struct {
-	Tag string
-}
-
-// Entities identifies multiple entities.
-type Entities struct {
-	Entities []Entity
-}
 
 // MachineContainersParams holds the arguments for making a SetSupportedContainers
 // API call.
@@ -192,7 +183,6 @@ type EnvironConfig map[string]interface{}
 
 // EnvironConfigResult holds environment configuration or an error.
 type EnvironConfigResult struct {
-	Error  *Error
 	Config EnvironConfig
 }
 
@@ -299,20 +289,12 @@ type LifeResults struct {
 	Results []LifeResult
 }
 
-// SetEntityAddress holds an entity tag and an address.
-type SetEntityAddress struct {
-	Tag     string
-	Address string
-}
-
-// SetEntityAddresses holds the parameters for making a Set*Address
-// call, where the address can be a public or a private one.
-type SetEntityAddresses struct {
-	Entities []SetEntityAddress
-}
-
-// MachineSetProvisioned holds a machine tag, provider-specific instance id,
-// a nonce, or an error.
+// MachineSetProvisioned holds a machine tag, provider-specific
+// instance id, a nonce, or an error.
+//
+// NOTE: This is deprecated since 1.19.0 and not used by the
+// provisioner, it's just retained for backwards-compatibility and
+// should be removed.
 type MachineSetProvisioned struct {
 	Tag             string
 	InstanceId      instance.Id
@@ -322,29 +304,100 @@ type MachineSetProvisioned struct {
 
 // SetProvisioned holds the parameters for making a SetProvisioned
 // call for a machine.
+//
+// NOTE: This is deprecated since 1.19.0 and not used by the
+// provisioner, it's just retained for backwards-compatibility and
+// should be removed.
 type SetProvisioned struct {
 	Machines []MachineSetProvisioned
 }
 
-// SetEntityStatus holds an entity tag, status and extra info.
-type SetEntityStatus struct {
+// Network describes a single network available on an instance.
+type Network struct {
+	// Tag is the network's tag.
+	Tag string
+
+	// ProviderId is the provider-specific network id.
+	ProviderId network.Id
+
+	// CIDR of the network, in "123.45.67.89/12" format.
+	CIDR string
+
+	// VLANTag needs to be between 1 and 4094 for VLANs and 0 for
+	// normal networks. It's defined by IEEE 802.1Q standard.
+	VLANTag int
+}
+
+// NetworkInterface describes a single network interface available on
+// an instance.
+type NetworkInterface struct {
+	// MACAddress is the network interface's hardware MAC address
+	// (e.g. "aa:bb:cc:dd:ee:ff").
+	MACAddress string
+
+	// InterfaceName is the OS-specific network device name (e.g.
+	// "eth0" or "eth1.42" for a VLAN virtual interface).
+	InterfaceName string
+
+	// NetworkTag is this interface's network tag.
+	NetworkTag string
+
+	// IsVirtual is true when the interface is a virtual device, as
+	// opposed to a physical device.
+	IsVirtual bool
+}
+
+// InstanceInfo holds a machine tag, provider-specific instance id, a
+// nonce, a list of networks and interfaces to set up.
+type InstanceInfo struct {
+	Tag             string
+	InstanceId      instance.Id
+	Nonce           string
+	Characteristics *instance.HardwareCharacteristics
+	Networks        []Network
+	Interfaces      []NetworkInterface
+}
+
+// InstancesInfo holds the parameters for making a SetInstanceInfo
+// call for multiple machines.
+type InstancesInfo struct {
+	Machines []InstanceInfo
+}
+
+// RequestedNetworkResult holds requested networks or an error.
+type RequestedNetworkResult struct {
+	Error           *Error
+	IncludeNetworks []string
+	ExcludeNetworks []string
+}
+
+// RequestedNetworksResults holds multiple requested networks results.
+type RequestedNetworksResults struct {
+	Results []RequestedNetworkResult
+}
+
+// EntityStatus holds an entity tag, status and extra info.
+type EntityStatus struct {
 	Tag    string
 	Status Status
 	Info   string
 	Data   StatusData
 }
 
-// SetStatus holds the parameters for making a SetStatus call.
+// SetStatus holds the parameters for making a SetStatus/UpdateStatus call.
 type SetStatus struct {
-	Entities []SetEntityStatus
+	Entities []EntityStatus
 }
 
 // StatusResult holds an entity status, extra information, or an
 // error.
 type StatusResult struct {
 	Error  *Error
+	Id     string
+	Life   Life
 	Status Status
 	Info   string
+	Data   StatusData
 }
 
 // StatusResults holds multiple status results.
@@ -447,18 +500,6 @@ type EntitiesVersion struct {
 	AgentTools []EntityVersion
 }
 
-// PasswordChanges holds the parameters for making a SetPasswords call.
-type PasswordChanges struct {
-	Changes []PasswordChange
-}
-
-// PasswordChange specifies a password change for the entity
-// with the given tag.
-type PasswordChange struct {
-	Tag      string
-	Password string
-}
-
 // NotifyWatchResult holds a NotifyWatcher id and an error (if any).
 type NotifyWatchResult struct {
 	NotifyWatcherId string
@@ -547,8 +588,34 @@ type RunResult struct {
 	Error     string
 }
 
-// RunResults is used to return the slice of results.  Api server side calls
+// RunResults is used to return the slice of results.  API server side calls
 // need to return single structure values.
 type RunResults struct {
 	Results []RunResult
+}
+
+// AgentVersionResult is used to return the current version number of the
+// agent running the API server.
+type AgentVersionResult struct {
+	Version version.Number
+}
+
+// ProvisioningInfo holds machine provisioning info.
+type ProvisioningInfo struct {
+	Constraints     constraints.Value
+	Series          string
+	Placement       string
+	IncludeNetworks []string
+	ExcludeNetworks []string
+}
+
+// ProvisioningInfoResult holds machine provisioning info or an error.
+type ProvisioningInfoResult struct {
+	Error  *Error
+	Result *ProvisioningInfo
+}
+
+// ProvisioningInfoResults holds multiple machine provisioning info results.
+type ProvisioningInfoResults struct {
+	Results []ProvisioningInfoResult
 }

@@ -6,16 +6,18 @@ package main
 import (
 	"strings"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/charm"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/constraints"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
+	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/juju/testing"
 	"launchpad.net/juju-core/state"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 type DeploySuite struct {
@@ -25,7 +27,7 @@ type DeploySuite struct {
 var _ = gc.Suite(&DeploySuite{})
 
 func runDeploy(c *gc.C, args ...string) error {
-	_, err := coretesting.RunCommand(c, &DeployCommand{}, args)
+	_, err := coretesting.RunCommand(c, envcmd.Wrap(&DeployCommand{}), args)
 	return err
 }
 
@@ -36,6 +38,9 @@ var initErrorTests = []struct {
 	{
 		args: nil,
 		err:  `no charm specified`,
+	}, {
+		args: []string{"charm-name", "service-name", "hotdog"},
+		err:  `unrecognized args: \["hotdog"\]`,
 	}, {
 		args: []string{"craz~ness"},
 		err:  `invalid charm name "craz~ness"`,
@@ -60,7 +65,7 @@ var initErrorTests = []struct {
 func (s *DeploySuite) TestInitErrors(c *gc.C) {
 	for i, t := range initErrorTests {
 		c.Logf("test %d", i)
-		err := coretesting.InitCommand(&DeployCommand{}, t.args)
+		err := coretesting.InitCommand(envcmd.Wrap(&DeployCommand{}), t.args)
 		c.Assert(err, gc.ErrorMatches, t.err)
 	}
 }
@@ -80,11 +85,11 @@ func (s *DeploySuite) TestCharmDir(c *gc.C) {
 
 func (s *DeploySuite) TestUpgradeReportsDeprecated(c *gc.C) {
 	coretesting.Charms.ClonedDirPath(s.SeriesPath, "dummy")
-	ctx, err := coretesting.RunCommand(c, &DeployCommand{}, []string{"local:dummy", "-u"})
+	ctx, err := coretesting.RunCommand(c, envcmd.Wrap(&DeployCommand{}), []string{"local:dummy", "-u"})
 	c.Assert(err, gc.IsNil)
 
-	c.Assert(coretesting.Stderr(ctx), gc.Equals, "")
-	output := strings.Split(coretesting.Stdout(ctx), "\n")
+	c.Assert(coretesting.Stdout(ctx), gc.Equals, "")
+	output := strings.Split(coretesting.Stderr(ctx), "\n")
 	c.Check(output[0], gc.Matches, `Added charm ".*" to the environment.`)
 	c.Check(output[1], gc.Equals, "--upgrade (or -u) is deprecated and ignored; charms are always deployed with a unique revision.")
 }
@@ -137,13 +142,21 @@ func (s *DeploySuite) TestConfig(c *gc.C) {
 	})
 }
 
+func (s *DeploySuite) TestRelativeConfigPath(c *gc.C) {
+	coretesting.Charms.BundlePath(s.SeriesPath, "dummy")
+	// Putting a config file in home is okay as $HOME is set to a tempdir
+	setupConfigFile(c, osenv.Home())
+	err := runDeploy(c, "local:dummy", "dummy-service", "--config", "~/testconfig.yaml")
+	c.Assert(err, gc.IsNil)
+}
+
 func (s *DeploySuite) TestConfigError(c *gc.C) {
 	coretesting.Charms.BundlePath(s.SeriesPath, "dummy")
 	path := setupConfigFile(c, c.MkDir())
 	err := runDeploy(c, "local:dummy", "other-service", "--config", path)
 	c.Assert(err, gc.ErrorMatches, `no settings found for "other-service"`)
 	_, err = s.State.Service("other-service")
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *DeploySuite) TestConstraints(c *gc.C) {
@@ -155,6 +168,18 @@ func (s *DeploySuite) TestConstraints(c *gc.C) {
 	cons, err := service.Constraints()
 	c.Assert(err, gc.IsNil)
 	c.Assert(cons, gc.DeepEquals, constraints.MustParse("mem=2G cpu-cores=2"))
+}
+
+func (s *DeploySuite) TestNetworks(c *gc.C) {
+	coretesting.Charms.BundlePath(s.SeriesPath, "dummy")
+	err := runDeploy(c, "local:dummy", "--networks", ", net1, net2 , ", "--exclude-networks", "net3,net4")
+	c.Assert(err, gc.IsNil)
+	curl := charm.MustParseURL("local:precise/dummy-1")
+	service, _ := s.AssertService(c, "dummy", curl, 1, 0)
+	includeNetworks, excludeNetworks, err := service.Networks()
+	c.Assert(err, gc.IsNil)
+	c.Assert(includeNetworks, gc.DeepEquals, []string{"net1", "net2"})
+	c.Assert(excludeNetworks, gc.DeepEquals, []string{"net3", "net4"})
 }
 
 func (s *DeploySuite) TestSubordinateConstraints(c *gc.C) {

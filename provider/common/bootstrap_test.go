@@ -9,37 +9,37 @@ import (
 	"time"
 
 	"github.com/juju/loggo"
+	"github.com/juju/testing"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
-	"launchpad.net/juju-core/environs/bootstrap"
 	"launchpad.net/juju-core/environs/cloudinit"
 	"launchpad.net/juju-core/environs/config"
+	"launchpad.net/juju-core/environs/network"
 	"launchpad.net/juju-core/environs/storage"
 	envtesting "launchpad.net/juju-core/environs/testing"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/provider/common"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils/ssh"
 )
 
 type BootstrapSuite struct {
-	testbase.LoggingSuite
+	coretesting.FakeJujuHomeSuite
 	envtesting.ToolsFixture
 }
 
 var _ = gc.Suite(&BootstrapSuite{})
 
 type cleaner interface {
-	AddCleanup(testbase.CleanupFunc)
+	AddCleanup(testing.CleanupFunc)
 }
 
 func (s *BootstrapSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.FakeJujuHomeSuite.SetUpTest(c)
 	s.ToolsFixture.SetUpTest(c)
 	s.PatchValue(common.ConnectSSH, func(_ ssh.Client, host, checkHostScript string) error {
 		return fmt.Errorf("mock connection failure to %s", host)
@@ -48,7 +48,7 @@ func (s *BootstrapSuite) SetUpTest(c *gc.C) {
 
 func (s *BootstrapSuite) TearDownTest(c *gc.C) {
 	s.ToolsFixture.TearDownTest(c)
-	s.LoggingSuite.TearDownTest(c)
+	s.FakeJujuHomeSuite.TearDownTest(c)
 }
 
 func newStorage(suite cleaner, c *gc.C) storage.Storage {
@@ -75,41 +75,32 @@ func configGetter(c *gc.C) configFunc {
 	return func() *config.Config { return cfg }
 }
 
-func (s *BootstrapSuite) TestCannotWriteStateFile(c *gc.C) {
-	brokenStorage := &mockStorage{
-		Storage: newStorage(s, c),
-		putErr:  fmt.Errorf("noes!"),
-	}
-	env := &mockEnviron{storage: brokenStorage}
-	ctx := coretesting.Context(c)
-	err := common.Bootstrap(ctx, env, constraints.Value{})
-	c.Assert(err, gc.ErrorMatches, "cannot create initial state file: noes!")
-}
-
 func (s *BootstrapSuite) TestCannotStartInstance(c *gc.C) {
-	stor := newStorage(s, c)
-	checkURL, err := stor.URL(bootstrap.StateFile)
-	c.Assert(err, gc.IsNil)
+	checkPlacement := "directive"
 	checkCons := constraints.MustParse("mem=8G")
 
 	startInstance := func(
-		cons constraints.Value, possibleTools tools.List, mcfg *cloudinit.MachineConfig,
+		placement string, cons constraints.Value, _, _ []string, possibleTools tools.List, mcfg *cloudinit.MachineConfig,
 	) (
-		instance.Instance, *instance.HardwareCharacteristics, error,
+		instance.Instance, *instance.HardwareCharacteristics, []network.Info, error,
 	) {
+		c.Assert(placement, gc.DeepEquals, checkPlacement)
 		c.Assert(cons, gc.DeepEquals, checkCons)
-		c.Assert(mcfg, gc.DeepEquals, environs.NewBootstrapMachineConfig(checkURL, mcfg.SystemPrivateSSHKey))
-		return nil, nil, fmt.Errorf("meh, not started")
+		c.Assert(mcfg, gc.DeepEquals, environs.NewBootstrapMachineConfig(mcfg.SystemPrivateSSHKey))
+		return nil, nil, nil, fmt.Errorf("meh, not started")
 	}
 
 	env := &mockEnviron{
-		storage:       stor,
+		storage:       newStorage(s, c),
 		startInstance: startInstance,
 		config:        configGetter(c),
 	}
 
 	ctx := coretesting.Context(c)
-	err = common.Bootstrap(ctx, env, checkCons)
+	err := common.Bootstrap(ctx, env, environs.BootstrapParams{
+		Constraints: checkCons,
+		Placement:   checkPlacement,
+	})
 	c.Assert(err, gc.ErrorMatches, "cannot start bootstrap instance: meh, not started")
 }
 
@@ -118,17 +109,17 @@ func (s *BootstrapSuite) TestCannotRecordStartedInstance(c *gc.C) {
 	stor := &mockStorage{Storage: innerStorage}
 
 	startInstance := func(
-		_ constraints.Value, _ tools.List, _ *cloudinit.MachineConfig,
+		_ string, _ constraints.Value, _, _ []string, _ tools.List, _ *cloudinit.MachineConfig,
 	) (
-		instance.Instance, *instance.HardwareCharacteristics, error,
+		instance.Instance, *instance.HardwareCharacteristics, []network.Info, error,
 	) {
 		stor.putErr = fmt.Errorf("suddenly a wild blah")
-		return &mockInstance{id: "i-blah"}, nil, nil
+		return &mockInstance{id: "i-blah"}, nil, nil, nil
 	}
 
-	var stopped []instance.Instance
-	stopInstances := func(instances []instance.Instance) error {
-		stopped = append(stopped, instances...)
+	var stopped []instance.Id
+	stopInstances := func(ids []instance.Id) error {
+		stopped = append(stopped, ids...)
 		return nil
 	}
 
@@ -140,10 +131,10 @@ func (s *BootstrapSuite) TestCannotRecordStartedInstance(c *gc.C) {
 	}
 
 	ctx := coretesting.Context(c)
-	err := common.Bootstrap(ctx, env, constraints.Value{})
+	err := common.Bootstrap(ctx, env, environs.BootstrapParams{})
 	c.Assert(err, gc.ErrorMatches, "cannot save state: suddenly a wild blah")
 	c.Assert(stopped, gc.HasLen, 1)
-	c.Assert(stopped[0].Id(), gc.Equals, instance.Id("i-blah"))
+	c.Assert(stopped[0], gc.Equals, instance.Id("i-blah"))
 }
 
 func (s *BootstrapSuite) TestCannotRecordThenCannotStop(c *gc.C) {
@@ -151,16 +142,16 @@ func (s *BootstrapSuite) TestCannotRecordThenCannotStop(c *gc.C) {
 	stor := &mockStorage{Storage: innerStorage}
 
 	startInstance := func(
-		_ constraints.Value, _ tools.List, _ *cloudinit.MachineConfig,
+		_ string, _ constraints.Value, _, _ []string, _ tools.List, _ *cloudinit.MachineConfig,
 	) (
-		instance.Instance, *instance.HardwareCharacteristics, error,
+		instance.Instance, *instance.HardwareCharacteristics, []network.Info, error,
 	) {
 		stor.putErr = fmt.Errorf("suddenly a wild blah")
-		return &mockInstance{id: "i-blah"}, nil, nil
+		return &mockInstance{id: "i-blah"}, nil, nil, nil
 	}
 
-	var stopped []instance.Instance
-	stopInstances := func(instances []instance.Instance) error {
+	var stopped []instance.Id
+	stopInstances := func(instances []instance.Id) error {
 		stopped = append(stopped, instances...)
 		return fmt.Errorf("bork bork borken")
 	}
@@ -177,10 +168,10 @@ func (s *BootstrapSuite) TestCannotRecordThenCannotStop(c *gc.C) {
 	}
 
 	ctx := coretesting.Context(c)
-	err := common.Bootstrap(ctx, env, constraints.Value{})
+	err := common.Bootstrap(ctx, env, environs.BootstrapParams{})
 	c.Assert(err, gc.ErrorMatches, "cannot save state: suddenly a wild blah")
 	c.Assert(stopped, gc.HasLen, 1)
-	c.Assert(stopped[0].Id(), gc.Equals, instance.Id("i-blah"))
+	c.Assert(stopped[0], gc.Equals, instance.Id("i-blah"))
 	c.Assert(tw.Log, jc.LogMatches, []jc.SimpleMessage{{
 		loggo.ERROR, `cannot stop failed bootstrap instance "i-blah": bork bork borken`,
 	}})
@@ -191,14 +182,12 @@ func (s *BootstrapSuite) TestSuccess(c *gc.C) {
 	checkInstanceId := "i-success"
 	checkHardware := instance.MustParseHardware("mem=2T")
 
-	checkURL := ""
 	startInstance := func(
-		_ constraints.Value, _ tools.List, mcfg *cloudinit.MachineConfig,
+		_ string, _ constraints.Value, _, _ []string, _ tools.List, mcfg *cloudinit.MachineConfig,
 	) (
-		instance.Instance, *instance.HardwareCharacteristics, error,
+		instance.Instance, *instance.HardwareCharacteristics, []network.Info, error,
 	) {
-		checkURL = mcfg.StateInfoURL
-		return &mockInstance{id: checkInstanceId}, &checkHardware, nil
+		return &mockInstance{id: checkInstanceId}, &checkHardware, nil, nil
 	}
 	var mocksConfig = minimalConfig(c)
 	var getConfigCalled int
@@ -222,15 +211,9 @@ func (s *BootstrapSuite) TestSuccess(c *gc.C) {
 	}
 	originalAuthKeys := env.Config().AuthorizedKeys()
 	ctx := coretesting.Context(c)
-	err := common.Bootstrap(ctx, env, constraints.Value{})
+	err := common.Bootstrap(ctx, env, environs.BootstrapParams{})
 	c.Assert(err, gc.IsNil)
 
-	savedState, err := bootstrap.LoadStateFromURL(checkURL, false)
-	c.Assert(err, gc.IsNil)
-	c.Assert(savedState, gc.DeepEquals, &bootstrap.BootstrapState{
-		StateInstances:  []instance.Id{instance.Id(checkInstanceId)},
-		Characteristics: []instance.HardwareCharacteristics{checkHardware},
-	})
 	authKeys := env.Config().AuthorizedKeys()
 	c.Assert(authKeys, gc.Not(gc.Equals), originalAuthKeys)
 	c.Assert(authKeys, jc.HasSuffix, "juju-system-key\n")
@@ -267,10 +250,7 @@ func (s *BootstrapSuite) TestWaitSSHTimesOutWaitingForAddresses(c *gc.C) {
 func (s *BootstrapSuite) TestWaitSSHKilledWaitingForAddresses(c *gc.C) {
 	ctx := coretesting.Context(c)
 	interrupted := make(chan os.Signal, 1)
-	go func() {
-		<-time.After(2 * time.Millisecond)
-		interrupted <- os.Interrupt
-	}()
+	interrupted <- os.Interrupt
 	_, err := common.WaitSSH(ctx, interrupted, ssh.DefaultClient, "/bin/true", neverAddresses{}, testSSHTimeout)
 	c.Check(err, gc.ErrorMatches, "interrupted")
 	c.Check(coretesting.Stderr(ctx), gc.Matches, "Waiting for address\n")
@@ -297,7 +277,7 @@ type neverOpensPort struct {
 }
 
 func (n *neverOpensPort) Addresses() ([]instance.Address, error) {
-	return []instance.Address{instance.NewAddress(n.addr)}, nil
+	return instance.NewAddresses(n.addr), nil
 }
 
 func (s *BootstrapSuite) TestWaitSSHTimesOutWaitingForDial(c *gc.C) {
@@ -325,7 +305,7 @@ func (i *interruptOnDial) Addresses() ([]instance.Address, error) {
 	} else {
 		i.interrupted <- os.Interrupt
 	}
-	return []instance.Address{instance.NewAddress(i.name)}, nil
+	return []instance.Address{instance.NewAddress(i.name, instance.NetworkUnknown)}, nil
 }
 
 func (s *BootstrapSuite) TestWaitSSHKilledWaitingForDial(c *gc.C) {
@@ -355,7 +335,7 @@ func (ac *addressesChange) Refresh() error {
 func (ac *addressesChange) Addresses() ([]instance.Address, error) {
 	var addrs []instance.Address
 	for _, addr := range ac.addrs[0] {
-		addrs = append(addrs, instance.NewAddress(addr))
+		addrs = append(addrs, instance.NewAddress(addr, instance.NetworkUnknown))
 	}
 	return addrs, nil
 }

@@ -6,13 +6,14 @@ package main
 import (
 	"bytes"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/juju/testing"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 type ConstraintsCommandsSuite struct {
@@ -35,7 +36,7 @@ func uint64p(val uint64) *uint64 {
 }
 
 func assertSet(c *gc.C, args ...string) {
-	rcode, rstdout, rstderr := runCmdLine(c, &SetConstraintsCommand{}, args...)
+	rcode, rstdout, rstderr := runCmdLine(c, envcmd.Wrap(&SetConstraintsCommand{}), args...)
 	c.Assert(rcode, gc.Equals, 0)
 	c.Assert(rstdout, gc.Equals, "")
 	c.Assert(rstderr, gc.Equals, "")
@@ -78,7 +79,7 @@ func (s *ConstraintsCommandsSuite) TestSetService(c *gc.C) {
 }
 
 func assertSetError(c *gc.C, code int, stderr string, args ...string) {
-	rcode, rstdout, rstderr := runCmdLine(c, &SetConstraintsCommand{}, args...)
+	rcode, rstdout, rstderr := runCmdLine(c, envcmd.Wrap(&SetConstraintsCommand{}), args...)
 	c.Assert(rcode, gc.Equals, code)
 	c.Assert(rstdout, gc.Equals, "")
 	c.Assert(rstderr, gc.Matches, "error: "+stderr+"\n")

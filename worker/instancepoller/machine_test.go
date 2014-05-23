@@ -8,30 +8,30 @@ import (
 	stderrors "errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 var _ = gc.Suite(&machineSuite{})
 
 type machineSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 }
 
-var testAddrs = []instance.Address{instance.NewAddress("127.0.0.1")}
+var testAddrs = instance.NewAddresses("127.0.0.1")
 
-func (*machineSuite) TestSetsInstanceInfoInitially(c *gc.C) {
+func (s *machineSuite) TestSetsInstanceInfoInitially(c *gc.C) {
 	context := &testMachineContext{
 		getInstanceInfo: instanceInfoGetter(c, "i1234", testAddrs, "running", nil),
 		dyingc:          make(chan struct{}),
@@ -45,8 +45,8 @@ func (*machineSuite) TestSetsInstanceInfoInitially(c *gc.C) {
 	died := make(chan machine)
 	// Change the poll intervals to be short, so that we know
 	// that we've polled (probably) at least a few times.
-	defer testbase.PatchValue(&ShortPoll, coretesting.ShortWait/10).Restore()
-	defer testbase.PatchValue(&LongPoll, coretesting.ShortWait/10).Restore()
+	s.PatchValue(&ShortPoll, coretesting.ShortWait/10)
+	s.PatchValue(&LongPoll, coretesting.ShortWait/10)
 
 	go runMachine(context, m, nil, died)
 	time.Sleep(coretesting.ShortWait)
@@ -58,47 +58,54 @@ func (*machineSuite) TestSetsInstanceInfoInitially(c *gc.C) {
 	c.Assert(m.instStatus, gc.Equals, "running")
 }
 
-func (*machineSuite) TestShortPollIntervalWhenNoAddress(c *gc.C) {
-	defer testbase.PatchValue(&ShortPoll, 1*time.Millisecond).Restore()
-	defer testbase.PatchValue(&LongPoll, coretesting.LongWait).Restore()
-	count := countPolls(c, nil, "running", params.StatusStarted)
+func (s *machineSuite) TestShortPollIntervalWhenNoAddress(c *gc.C) {
+	s.PatchValue(&ShortPoll, 1*time.Millisecond)
+	s.PatchValue(&LongPoll, coretesting.LongWait)
+	count := countPolls(c, nil, "i1234", "running", params.StatusStarted)
 	c.Assert(count, jc.GreaterThan, 2)
 }
 
-func (*machineSuite) TestShortPollIntervalWhenNoStatus(c *gc.C) {
-	defer testbase.PatchValue(&ShortPoll, 1*time.Millisecond).Restore()
-	defer testbase.PatchValue(&LongPoll, coretesting.LongWait).Restore()
-	count := countPolls(c, testAddrs, "", params.StatusStarted)
+func (s *machineSuite) TestShortPollIntervalWhenNoStatus(c *gc.C) {
+	s.PatchValue(&ShortPoll, 1*time.Millisecond)
+	s.PatchValue(&LongPoll, coretesting.LongWait)
+	count := countPolls(c, testAddrs, "i1234", "", params.StatusStarted)
 	c.Assert(count, jc.GreaterThan, 2)
 }
 
-func (*machineSuite) TestShortPollIntervalWhenNotStarted(c *gc.C) {
-	defer testbase.PatchValue(&ShortPoll, 1*time.Millisecond).Restore()
-	defer testbase.PatchValue(&LongPoll, coretesting.LongWait).Restore()
-	count := countPolls(c, testAddrs, "pending", params.StatusPending)
+func (s *machineSuite) TestShortPollIntervalWhenNotStarted(c *gc.C) {
+	s.PatchValue(&ShortPoll, 1*time.Millisecond)
+	s.PatchValue(&LongPoll, coretesting.LongWait)
+	count := countPolls(c, testAddrs, "i1234", "pending", params.StatusPending)
 	c.Assert(count, jc.GreaterThan, 2)
 }
 
-func (*machineSuite) TestShortPollIntervalExponent(c *gc.C) {
-	defer testbase.PatchValue(&ShortPoll, 1*time.Microsecond).Restore()
-	defer testbase.PatchValue(&LongPoll, coretesting.LongWait).Restore()
-	defer testbase.PatchValue(&ShortPollBackoff, 2.0).Restore()
+func (s *machineSuite) TestShortPollIntervalWhenNotProvisioned(c *gc.C) {
+	s.PatchValue(&ShortPoll, 1*time.Millisecond)
+	s.PatchValue(&LongPoll, coretesting.LongWait)
+	count := countPolls(c, testAddrs, "", "pending", params.StatusPending)
+	c.Assert(count, gc.Equals, 0)
+}
+
+func (s *machineSuite) TestShortPollIntervalExponent(c *gc.C) {
+	s.PatchValue(&ShortPoll, 1*time.Microsecond)
+	s.PatchValue(&LongPoll, coretesting.LongWait)
+	s.PatchValue(&ShortPollBackoff, 2.0)
 
 	// With an exponent of 2, the maximum number of polls that can
 	// occur within the given interval ShortWait is log to the base
 	// ShortPollBackoff of ShortWait/ShortPoll, given that sleep will
 	// sleep for at least the requested interval.
 	maxCount := int(math.Log(float64(coretesting.ShortWait)/float64(ShortPoll))/math.Log(ShortPollBackoff) + 1)
-	count := countPolls(c, nil, "", params.StatusStarted)
+	count := countPolls(c, nil, "i1234", "", params.StatusStarted)
 	c.Assert(count, jc.GreaterThan, 2)
 	c.Assert(count, jc.LessThan, maxCount)
 	c.Logf("actual count: %v; max %v", count, maxCount)
 }
 
-func (*machineSuite) TestLongPollIntervalWhenHasAllInstanceInfo(c *gc.C) {
-	defer testbase.PatchValue(&ShortPoll, coretesting.LongWait).Restore()
-	defer testbase.PatchValue(&LongPoll, 1*time.Millisecond).Restore()
-	count := countPolls(c, testAddrs, "running", params.StatusStarted)
+func (s *machineSuite) TestLongPollIntervalWhenHasAllInstanceInfo(c *gc.C) {
+	s.PatchValue(&ShortPoll, coretesting.LongWait)
+	s.PatchValue(&LongPoll, 1*time.Millisecond)
+	count := countPolls(c, testAddrs, "i1234", "running", params.StatusStarted)
 	c.Assert(count, jc.GreaterThan, 2)
 }
 
@@ -106,10 +113,10 @@ func (*machineSuite) TestLongPollIntervalWhenHasAllInstanceInfo(c *gc.C) {
 // addresses and status to be returned from getInstanceInfo,
 // waits for coretesting.ShortWait, and returns the
 // number of times the instance is polled.
-func countPolls(c *gc.C, addrs []instance.Address, instStatus string, machineStatus params.Status) int {
+func countPolls(c *gc.C, addrs []instance.Address, instId, instStatus string, machineStatus params.Status) int {
 	count := int32(0)
 	getInstanceInfo := func(id instance.Id) (instanceInfo, error) {
-		c.Check(id, gc.Equals, instance.Id("i1234"))
+		c.Check(string(id), gc.Equals, instId)
 		atomic.AddInt32(&count, 1)
 		if addrs == nil {
 			return instanceInfo{}, fmt.Errorf("no instance addresses available")
@@ -122,7 +129,7 @@ func countPolls(c *gc.C, addrs []instance.Address, instStatus string, machineSta
 	}
 	m := &testMachine{
 		id:         "99",
-		instanceId: "i1234",
+		instanceId: instance.Id(instId),
 		refresh:    func() error { return nil },
 		addresses:  addrs,
 		life:       state.Alive,
@@ -138,14 +145,14 @@ func countPolls(c *gc.C, addrs []instance.Address, instStatus string, machineSta
 	return int(count)
 }
 
-func (*machineSuite) TestSinglePollWhenInstancInfoUnimplemented(c *gc.C) {
-	defer testbase.PatchValue(&ShortPoll, 1*time.Millisecond).Restore()
-	defer testbase.PatchValue(&LongPoll, 1*time.Millisecond).Restore()
+func (s *machineSuite) TestSinglePollWhenInstancInfoUnimplemented(c *gc.C) {
+	s.PatchValue(&ShortPoll, 1*time.Millisecond)
+	s.PatchValue(&LongPoll, 1*time.Millisecond)
 	count := int32(0)
 	getInstanceInfo := func(id instance.Id) (instanceInfo, error) {
 		c.Check(id, gc.Equals, instance.Id("i1234"))
 		atomic.AddInt32(&count, 1)
-		return instanceInfo{}, errors.NewNotImplementedError("instance address")
+		return instanceInfo{}, errors.NotImplementedf("instance address")
 	}
 	context := &testMachineContext{
 		getInstanceInfo: getInstanceInfo,
@@ -342,11 +349,23 @@ func (m *testMachine) Addresses() []instance.Address {
 }
 
 func (m *testMachine) InstanceId() (instance.Id, error) {
+	if m.instanceId == "" {
+		return "", state.NotProvisionedError(m.Id())
+	}
 	return m.instanceId, m.instanceIdErr
 }
 
-func (m *testMachine) Status() (status params.Status, info string, data params.StatusData, err error) {
+// This is stubbed out for testing.
+var MachineStatus = func(m *testMachine) (status params.Status, info string, data params.StatusData, err error) {
 	return m.status, "", nil, nil
+}
+
+func (m *testMachine) Status() (status params.Status, info string, data params.StatusData, err error) {
+	return MachineStatus(m)
+}
+
+func (m *testMachine) IsManual() (bool, error) {
+	return strings.HasPrefix(string(m.instanceId), "manual:"), nil
 }
 
 func (m *testMachine) InstanceStatus() (string, error) {
@@ -362,7 +381,7 @@ func (m *testMachine) SetInstanceStatus(status string) error {
 	return nil
 }
 
-func (m *testMachine) SetAddresses(addrs []instance.Address) error {
+func (m *testMachine) SetAddresses(addrs ...instance.Address) error {
 	if m.setAddressesErr != nil {
 		return m.setAddressesErr
 	}

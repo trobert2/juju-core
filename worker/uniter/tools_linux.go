@@ -9,21 +9,16 @@ import (
 	"path/filepath"
 
 	"launchpad.net/juju-core/worker/uniter/jujuc"
-    "launchpad.net/juju-core/utils"
 )
 
 // EnsureJujucSymlinks creates a symbolic link to jujuc within dir for each
 // hook command. If the commands already exist, this operation does nothing.
-
-// TODO: gsamfira: port EnsureJujucSymlinks to Windows. Need to setup a folder
-// in %PATH% for all juju commands
-// TODO: gsamfira: Create symlink function for windows using syscall
 func EnsureJujucSymlinks(dir string) (err error) {
 	for _, name := range jujuc.CommandNames() {
 		// The link operation fails when the target already exists,
 		// so this is a no-op when the command names already
 		// exist.
-		err := utils.Symlink("./jujud", filepath.Join(dir, name))
+		err := os.Symlink("./jujud", filepath.Join(dir, name))
 		if err == nil {
 			continue
 		}

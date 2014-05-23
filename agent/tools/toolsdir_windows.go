@@ -27,7 +27,13 @@ func ChangeAgentTools(dataDir string, agentName string, vers version.Binary) (*c
     if err != nil {
         return nil, fmt.Errorf("cannot create tools symlink: %v", err)
     }
-    err = os.Rename(tmpName, ToolsDir(dataDir, agentName))
+
+    toolsDir := ToolsDir(dataDir, agentName)
+    if _, err := os.Stat(toolsDir); err == nil {
+        _ = os.RemoveAll(toolsDir)
+    }
+
+    err = os.Rename(tmpName, toolsDir)
     logger.Infof("-->Rename %q", err)
     if err != nil {
         return nil, fmt.Errorf("cannot update tools symlink: %v", err)

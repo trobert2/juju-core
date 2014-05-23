@@ -19,13 +19,12 @@ import (
 	"launchpad.net/juju-core/instance"
 	jujutesting "launchpad.net/juju-core/juju/testing"
 	coretesting "launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/version"
 )
 
 type LiveSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 	ContainerDir string
 	RemovedDir   string
 }
@@ -33,7 +32,7 @@ type LiveSuite struct {
 var _ = gc.Suite(&LiveSuite{})
 
 func (s *LiveSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	// Skip if not linux
 	if runtime.GOOS != "linux" {
 		c.Skip("not running linux")
@@ -75,17 +74,17 @@ func shutdownMachines(manager container.Manager) func(*gc.C) {
 		instances, err := manager.ListContainers()
 		c.Assert(err, gc.IsNil)
 		for _, instance := range instances {
-			err := manager.StopContainer(instance)
+			err := manager.DestroyContainer(instance.Id())
 			c.Check(err, gc.IsNil)
 		}
 	}
 }
 
-func startContainer(c *gc.C, manager container.Manager, machineId string) instance.Instance {
+func createContainer(c *gc.C, manager container.Manager, machineId string) instance.Instance {
 	machineNonce := "fake-nonce"
 	stateInfo := jujutesting.FakeStateInfo(machineId)
 	apiInfo := jujutesting.FakeAPIInfo(machineId)
-	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "", stateInfo, apiInfo)
+	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "", nil, nil, stateInfo, apiInfo)
 	network := container.BridgeNetworkConfig("virbr0")
 
 	machineConfig.Tools = &tools.Tools{
@@ -96,7 +95,7 @@ func startContainer(c *gc.C, manager container.Manager, machineId string) instan
 	err := environs.FinishMachineConfig(machineConfig, environConfig, constraints.Value{})
 	c.Assert(err, gc.IsNil)
 
-	inst, hardware, err := manager.StartContainer(machineConfig, "precise", network)
+	inst, hardware, err := manager.CreateContainer(machineConfig, "precise", network)
 	c.Assert(err, gc.IsNil)
 	c.Assert(hardware, gc.NotNil)
 	expected := fmt.Sprintf("arch=%s cpu-cores=1 mem=512M root-disk=8192M", version.Current.Arch)
@@ -106,8 +105,8 @@ func startContainer(c *gc.C, manager container.Manager, machineId string) instan
 
 func (s *LiveSuite) TestShutdownMachines(c *gc.C) {
 	manager := s.newManager(c, "test")
-	startContainer(c, manager, "1/kvm/0")
-	startContainer(c, manager, "1/kvm/1")
+	createContainer(c, manager, "1/kvm/0")
+	createContainer(c, manager, "1/kvm/1")
 	assertNumberOfContainers(c, manager, 2)
 
 	shutdownMachines(manager)(c)
@@ -118,13 +117,13 @@ func (s *LiveSuite) TestManagerIsolation(c *gc.C) {
 	firstManager := s.newManager(c, "first")
 	s.AddCleanup(shutdownMachines(firstManager))
 
-	startContainer(c, firstManager, "1/kvm/0")
-	startContainer(c, firstManager, "1/kvm/1")
+	createContainer(c, firstManager, "1/kvm/0")
+	createContainer(c, firstManager, "1/kvm/1")
 
 	secondManager := s.newManager(c, "second")
 	s.AddCleanup(shutdownMachines(secondManager))
 
-	startContainer(c, secondManager, "1/kvm/0")
+	createContainer(c, secondManager, "1/kvm/0")
 
 	assertNumberOfContainers(c, firstManager, 2)
 	assertNumberOfContainers(c, secondManager, 1)

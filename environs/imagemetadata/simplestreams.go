@@ -8,8 +8,11 @@ package imagemetadata
 
 import (
 	"fmt"
+	"sort"
 
 	"launchpad.net/juju-core/environs/simplestreams"
+	"launchpad.net/juju-core/juju/arch"
+	"launchpad.net/juju-core/version/ubuntu"
 )
 
 func init() {
@@ -97,10 +100,10 @@ type ImageConstraint struct {
 
 func NewImageConstraint(params simplestreams.LookupParams) *ImageConstraint {
 	if len(params.Series) == 0 {
-		params.Series = simplestreams.SupportedSeries()
+		params.Series = ubuntu.SupportedSeries()
 	}
 	if len(params.Arches) == 0 {
-		params.Arches = []string{"amd64", "i386", "arm", "arm64", "ppc64"}
+		params.Arches = arch.AllSupportedArches
 	}
 	return &ImageConstraint{LookupParams: params}
 }
@@ -128,7 +131,7 @@ func (ic *ImageConstraint) Ids() ([]string, error) {
 	ids := make([]string, nrArches*nrSeries)
 	for i, arch := range ic.Arches {
 		for j, series := range ic.Series {
-			version, err := simplestreams.SeriesVersion(series)
+			version, err := ubuntu.SeriesVersion(series)
 			if err != nil {
 				return nil, err
 			}
@@ -142,7 +145,7 @@ func (ic *ImageConstraint) Ids() ([]string, error) {
 type ImageMetadata struct {
 	Id          string `json:"id"`
 	Storage     string `json:"root_store,omitempty"`
-	VType       string `json:"virt,omitempty"`
+	VirtType    string `json:"virt,omitempty"`
 	Arch        string `json:"arch,omitempty"`
 	Version     string `json:"version,omitempty"`
 	RegionAlias string `json:"crsn,omitempty"`
@@ -181,8 +184,23 @@ func Fetch(
 	for i, md := range items {
 		metadata[i] = md.(*ImageMetadata)
 	}
+	// Sorting the metadata is not strictly necessary, but it ensures consistent ordering for
+	// all compilers, and it just makes it easier to look at the data.
+	Sort(metadata)
 	return metadata, resolveInfo, nil
 }
+
+// Sort sorts a slice of ImageMetadata in ascending order of their id
+// in order to ensure the results of Fetch are ordered deterministically.
+func Sort(metadata []*ImageMetadata) {
+	sort.Sort(byId(metadata))
+}
+
+type byId []*ImageMetadata
+
+func (b byId) Len() int           { return len(b) }
+func (b byId) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
+func (b byId) Less(i, j int) bool { return b[i].Id < b[j].Id }
 
 type imageKey struct {
 	vtype   string
@@ -200,14 +218,14 @@ func appendMatchingImages(source simplestreams.DataSource, matchingImages []inte
 	imagesMap := make(map[imageKey]*ImageMetadata, len(matchingImages))
 	for _, val := range matchingImages {
 		im := val.(*ImageMetadata)
-		imagesMap[imageKey{im.VType, im.Arch, im.Version, im.RegionName, im.Storage}] = im
+		imagesMap[imageKey{im.VirtType, im.Arch, im.Version, im.RegionName, im.Storage}] = im
 	}
 	for _, val := range images {
 		im := val.(*ImageMetadata)
 		if cons != nil && cons.Params().Region != "" && cons.Params().Region != im.RegionName {
 			continue
 		}
-		if _, ok := imagesMap[imageKey{im.VType, im.Arch, im.Version, im.RegionName, im.Storage}]; !ok {
+		if _, ok := imagesMap[imageKey{im.VirtType, im.Arch, im.Version, im.RegionName, im.Storage}]; !ok {
 			matchingImages = append(matchingImages, im)
 		}
 	}

@@ -16,18 +16,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/juju/errors"
+	"github.com/juju/testing"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs/storage"
-	coreerrors "launchpad.net/juju-core/errors"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	coretesting "launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/utils/ssh"
 )
 
 type storageSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 	bin string
 }
 
@@ -55,7 +56,7 @@ func newSSHStorage(host, storageDir, tmpDir string) (*SSHStorage, error) {
 var flockBin string
 
 func (s *storageSuite) SetUpSuite(c *gc.C) {
-	s.LoggingSuite.SetUpSuite(c)
+	s.BaseSuite.SetUpSuite(c)
 
 	var err error
 	flockBin, err = exec.LookPath("flock")
@@ -70,7 +71,7 @@ func (s *storageSuite) SetUpSuite(c *gc.C) {
 		"#!/bin/sh\nshift; export SUDO_UID=`id -u` SUDO_GID=`id -g`; exec \"$@\"",
 	), 0755)
 	c.Assert(err, gc.IsNil)
-	restoreSshCommand := testbase.PatchValue(&sshCommand, func(host string, command ...string) *ssh.Cmd {
+	restoreSshCommand := testing.PatchValue(&sshCommand, func(host string, command ...string) *ssh.Cmd {
 		return s.sshCommand(c, host, command...)
 	})
 	s.AddSuiteCleanup(func(*gc.C) { restoreSshCommand() })
@@ -163,7 +164,7 @@ func (s *storageSuite) TestGet(c *gc.C) {
 		c.Assert(out, gc.DeepEquals, data)
 	}
 	_, err = storage.Get(stor, "notthere")
-	c.Assert(err, jc.Satisfies, coreerrors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *storageSuite) TestWriteFailure(c *gc.C) {

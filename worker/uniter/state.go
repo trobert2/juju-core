@@ -4,9 +4,10 @@
 package uniter
 
 import (
-	"errors"
 	"fmt"
 	"os"
+
+	"github.com/juju/errors"
 
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/utils"
@@ -74,7 +75,7 @@ type State struct {
 
 // validate returns an error if the state violates expectations.
 func (st State) validate() (err error) {
-	defer utils.ErrorContextf(&err, "invalid uniter state")
+	defer errors.Maskf(&err, "invalid uniter state")
 	hasHook := st.Hook != nil
 	hasCharm := st.CharmURL != nil
 	switch st.Op {

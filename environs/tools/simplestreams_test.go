@@ -22,9 +22,10 @@ import (
 	sstesting "launchpad.net/juju-core/environs/simplestreams/testing"
 	"launchpad.net/juju-core/environs/storage"
 	"launchpad.net/juju-core/environs/tools"
-	ttesting "launchpad.net/juju-core/environs/tools/testing"
-	"launchpad.net/juju-core/testing/testbase"
+	toolstesting "launchpad.net/juju-core/environs/tools/testing"
+	coretesting "launchpad.net/juju-core/testing"
 	coretools "launchpad.net/juju-core/tools"
+	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
 )
 
@@ -74,7 +75,7 @@ func setupSimpleStreamsTests(t *testing.T) {
 func registerSimpleStreamsTests() {
 	gc.Suite(&simplestreamsSuite{
 		LocalLiveSimplestreamsSuite: sstesting.LocalLiveSimplestreamsSuite{
-			Source:        simplestreams.NewURLDataSource("test", "test:", simplestreams.VerifySSLHostnames),
+			Source:        simplestreams.NewURLDataSource("test", "test:", utils.VerifySSLHostnames),
 			RequireSigned: false,
 			DataType:      tools.ContentDownload,
 			ValidConstraint: tools.NewVersionedToolsConstraint(version.MustParse("1.13.0"), simplestreams.LookupParams{
@@ -92,7 +93,7 @@ func registerSimpleStreamsTests() {
 
 func registerLiveSimpleStreamsTests(baseURL string, validToolsConstraint simplestreams.LookupConstraint, requireSigned bool) {
 	gc.Suite(&sstesting.LocalLiveSimplestreamsSuite{
-		Source:          simplestreams.NewURLDataSource("test", baseURL, simplestreams.VerifySSLHostnames),
+		Source:          simplestreams.NewURLDataSource("test", baseURL, utils.VerifySSLHostnames),
 		RequireSigned:   requireSigned,
 		DataType:        tools.ContentDownload,
 		ValidConstraint: validToolsConstraint,
@@ -246,7 +247,7 @@ func (s *simplestreamsSuite) TestFetch(c *gc.C) {
 				})
 		}
 		// Add invalid datasource and check later that resolveInfo is correct.
-		invalidSource := simplestreams.NewURLDataSource("invalid", "file://invalid", simplestreams.VerifySSLHostnames)
+		invalidSource := simplestreams.NewURLDataSource("invalid", "file://invalid", utils.VerifySSLHostnames)
 		tools, resolveInfo, err := tools.Fetch(
 			[]simplestreams.DataSource{invalidSource, s.Source},
 			simplestreams.DefaultIndexPath, toolsConstraint, s.RequireSigned)
@@ -331,7 +332,7 @@ func (s *simplestreamsSuite) TestWriteMetadataNoFetch(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 	err = tools.MergeAndWriteMetadata(writer, toolsList, tools.DoNotWriteMirrors)
 	c.Assert(err, gc.IsNil)
-	metadata := ttesting.ParseMetadataFromDir(c, dir, false)
+	metadata := toolstesting.ParseMetadataFromDir(c, dir, false)
 	assertMetadataMatches(c, dir, toolsList, metadata)
 }
 
@@ -341,7 +342,7 @@ func (s *simplestreamsSuite) assertWriteMetadata(c *gc.C, withMirrors bool) {
 		"2.0.1-raring-amd64",
 	}
 	dir := c.MkDir()
-	ttesting.MakeTools(c, dir, "releases", versionStrings)
+	toolstesting.MakeTools(c, dir, "releases", versionStrings)
 
 	toolsList := coretools.List{
 		{
@@ -363,7 +364,7 @@ func (s *simplestreamsSuite) assertWriteMetadata(c *gc.C, withMirrors bool) {
 	}
 	err = tools.MergeAndWriteMetadata(writer, toolsList, writeMirrors)
 	c.Assert(err, gc.IsNil)
-	metadata := ttesting.ParseMetadataFromDir(c, dir, withMirrors)
+	metadata := toolstesting.ParseMetadataFromDir(c, dir, withMirrors)
 	assertMetadataMatches(c, dir, toolsList, metadata)
 }
 
@@ -403,7 +404,7 @@ func (s *simplestreamsSuite) TestWriteMetadataMergeWithExisting(c *gc.C) {
 	err = tools.MergeAndWriteMetadata(writer, newToolsList, tools.DoNotWriteMirrors)
 	c.Assert(err, gc.IsNil)
 	requiredToolsList := append(existingToolsList, newToolsList[1])
-	metadata := ttesting.ParseMetadataFromDir(c, dir, false)
+	metadata := toolstesting.ParseMetadataFromDir(c, dir, false)
 	assertMetadataMatches(c, dir, requiredToolsList, metadata)
 }
 
@@ -507,7 +508,7 @@ func (s *productSpecSuite) TestLargeNumber(c *gc.C) {
 }
 
 type metadataHelperSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 }
 
 var _ = gc.Suite(&metadataHelperSuite{})
@@ -556,7 +557,7 @@ func (c *countingStorage) Get(name string) (io.ReadCloser, error) {
 func (*metadataHelperSuite) TestResolveMetadata(c *gc.C) {
 	var versionStrings = []string{"1.2.3-precise-amd64"}
 	dir := c.MkDir()
-	ttesting.MakeTools(c, dir, "releases", versionStrings)
+	toolstesting.MakeTools(c, dir, "releases", versionStrings)
 	toolsList := coretools.List{{
 		Version: version.MustParseBinary(versionStrings[0]),
 		Size:    123,
@@ -729,7 +730,7 @@ var testRoundTripper *jujutest.ProxyRoundTripper
 
 func init() {
 	testRoundTripper = &jujutest.ProxyRoundTripper{}
-	simplestreams.RegisterProtocol("signedtest", testRoundTripper)
+	testRoundTripper.RegisterForScheme("signedtest")
 }
 
 func (s *signedSuite) SetUpSuite(c *gc.C) {
@@ -768,7 +769,7 @@ func (s *signedSuite) TearDownSuite(c *gc.C) {
 }
 
 func (s *signedSuite) TestSignedToolsMetadata(c *gc.C) {
-	signedSource := simplestreams.NewURLDataSource("test", "signedtest://host/signed", simplestreams.VerifySSLHostnames)
+	signedSource := simplestreams.NewURLDataSource("test", "signedtest://host/signed", utils.VerifySSLHostnames)
 	toolsConstraint := tools.NewVersionedToolsConstraint(version.MustParse("1.13.0"), simplestreams.LookupParams{
 		CloudSpec: simplestreams.CloudSpec{"us-east-1", "https://ec2.us-east-1.amazonaws.com"},
 		Series:    []string{"precise"},

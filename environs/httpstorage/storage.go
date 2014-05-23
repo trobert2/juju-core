@@ -6,7 +6,6 @@ package httpstorage
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -16,10 +15,14 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/juju/errors"
+	"github.com/juju/loggo"
+
 	"launchpad.net/juju-core/environs/storage"
-	coreerrors "launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/utils"
 )
+
+var logger = loggo.GetLogger("juju.environs.httpstorage")
 
 // storage implements the storage.Storage interface.
 type localStorage struct {
@@ -37,7 +40,7 @@ type localStorage struct {
 func Client(addr string) storage.Storage {
 	return &localStorage{
 		addr:   addr,
-		client: http.DefaultClient,
+		client: utils.GetValidatingHTTPClient(),
 	}
 }
 
@@ -45,12 +48,11 @@ func Client(addr string) storage.Storage {
 // storage server at the given network address (see Serve),
 // using TLS. The client is given an authentication key,
 // which the server will verify for Put and Remove* operations.
-func ClientTLS(addr string, caCertPEM []byte, authkey string) (storage.Storage, error) {
+func ClientTLS(addr string, caCertPEM string, authkey string) (storage.Storage, error) {
+	logger.Debugf("using https storage at %q", addr)
 	caCerts := x509.NewCertPool()
-	if caCertPEM != nil {
-		if !caCerts.AppendCertsFromPEM(caCertPEM) {
-			return nil, errors.New("error adding CA certificate to pool")
-		}
+	if !caCerts.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, errors.New("error adding CA certificate to pool")
 	}
 	return &localStorage{
 		addr:    addr,
@@ -83,6 +85,7 @@ func (s *localStorage) getHTTPSBaseURL() (string, error) {
 // responsibility to close it after use. If the name does not
 // exist, it should return a *NotFoundError.
 func (s *localStorage) Get(name string) (io.ReadCloser, error) {
+	logger.Debugf("getting %q from storage", name)
 	url, err := s.URL(name)
 	if err != nil {
 		return nil, err
@@ -92,7 +95,7 @@ func (s *localStorage) Get(name string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, coreerrors.NotFoundf("file %q", name)
+		return nil, errors.NotFoundf("file %q", name)
 	}
 	return resp.Body, nil
 }
@@ -140,7 +143,7 @@ func (s *localStorage) URL(name string) (string, error) {
 
 // modURL returns a URL that can be used to modify the given storage file.
 func (s *localStorage) modURL(name string) (string, error) {
-	if s.client == http.DefaultClient {
+	if s.authkey == "" {
 		return s.URL(name)
 	}
 	s.httpsBaseURLOnce.Do(func() {
@@ -154,7 +157,7 @@ func (s *localStorage) modURL(name string) (string, error) {
 	return fmt.Sprintf("%s%s?%s", s.httpsBaseURL, name, v.Encode()), nil
 }
 
-// ConsistencyStrategy is specified in the StorageReader interface.
+// DefaultConsistencyStrategy is specified in the StorageReader interface.
 func (s *localStorage) DefaultConsistencyStrategy() utils.AttemptStrategy {
 	return utils.AttemptStrategy{}
 }
@@ -167,6 +170,7 @@ func (s *localStorage) ShouldRetry(err error) bool {
 // Put reads from r and writes to the given storage file.
 // The length must be set to the total length of the file.
 func (s *localStorage) Put(name string, r io.Reader, length int64) error {
+	logger.Debugf("putting %q (len %d) to storage", name, length)
 	url, err := s.modURL(name)
 	if err != nil {
 		return err

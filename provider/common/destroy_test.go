@@ -7,18 +7,18 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/provider/common"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
 type DestroySuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var _ = gc.Suite(&DestroySuite{})
@@ -41,10 +41,10 @@ func (s *DestroySuite) TestCannotStopInstances(c *gc.C) {
 				&mockInstance{id: "another"},
 			}, nil
 		},
-		stopInstances: func(instances []instance.Instance) error {
-			c.Assert(instances, gc.HasLen, 2)
-			c.Assert(instances[0].Id(), gc.Equals, instance.Id("one"))
-			c.Assert(instances[1].Id(), gc.Equals, instance.Id("another"))
+		stopInstances: func(ids []instance.Id) error {
+			c.Assert(ids, gc.HasLen, 2)
+			c.Assert(ids[0], gc.Equals, instance.Id("one"))
+			c.Assert(ids[1], gc.Equals, instance.Id("another"))
 			return fmt.Errorf("nah")
 		},
 	}
@@ -61,10 +61,10 @@ func (s *DestroySuite) TestCannotTrashStorage(c *gc.C) {
 				&mockInstance{id: "another"},
 			}, nil
 		},
-		stopInstances: func(instances []instance.Instance) error {
-			c.Assert(instances, gc.HasLen, 2)
-			c.Assert(instances[0].Id(), gc.Equals, instance.Id("one"))
-			c.Assert(instances[1].Id(), gc.Equals, instance.Id("another"))
+		stopInstances: func(ids []instance.Id) error {
+			c.Assert(ids, gc.HasLen, 2)
+			c.Assert(ids[0], gc.Equals, instance.Id("one"))
+			c.Assert(ids[1], gc.Equals, instance.Id("another"))
 			return nil
 		},
 	}
@@ -84,16 +84,16 @@ func (s *DestroySuite) TestSuccess(c *gc.C) {
 				&mockInstance{id: "one"},
 			}, nil
 		},
-		stopInstances: func(instances []instance.Instance) error {
-			c.Assert(instances, gc.HasLen, 1)
-			c.Assert(instances[0].Id(), gc.Equals, instance.Id("one"))
+		stopInstances: func(ids []instance.Id) error {
+			c.Assert(ids, gc.HasLen, 1)
+			c.Assert(ids[0], gc.Equals, instance.Id("one"))
 			return nil
 		},
 	}
 	err = common.Destroy(env)
 	c.Assert(err, gc.IsNil)
 	_, err = stor.Get("somewhere")
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *DestroySuite) TestCannotTrashStorageWhenNoInstances(c *gc.C) {
@@ -121,5 +121,5 @@ func (s *DestroySuite) TestSuccessWhenNoInstances(c *gc.C) {
 	err = common.Destroy(env)
 	c.Assert(err, gc.IsNil)
 	_, err = stor.Get("elsewhere")
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }

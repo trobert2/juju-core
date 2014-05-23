@@ -15,13 +15,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs/filestorage"
 	"launchpad.net/juju-core/environs/storage"
-	coreerrors "launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/juju/osenv"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 func TestPackage(t *testing.T) {
@@ -130,14 +130,14 @@ func (s *filestorageSuite) TestGet(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 	c.Assert(b, gc.DeepEquals, data)
 
-	// Get on a non-existant path returns NotFoundError
+	// Get on a non-existant path returns errors.NotFound
 	_, err = s.reader.Get("nowhere")
-	c.Assert(err, jc.Satisfies, coreerrors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 
-	// Get on a directory returns NotFoundError
+	// Get on a directory returns errors.NotFound
 	s.createFile(c, "dir/file")
 	_, err = s.reader.Get("dir")
-	c.Assert(err, jc.Satisfies, coreerrors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *filestorageSuite) TestGetRefusesTemp(c *gc.C) {

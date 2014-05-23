@@ -6,46 +6,50 @@ package state
 import (
 	"fmt"
 
+	"github.com/juju/errors"
 	"labix.org/v2/mgo"
+	"labix.org/v2/mgo/bson"
 	"labix.org/v2/mgo/txn"
 
 	"launchpad.net/juju-core/constraints"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 )
 
 // constraintsDoc is the mongodb representation of a constraints.Value.
 type constraintsDoc struct {
-	Arch      *string
-	CpuCores  *uint64
-	CpuPower  *uint64
-	Mem       *uint64
-	RootDisk  *uint64
-	Container *instance.ContainerType
-	Tags      *[]string ",omitempty"
+	Arch         *string
+	CpuCores     *uint64
+	CpuPower     *uint64
+	Mem          *uint64
+	RootDisk     *uint64
+	InstanceType *string
+	Container    *instance.ContainerType
+	Tags         *[]string `bson:",omitempty"`
 }
 
 func (doc constraintsDoc) value() constraints.Value {
 	return constraints.Value{
-		Arch:      doc.Arch,
-		CpuCores:  doc.CpuCores,
-		CpuPower:  doc.CpuPower,
-		Mem:       doc.Mem,
-		RootDisk:  doc.RootDisk,
-		Container: doc.Container,
-		Tags:      doc.Tags,
+		Arch:         doc.Arch,
+		CpuCores:     doc.CpuCores,
+		CpuPower:     doc.CpuPower,
+		Mem:          doc.Mem,
+		RootDisk:     doc.RootDisk,
+		Container:    doc.Container,
+		Tags:         doc.Tags,
+		InstanceType: doc.InstanceType,
 	}
 }
 
 func newConstraintsDoc(cons constraints.Value) constraintsDoc {
 	return constraintsDoc{
-		Arch:      cons.Arch,
-		CpuCores:  cons.CpuCores,
-		CpuPower:  cons.CpuPower,
-		Mem:       cons.Mem,
-		RootDisk:  cons.RootDisk,
-		Container: cons.Container,
-		Tags:      cons.Tags,
+		Arch:         cons.Arch,
+		CpuCores:     cons.CpuCores,
+		CpuPower:     cons.CpuPower,
+		Mem:          cons.Mem,
+		RootDisk:     cons.RootDisk,
+		Container:    cons.Container,
+		Tags:         cons.Tags,
+		InstanceType: cons.InstanceType,
 	}
 }
 
@@ -63,7 +67,7 @@ func setConstraintsOp(st *State, id string, cons constraints.Value) txn.Op {
 		C:      st.constraints.Name,
 		Id:     id,
 		Assert: txn.DocExists,
-		Update: D{{"$set", newConstraintsDoc(cons)}},
+		Update: bson.D{{"$set", newConstraintsDoc(cons)}},
 	}
 }
 

@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/juju/errors"
 	"launchpad.net/tomb"
 
-	"launchpad.net/juju-core/errors"
+	"launchpad.net/juju-core/agent/mongo"
+	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/replicaset"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/worker"
@@ -25,12 +27,14 @@ type stateInterface interface {
 
 type stateMachine interface {
 	Id() string
+	InstanceId() (instance.Id, error)
 	Refresh() error
 	Watch() state.NotifyWatcher
 	WantsVote() bool
 	HasVote() bool
 	SetHasVote(hasVote bool) error
-	StateHostPort() string
+	APIHostPorts() []instance.HostPort
+	MongoHostPorts() []instance.HostPort
 }
 
 type mongoSession interface {
@@ -39,26 +43,36 @@ type mongoSession interface {
 	Set([]replicaset.Member) error
 }
 
+type publisherInterface interface {
+	// publish publishes information about the given state servers
+	// to whomsoever it may concern. When it is called there
+	// is no guarantee that any of the information has actually changed.
+	publishAPIServers(apiServers [][]instance.HostPort, instanceIds []instance.Id) error
+}
+
 // notifyFunc holds a function that is sent
 // to the main worker loop to fetch new information
 // when something changes. It reports whether
 // the information has actually changed (and by implication
 // whether the replica set may need to be changed).
-type notifyFunc func() (bool, error)
+type notifyFunc func() (changed bool, err error)
 
 var (
 	// If we fail to set the mongo replica set members,
-	// we retry at the following interval until we succeed.
-	retryInterval = 2 * time.Second
+	// we start retrying with the following interval,
+	// before exponentially backing off with each further
+	// attempt.
+	initialRetryInterval = 2 * time.Second
+
+	// maxRetryInterval holds the maximum interval
+	// between retry attempts.
+	maxRetryInterval = 5 * time.Minute
 
 	// pollInterval holds the interval at which the replica set
 	// members will be updated even in the absence of changes
 	// to State. This enables us to make changes to members
 	// that are triggered by changes to member status.
-	//
-	// 10 seconds is the default time interval used by
-	// mongo to keep its replicas up to date.
-	pollInterval = 10 * time.Second
+	pollInterval = 1 * time.Minute
 )
 
 // pgWorker holds all the mutable state that we are watching.
@@ -74,11 +88,11 @@ type pgWorker struct {
 	// before finishing.
 	wg sync.WaitGroup
 
-	// st represents the State. It is an interface for testing
-	// purposes only.
+	// st represents the State. It is an interface so we can swap
+	// out the implementation during testing.
 	st stateInterface
 
-	// When something changes that might might affect
+	// When something changes that might affect
 	// the peer group membership, it sends a function
 	// on notifyCh that is run inside the main worker
 	// goroutine to mutate the state. It reports whether
@@ -90,6 +104,10 @@ type pgWorker struct {
 	// associated goroutine that
 	// watches attributes of that machine.
 	machines map[string]*machine
+
+	// publisher holds the implementation of the API
+	// address publisher.
+	publisher publisherInterface
 }
 
 // New returns a new worker that maintains the mongo replica set
@@ -102,14 +120,16 @@ func New(st *state.State) (worker.Worker, error) {
 	return newWorker(&stateShim{
 		State:     st,
 		mongoPort: cfg.StatePort(),
-	}), nil
+		apiPort:   cfg.APIPort(),
+	}, newPublisher(st)), nil
 }
 
-func newWorker(st stateInterface) worker.Worker {
+func newWorker(st stateInterface, pub publisherInterface) worker.Worker {
 	w := &pgWorker{
-		st:       st,
-		notifyCh: make(chan notifyFunc),
-		machines: make(map[string]*machine),
+		st:        st,
+		notifyCh:  make(chan notifyFunc),
+		machines:  make(map[string]*machine),
+		publisher: pub,
 	}
 	go func() {
 		defer w.tomb.Done()
@@ -140,6 +160,7 @@ func (w *pgWorker) loop() error {
 
 	retry := time.NewTimer(0)
 	retry.Stop()
+	retryInterval := initialRetryInterval
 	for {
 		select {
 		case f := <-w.notifyCh:
@@ -154,23 +175,58 @@ func (w *pgWorker) loop() error {
 			// Try to update the replica set immediately.
 			retry.Reset(0)
 		case <-retry.C:
+			ok := true
+			servers, instanceIds, err := w.apiPublishInfo()
+			if err != nil {
+				return fmt.Errorf("cannot get API server info: %v", err)
+			}
+			if err := w.publisher.publishAPIServers(servers, instanceIds); err != nil {
+				logger.Errorf("cannot publish API server addresses: %v", err)
+				ok = false
+			}
 			if err := w.updateReplicaset(); err != nil {
 				if _, isReplicaSetError := err.(*replicaSetError); !isReplicaSetError {
 					return err
 				}
 				logger.Errorf("cannot set replicaset: %v", err)
+				ok = false
+			}
+			if ok {
+				// Update the replica set members occasionally
+				// to keep them up to date with the current
+				// replica set member statuses.
+				retry.Reset(pollInterval)
+				retryInterval = initialRetryInterval
+			} else {
 				retry.Reset(retryInterval)
-				break
+				retryInterval *= 2
+				if retryInterval > maxRetryInterval {
+					retryInterval = maxRetryInterval
+				}
 			}
 
-			// Update the replica set members occasionally
-			// to keep them up to date with the current
-			// replica set member statuses.
-			retry.Reset(pollInterval)
 		case <-w.tomb.Dying():
 			return tomb.ErrDying
 		}
 	}
+}
+
+func (w *pgWorker) apiPublishInfo() ([][]instance.HostPort, []instance.Id, error) {
+	servers := make([][]instance.HostPort, 0, len(w.machines))
+	instanceIds := make([]instance.Id, 0, len(w.machines))
+	for _, m := range w.machines {
+		if len(m.apiHostPorts) == 0 {
+			continue
+		}
+		instanceId, err := m.stm.InstanceId()
+		if err != nil {
+			return nil, nil, err
+		}
+		instanceIds = append(instanceIds, instanceId)
+		servers = append(servers, m.apiHostPorts)
+
+	}
+	return servers, instanceIds, nil
 }
 
 // notify sends the given notification function to
@@ -184,7 +240,7 @@ func (w *pgWorker) notify(f notifyFunc) bool {
 	}
 }
 
-// getPeerGroupInfo collates current session information about the
+// peerGroupInfo collates current session information about the
 // mongo peer group with information from state machines.
 func (w *pgWorker) peerGroupInfo() (*peerGroupInfo, error) {
 	session := w.st.MongoSession()
@@ -221,11 +277,12 @@ func (w *pgWorker) updateReplicaset() error {
 	if err != nil {
 		return fmt.Errorf("cannot compute desired peer group: %v", err)
 	}
-	if members == nil {
-		logger.Debugf("no change in desired peer group")
-		return nil
+	if members != nil {
+		logger.Debugf("desired peer group members: %#v", members)
+	} else {
+		logger.Debugf("no change in desired peer group (voting %#v)", voting)
 	}
-	logger.Debugf("desired peer group members: %#v", members)
+
 	// We cannot change the HasVote flag of a machine in state at exactly
 	// the same moment as changing its voting status in the replica set.
 	//
@@ -245,7 +302,9 @@ func (w *pgWorker) updateReplicaset() error {
 	// actual voting status for a while, but when things come
 	// back on line, it will be sorted out, as desiredReplicaSet
 	// will return the actual voting status.
-
+	//
+	// Note that we potentially update the HasVote status of the machines even
+	// if the members have not changed.
 	var added, removed []*machine
 	for m, hasVote := range voting {
 		switch {
@@ -258,15 +317,17 @@ func (w *pgWorker) updateReplicaset() error {
 	if err := setHasVote(added, true); err != nil {
 		return err
 	}
-	if err := w.st.MongoSession().Set(members); err != nil {
-		// We've failed to set the replica set, so revert back
-		// to the previous settings.
-		if err1 := setHasVote(added, false); err1 != nil {
-			logger.Errorf("cannot revert machine voting after failure to change replica set: %v", err1)
+	if members != nil {
+		if err := w.st.MongoSession().Set(members); err != nil {
+			// We've failed to set the replica set, so revert back
+			// to the previous settings.
+			if err1 := setHasVote(added, false); err1 != nil {
+				logger.Errorf("cannot revert machine voting after failure to change replica set: %v", err1)
+			}
+			return &replicaSetError{err}
 		}
-		return &replicaSetError{err}
+		logger.Infof("successfully changed replica set to %#v", members)
 	}
-	logger.Infof("successfully changed replica set to %#v", members)
 	if err := setHasVote(removed, false); err != nil {
 		return err
 	}
@@ -289,7 +350,10 @@ func (w *pgWorker) start(loop func() error) {
 // setHasVote sets the HasVote status of all the given
 // machines to hasVote.
 func setHasVote(ms []*machine, hasVote bool) error {
-
+	if len(ms) == 0 {
+		return nil
+	}
+	logger.Infof("setting HasVote=%v on machines %v", hasVote, ms)
 	for _, m := range ms {
 		if err := m.stm.SetHasVote(hasVote); err != nil {
 			return fmt.Errorf("cannot set voting status of %q to %v: %v", m.id, hasVote, err)
@@ -357,7 +421,7 @@ func (infow *serverInfoWatcher) updateMachines() (bool, error) {
 		logger.Debugf("found new machine %q", id)
 		stm, err := infow.worker.st.Machine(id)
 		if err != nil {
-			if errors.IsNotFoundError(err) {
+			if errors.IsNotFound(err) {
 				// If the machine isn't found, it must have been
 				// removed and will soon enough be removed
 				// from the state server list. This will probably
@@ -375,13 +439,18 @@ func (infow *serverInfoWatcher) updateMachines() (bool, error) {
 
 // machine represents a machine in State.
 type machine struct {
-	id        string
-	wantsVote bool
-	hostPort  string
+	id             string
+	wantsVote      bool
+	apiHostPorts   []instance.HostPort
+	mongoHostPorts []instance.HostPort
 
 	worker         *pgWorker
 	stm            stateMachine
 	machineWatcher state.NotifyWatcher
+}
+
+func (m *machine) mongoHostPort() string {
+	return mongo.SelectPeerHostPort(m.mongoHostPorts)
 }
 
 func (m *machine) String() string {
@@ -389,7 +458,7 @@ func (m *machine) String() string {
 }
 
 func (m *machine) GoString() string {
-	return fmt.Sprintf("&peergrouper.machine{id: %q, wantsVote: %v, hostPort: %q}", m.id, m.wantsVote, m.hostPort)
+	return fmt.Sprintf("&peergrouper.machine{id: %q, wantsVote: %v, hostPort: %q}", m.id, m.wantsVote, m.mongoHostPort())
 }
 
 func (w *pgWorker) newMachine(stm stateMachine) *machine {
@@ -397,7 +466,8 @@ func (w *pgWorker) newMachine(stm stateMachine) *machine {
 		worker:         w,
 		id:             stm.Id(),
 		stm:            stm,
-		hostPort:       stm.StateHostPort(),
+		apiHostPorts:   stm.APIHostPorts(),
+		mongoHostPorts: stm.MongoHostPorts(),
 		wantsVote:      stm.WantsVote(),
 		machineWatcher: stm.Watch(),
 	}
@@ -425,7 +495,7 @@ func (m *machine) stop() {
 
 func (m *machine) refresh() (bool, error) {
 	if err := m.stm.Refresh(); err != nil {
-		if errors.IsNotFoundError(err) {
+		if errors.IsNotFound(err) {
 			// We want to be robust when the machine
 			// state is out of date with respect to the
 			// state server info, so if the machine
@@ -441,11 +511,27 @@ func (m *machine) refresh() (bool, error) {
 		m.wantsVote = wantsVote
 		changed = true
 	}
-	if hostPort := m.stm.StateHostPort(); hostPort != m.hostPort {
-		m.hostPort = hostPort
+	if hps := m.stm.MongoHostPorts(); !hostPortsEqual(hps, m.mongoHostPorts) {
+		m.mongoHostPorts = hps
+		changed = true
+	}
+	if hps := m.stm.APIHostPorts(); !hostPortsEqual(hps, m.apiHostPorts) {
+		m.apiHostPorts = hps
 		changed = true
 	}
 	return changed, nil
+}
+
+func hostPortsEqual(hps1, hps2 []instance.HostPort) bool {
+	if len(hps1) != len(hps2) {
+		return false
+	}
+	for i := range hps1 {
+		if hps1[i] != hps2[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func inStrings(t string, ss []string) bool {

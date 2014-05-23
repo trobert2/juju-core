@@ -4,10 +4,12 @@
 package state_test
 
 import (
+	"regexp"
+
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/state"
-	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/utils"
 )
 
@@ -19,37 +21,44 @@ var _ = gc.Suite(&UserSuite{})
 
 func (s *UserSuite) TestAddUserInvalidNames(c *gc.C) {
 	for _, name := range []string{
-		"foo-bar",
 		"",
-		"0foo",
+		"b^b",
 	} {
 		u, err := s.State.AddUser(name, "password")
-		c.Assert(err, gc.ErrorMatches, `invalid user name "`+name+`"`)
+		c.Assert(err, gc.ErrorMatches, `invalid user name "`+regexp.QuoteMeta(name)+`"`)
 		c.Assert(u, gc.IsNil)
 	}
 }
 
+func (s *UserSuite) TestAddUserValidName(c *gc.C) {
+	name := "f00-Bar.ram77"
+	u, err := s.State.AddUser(name, "password")
+	c.Check(u, gc.NotNil)
+	c.Assert(err, gc.IsNil)
+	c.Assert(u.Name(), gc.Equals, name)
+}
+
 func (s *UserSuite) TestAddUser(c *gc.C) {
-	u, err := s.State.AddUser("a", "b")
+	u, err := s.State.AddUser("aa", "b")
 	c.Check(u, gc.NotNil)
 	c.Assert(err, gc.IsNil)
 
-	c.Assert(u.Name(), gc.Equals, "a")
+	c.Assert(u.Name(), gc.Equals, "aa")
 	c.Assert(u.PasswordValid("b"), jc.IsTrue)
 
-	u1, err := s.State.User("a")
+	u1, err := s.State.User("aa")
 	c.Check(u1, gc.NotNil)
 	c.Assert(err, gc.IsNil)
 
-	c.Assert(u1.Name(), gc.Equals, "a")
+	c.Assert(u1.Name(), gc.Equals, "aa")
 	c.Assert(u1.PasswordValid("b"), jc.IsTrue)
 }
 
 func (s *UserSuite) TestCheckUserExists(c *gc.C) {
-	u, err := s.State.AddUser("a", "b")
+	u, err := s.State.AddUser("aa", "b")
 	c.Check(u, gc.NotNil)
 	c.Assert(err, gc.IsNil)
-	e, err := state.CheckUserExists(s.State, "a")
+	e, err := state.CheckUserExists(s.State, "aa")
 	c.Assert(err, gc.IsNil)
 	c.Assert(e, gc.Equals, true)
 	e, err = state.CheckUserExists(s.State, "notAUser")
@@ -58,7 +67,7 @@ func (s *UserSuite) TestCheckUserExists(c *gc.C) {
 }
 
 func (s *UserSuite) TestSetPassword(c *gc.C) {
-	u, err := s.State.AddUser("someuser", "")
+	u, err := s.State.AddUser("someuser", "password")
 	c.Assert(err, gc.IsNil)
 
 	testSetPassword(c, func() (state.Authenticator, error) {
@@ -92,7 +101,7 @@ func (s *UserSuite) TestSetPasswordChangesSalt(c *gc.C) {
 }
 
 func (s *UserSuite) TestSetPasswordHash(c *gc.C) {
-	u, err := s.State.AddUser("someuser", "")
+	u, err := s.State.AddUser("someuser", "password")
 	c.Assert(err, gc.IsNil)
 
 	err = u.SetPasswordHash(utils.UserPasswordHash("foo", utils.CompatSalt), utils.CompatSalt)
@@ -111,7 +120,7 @@ func (s *UserSuite) TestSetPasswordHash(c *gc.C) {
 }
 
 func (s *UserSuite) TestSetPasswordHashWithSalt(c *gc.C) {
-	u, err := s.State.AddUser("someuser", "")
+	u, err := s.State.AddUser("someuser", "password")
 	c.Assert(err, gc.IsNil)
 
 	err = u.SetPasswordHash(utils.UserPasswordHash("foo", "salted"), "salted")
@@ -124,7 +133,7 @@ func (s *UserSuite) TestSetPasswordHashWithSalt(c *gc.C) {
 }
 
 func (s *UserSuite) TestPasswordValidUpdatesSalt(c *gc.C) {
-	u, err := s.State.AddUser("someuser", "")
+	u, err := s.State.AddUser("someuser", "password")
 	c.Assert(err, gc.IsNil)
 
 	compatHash := utils.UserPasswordHash("foo", utils.CompatSalt)
@@ -152,9 +161,28 @@ func (s *UserSuite) TestPasswordValidUpdatesSalt(c *gc.C) {
 }
 
 func (s *UserSuite) TestName(c *gc.C) {
-	u, err := s.State.AddUser("someuser", "")
+	u, err := s.State.AddUser("someuser", "password")
 	c.Assert(err, gc.IsNil)
 
 	c.Assert(u.Name(), gc.Equals, "someuser")
 	c.Assert(u.Tag(), gc.Equals, "user-someuser")
+}
+
+func (s *UserSuite) TestDeactivate(c *gc.C) {
+	u, err := s.State.AddUser("someuser", "password")
+	c.Assert(err, gc.IsNil)
+	c.Assert(u.IsDeactivated(), gc.Equals, false)
+
+	err = u.Deactivate()
+	c.Assert(err, gc.IsNil)
+	c.Assert(u.IsDeactivated(), gc.Equals, true)
+	c.Assert(u.PasswordValid(""), gc.Equals, false)
+
+}
+
+func (s *UserSuite) TestCantDeactivateAdminUser(c *gc.C) {
+	u, err := s.State.User(state.AdminUser)
+	c.Assert(err, gc.IsNil)
+	err = u.Deactivate()
+	c.Assert(err, gc.ErrorMatches, "Can't deactivate admin user")
 }

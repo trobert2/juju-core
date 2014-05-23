@@ -61,7 +61,6 @@ func NewRunListener(runner CommandRunner, socketPath string) (*RunListener, erro
 	if err := server.Register(&JujuRunServer{runner}); err != nil {
 		return nil, err
 	}
-	//we use TCP sockets on Windows
 	if runtime.GOOS != "windows" {
 		// In case the unix socket is present, delete it.
 		if err := os.Remove(socketPath); err != nil {
@@ -70,7 +69,7 @@ func NewRunListener(runner CommandRunner, socketPath string) (*RunListener, erro
 	}
 	listener, err := net.Listen(osenv.SocketType, socketPath)
 	if err != nil {
-		logger.Errorf("failed to listen on %s:%s: %v", osenv.SocketType, socketPath, err)
+		logger.Errorf("failed to listen on unix:%s: %v", socketPath, err)
 		return nil, err
 	}
 	runListener := &RunListener{

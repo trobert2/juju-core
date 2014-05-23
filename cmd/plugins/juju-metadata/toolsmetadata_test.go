@@ -14,21 +14,20 @@ import (
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/configstore"
 	envtesting "launchpad.net/juju-core/environs/testing"
 	"launchpad.net/juju-core/environs/tools"
-	ttesting "launchpad.net/juju-core/environs/tools/testing"
+	toolstesting "launchpad.net/juju-core/environs/tools/testing"
 	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/provider/dummy"
 	coretesting "launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/version"
 )
 
 type ToolsMetadataSuite struct {
-	testbase.LoggingSuite
-	home             *coretesting.FakeHome
+	coretesting.FakeJujuHomeSuite
 	env              environs.Environ
 	publicStorageDir string
 }
@@ -36,10 +35,8 @@ type ToolsMetadataSuite struct {
 var _ = gc.Suite(&ToolsMetadataSuite{})
 
 func (s *ToolsMetadataSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
-	s.home = coretesting.MakeSampleHome(c)
+	s.FakeJujuHomeSuite.SetUpTest(c)
 	s.AddCleanup(func(*gc.C) {
-		s.home.Restore()
 		dummy.Reset()
 		loggo.ResetLoggers()
 	})
@@ -57,7 +54,7 @@ func (s *ToolsMetadataSuite) SetUpTest(c *gc.C) {
 var currentVersionStrings = []string{
 	// only these ones will make it into the JSON files.
 	version.Current.Number.String() + "-quantal-amd64",
-	version.Current.Number.String() + "-quantal-arm",
+	version.Current.Number.String() + "-quantal-armhf",
 	version.Current.Number.String() + "-quantal-i386",
 }
 
@@ -98,13 +95,13 @@ var expectedOutputMirrors = expectedOutputCommon + `
 
 func (s *ToolsMetadataSuite) TestGenerateDefaultDirectory(c *gc.C) {
 	metadataDir := osenv.JujuHome() // default metadata dir
-	ttesting.MakeTools(c, metadataDir, "releases", versionStrings)
+	toolstesting.MakeTools(c, metadataDir, "releases", versionStrings)
 	ctx := coretesting.Context(c)
-	code := cmd.Main(&ToolsMetadataCommand{}, ctx, nil)
+	code := cmd.Main(envcmd.Wrap(&ToolsMetadataCommand{}), ctx, nil)
 	c.Assert(code, gc.Equals, 0)
 	output := ctx.Stdout.(*bytes.Buffer).String()
 	c.Assert(output, gc.Matches, expectedOutputDirectory)
-	metadata := ttesting.ParseMetadataFromDir(c, metadataDir, false)
+	metadata := toolstesting.ParseMetadataFromDir(c, metadataDir, false)
 	c.Assert(metadata, gc.HasLen, len(versionStrings))
 	obtainedVersionStrings := make([]string, len(versionStrings))
 	for i, metadata := range metadata {
@@ -116,13 +113,13 @@ func (s *ToolsMetadataSuite) TestGenerateDefaultDirectory(c *gc.C) {
 
 func (s *ToolsMetadataSuite) TestGenerateDirectory(c *gc.C) {
 	metadataDir := c.MkDir()
-	ttesting.MakeTools(c, metadataDir, "releases", versionStrings)
+	toolstesting.MakeTools(c, metadataDir, "releases", versionStrings)
 	ctx := coretesting.Context(c)
-	code := cmd.Main(&ToolsMetadataCommand{}, ctx, []string{"-d", metadataDir})
+	code := cmd.Main(envcmd.Wrap(&ToolsMetadataCommand{}), ctx, []string{"-d", metadataDir})
 	c.Assert(code, gc.Equals, 0)
 	output := ctx.Stdout.(*bytes.Buffer).String()
 	c.Assert(output, gc.Matches, expectedOutputDirectory)
-	metadata := ttesting.ParseMetadataFromDir(c, metadataDir, false)
+	metadata := toolstesting.ParseMetadataFromDir(c, metadataDir, false)
 	c.Assert(metadata, gc.HasLen, len(versionStrings))
 	obtainedVersionStrings := make([]string, len(versionStrings))
 	for i, metadata := range metadata {
@@ -134,14 +131,14 @@ func (s *ToolsMetadataSuite) TestGenerateDirectory(c *gc.C) {
 
 func (s *ToolsMetadataSuite) TestGenerateWithPublicFallback(c *gc.C) {
 	// Write tools and metadata to the public tools location.
-	ttesting.MakeToolsWithCheckSum(c, s.publicStorageDir, "releases", versionStrings)
+	toolstesting.MakeToolsWithCheckSum(c, s.publicStorageDir, "releases", versionStrings)
 
 	// Run the command with no local metadata.
 	ctx := coretesting.Context(c)
 	metadataDir := c.MkDir()
-	code := cmd.Main(&ToolsMetadataCommand{}, ctx, []string{"-d", metadataDir})
+	code := cmd.Main(envcmd.Wrap(&ToolsMetadataCommand{}), ctx, []string{"-d", metadataDir})
 	c.Assert(code, gc.Equals, 0)
-	metadata := ttesting.ParseMetadataFromDir(c, metadataDir, false)
+	metadata := toolstesting.ParseMetadataFromDir(c, metadataDir, false)
 	c.Assert(metadata, gc.HasLen, len(versionStrings))
 	obtainedVersionStrings := make([]string, len(versionStrings))
 	for i, metadata := range metadata {
@@ -153,13 +150,13 @@ func (s *ToolsMetadataSuite) TestGenerateWithPublicFallback(c *gc.C) {
 
 func (s *ToolsMetadataSuite) TestGenerateWithMirrors(c *gc.C) {
 	metadataDir := c.MkDir()
-	ttesting.MakeTools(c, metadataDir, "releases", versionStrings)
+	toolstesting.MakeTools(c, metadataDir, "releases", versionStrings)
 	ctx := coretesting.Context(c)
-	code := cmd.Main(&ToolsMetadataCommand{}, ctx, []string{"--public", "-d", metadataDir})
+	code := cmd.Main(envcmd.Wrap(&ToolsMetadataCommand{}), ctx, []string{"--public", "-d", metadataDir})
 	c.Assert(code, gc.Equals, 0)
 	output := ctx.Stdout.(*bytes.Buffer).String()
 	c.Assert(output, gc.Matches, expectedOutputMirrors)
-	metadata := ttesting.ParseMetadataFromDir(c, metadataDir, true)
+	metadata := toolstesting.ParseMetadataFromDir(c, metadataDir, true)
 	c.Assert(metadata, gc.HasLen, len(versionStrings))
 	obtainedVersionStrings := make([]string, len(versionStrings))
 	for i, metadata := range metadata {
@@ -171,7 +168,7 @@ func (s *ToolsMetadataSuite) TestGenerateWithMirrors(c *gc.C) {
 
 func (s *ToolsMetadataSuite) TestNoTools(c *gc.C) {
 	ctx := coretesting.Context(c)
-	code := cmd.Main(&ToolsMetadataCommand{}, ctx, nil)
+	code := cmd.Main(envcmd.Wrap(&ToolsMetadataCommand{}), ctx, nil)
 	c.Assert(code, gc.Equals, 1)
 	stdout := ctx.Stdout.(*bytes.Buffer).String()
 	c.Assert(stdout, gc.Matches, "Finding tools in .*\n")
@@ -187,9 +184,9 @@ func (s *ToolsMetadataSuite) TestPatchLevels(c *gc.C) {
 		currentVersion.String() + ".1-precise-amd64",
 	}
 	metadataDir := osenv.JujuHome() // default metadata dir
-	ttesting.MakeTools(c, metadataDir, "releases", versionStrings)
+	toolstesting.MakeTools(c, metadataDir, "releases", versionStrings)
 	ctx := coretesting.Context(c)
-	code := cmd.Main(&ToolsMetadataCommand{}, ctx, nil)
+	code := cmd.Main(envcmd.Wrap(&ToolsMetadataCommand{}), ctx, nil)
 	c.Assert(code, gc.Equals, 0)
 	output := ctx.Stdout.(*bytes.Buffer).String()
 	expectedOutput := fmt.Sprintf(`
@@ -200,11 +197,11 @@ Finding tools in .*
 .*Writing tools/streams/v1/com\.ubuntu\.juju:released:tools\.json
 `[1:], regexp.QuoteMeta(versionStrings[0]), regexp.QuoteMeta(versionStrings[1]))
 	c.Assert(output, gc.Matches, expectedOutput)
-	metadata := ttesting.ParseMetadataFromDir(c, metadataDir, false)
+	metadata := toolstesting.ParseMetadataFromDir(c, metadataDir, false)
 	c.Assert(metadata, gc.HasLen, 2)
 
 	filename := fmt.Sprintf("juju-%s-precise-amd64.tgz", currentVersion)
-	size, sha256 := ttesting.SHA256sum(c, filepath.Join(metadataDir, "tools", "releases", filename))
+	size, sha256 := toolstesting.SHA256sum(c, filepath.Join(metadataDir, "tools", "releases", filename))
 	c.Assert(metadata[0], gc.DeepEquals, &tools.ToolsMetadata{
 		Release:  "precise",
 		Version:  currentVersion.String(),
@@ -216,7 +213,7 @@ Finding tools in .*
 	})
 
 	filename = fmt.Sprintf("juju-%s.1-precise-amd64.tgz", currentVersion)
-	size, sha256 = ttesting.SHA256sum(c, filepath.Join(metadataDir, "tools", "releases", filename))
+	size, sha256 = toolstesting.SHA256sum(c, filepath.Join(metadataDir, "tools", "releases", filename))
 	c.Assert(metadata[1], gc.DeepEquals, &tools.ToolsMetadata{
 		Release:  "precise",
 		Version:  currentVersion.String() + ".1",

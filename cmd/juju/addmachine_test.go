@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"strconv"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/instance"
 	jujutesting "launchpad.net/juju-core/juju/testing"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 type AddMachineSuite struct {
@@ -24,7 +25,7 @@ type AddMachineSuite struct {
 var _ = gc.Suite(&AddMachineSuite{})
 
 func runAddMachine(c *gc.C, args ...string) error {
-	_, err := testing.RunCommand(c, &AddMachineCommand{}, args)
+	_, err := testing.RunCommand(c, envcmd.Wrap(&AddMachineCommand{}), args)
 	return err
 }
 
@@ -107,13 +108,17 @@ func (s *AddMachineSuite) TestAddUnsupportedContainerToMachine(c *gc.C) {
 
 func (s *AddMachineSuite) TestAddMachineErrors(c *gc.C) {
 	err := runAddMachine(c, ":lxc")
-	c.Assert(err, gc.ErrorMatches, `malformed container argument ":lxc"`)
+	c.Check(err, gc.ErrorMatches, `cannot add a new machine: :lxc placement is invalid`)
 	err = runAddMachine(c, "lxc:")
-	c.Assert(err, gc.ErrorMatches, `malformed container argument "lxc:"`)
+	c.Check(err, gc.ErrorMatches, `invalid value "" for "lxc" scope: expected machine-id`)
 	err = runAddMachine(c, "2")
-	c.Assert(err, gc.ErrorMatches, `malformed container argument "2"`)
+	c.Check(err, gc.ErrorMatches, `machine-id cannot be specified when adding machines`)
 	err = runAddMachine(c, "foo")
-	c.Assert(err, gc.ErrorMatches, `malformed container argument "foo"`)
+	c.Check(err, gc.ErrorMatches, `cannot add a new machine: foo placement is invalid`)
+	err = runAddMachine(c, "foo:bar")
+	c.Check(err, gc.ErrorMatches, `invalid environment name "foo"`)
+	err = runAddMachine(c, "dummyenv:invalid")
+	c.Check(err, gc.ErrorMatches, `cannot add a new machine: invalid placement is invalid`)
 	err = runAddMachine(c, "lxc", "--constraints", "container=lxc")
-	c.Assert(err, gc.ErrorMatches, `container constraint "lxc" not allowed when adding a machine`)
+	c.Check(err, gc.ErrorMatches, `container constraint "lxc" not allowed when adding a machine`)
 }

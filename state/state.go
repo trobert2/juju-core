@@ -8,6 +8,7 @@ package state
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"labix.org/v2/mgo"
 	"labix.org/v2/mgo/bson"
@@ -23,8 +25,8 @@ import (
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs/config"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/names"
+	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/multiwatcher"
 	"launchpad.net/juju-core/state/presence"
 	"launchpad.net/juju-core/state/watcher"
@@ -34,41 +36,44 @@ import (
 
 var logger = loggo.GetLogger("juju.state")
 
-// TODO(niemeyer): This must not be exported.
-type D []bson.DocElem
-
 // BootstrapNonce is used as a nonce for the state server machine.
-const BootstrapNonce = "user-admin:bootstrap"
+const (
+	BootstrapNonce = "user-admin:bootstrap"
+	AdminUser      = "admin"
+)
 
 // State represents the state of an environment
 // managed by juju.
 type State struct {
-	info             *Info
-	policy           Policy
-	db               *mgo.Database
-	environments     *mgo.Collection
-	charms           *mgo.Collection
-	machines         *mgo.Collection
-	instanceData     *mgo.Collection
-	containerRefs    *mgo.Collection
-	relations        *mgo.Collection
-	relationScopes   *mgo.Collection
-	services         *mgo.Collection
-	minUnits         *mgo.Collection
-	settings         *mgo.Collection
-	settingsrefs     *mgo.Collection
-	constraints      *mgo.Collection
-	units            *mgo.Collection
-	users            *mgo.Collection
-	presence         *mgo.Collection
-	cleanups         *mgo.Collection
-	annotations      *mgo.Collection
-	statuses         *mgo.Collection
-	stateServers     *mgo.Collection
-	runner           *txn.Runner
-	transactionHooks chan ([]transactionHook)
-	watcher          *watcher.Watcher
-	pwatcher         *presence.Watcher
+	info              *Info
+	policy            Policy
+	db                *mgo.Database
+	environments      *mgo.Collection
+	charms            *mgo.Collection
+	machines          *mgo.Collection
+	instanceData      *mgo.Collection
+	containerRefs     *mgo.Collection
+	relations         *mgo.Collection
+	relationScopes    *mgo.Collection
+	services          *mgo.Collection
+	requestedNetworks *mgo.Collection
+	networks          *mgo.Collection
+	networkInterfaces *mgo.Collection
+	minUnits          *mgo.Collection
+	settings          *mgo.Collection
+	settingsrefs      *mgo.Collection
+	constraints       *mgo.Collection
+	units             *mgo.Collection
+	users             *mgo.Collection
+	presence          *mgo.Collection
+	cleanups          *mgo.Collection
+	annotations       *mgo.Collection
+	statuses          *mgo.Collection
+	stateServers      *mgo.Collection
+	runner            *txn.Runner
+	transactionHooks  chan ([]transactionHook)
+	watcher           *watcher.Watcher
+	pwatcher          *presence.Watcher
 	// mu guards allManager.
 	mu         sync.Mutex
 	allManager *multiwatcher.StoreManager
@@ -184,11 +189,11 @@ func (st *State) checkCanUpgrade(currentVersion, newVersion string) error {
 	matchCurrent := "^" + regexp.QuoteMeta(currentVersion) + "-"
 	matchNew := "^" + regexp.QuoteMeta(newVersion) + "-"
 	// Get all machines and units with a different or empty version.
-	sel := D{{"$or", []D{
-		{{"tools", D{{"$exists", false}}}},
-		{{"$and", []D{
-			{{"tools.version", D{{"$not", bson.RegEx{matchCurrent, ""}}}}},
-			{{"tools.version", D{{"$not", bson.RegEx{matchNew, ""}}}}},
+	sel := bson.D{{"$or", []bson.D{
+		{{"tools", bson.D{{"$exists", false}}}},
+		{{"$and", []bson.D{
+			{{"tools.version", bson.D{{"$not", bson.RegEx{matchCurrent, ""}}}}},
+			{{"tools.version", bson.D{{"$not", bson.RegEx{matchNew, ""}}}}},
 		}}},
 	}}}
 	var agentTags []string
@@ -196,7 +201,7 @@ func (st *State) checkCanUpgrade(currentVersion, newVersion string) error {
 		var doc struct {
 			Id string `bson:"_id"`
 		}
-		iter := collection.Find(sel).Select(D{{"_id", 1}}).Iter()
+		iter := collection.Find(sel).Select(bson.D{{"_id", 1}}).Iter()
 		for iter.Next(&doc) {
 			switch collection.Name {
 			case "machines":
@@ -244,8 +249,8 @@ func (st *State) SetEnvironAgentVersion(newVersion version.Number) error {
 		ops := []txn.Op{{
 			C:      st.settings.Name,
 			Id:     environGlobalKey,
-			Assert: D{{"txn-revno", settings.txnRevno}},
-			Update: D{{"$set", D{{"agent-version", newVersion.String()}}}},
+			Assert: bson.D{{"txn-revno", settings.txnRevno}},
+			Update: bson.D{{"$set", bson.D{{"agent-version", newVersion.String()}}}},
 		}}
 		if err := st.runTransaction(ops); err == nil {
 			return nil
@@ -256,12 +261,33 @@ func (st *State) SetEnvironAgentVersion(newVersion version.Number) error {
 	return ErrExcessiveContention
 }
 
-// SetEnvironConfig replaces the current configuration of the
-// environment with the provided configuration.
-func (st *State) SetEnvironConfig(cfg, old *config.Config) error {
-	if err := checkEnvironConfig(cfg); err != nil {
-		return err
+func (st *State) buildAndValidateEnvironConfig(updateAttrs map[string]interface{}, removeAttrs []string, oldConfig *config.Config) (validCfg *config.Config, err error) {
+	newConfig, err := oldConfig.Apply(updateAttrs)
+	if err != nil {
+		return nil, err
 	}
+	if len(removeAttrs) != 0 {
+		newConfig, err = newConfig.Remove(removeAttrs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := checkEnvironConfig(newConfig); err != nil {
+		return nil, err
+	}
+	return st.validate(newConfig, oldConfig)
+}
+
+type ValidateConfigFunc func(updateAttrs map[string]interface{}, removeAttrs []string, oldConfig *config.Config) error
+
+// UpdateEnvironConfig adds, updates or removes attributes in the current
+// configuration of the environment with the provided updateAttrs and
+// removeAttrs.
+func (st *State) UpdateEnvironConfig(updateAttrs map[string]interface{}, removeAttrs []string, additionalValidation ValidateConfigFunc) error {
+	if len(updateAttrs)+len(removeAttrs) == 0 {
+		return nil
+	}
+
 	// TODO(axw) 2013-12-6 #1167616
 	// Ensure that the settings on disk have not changed
 	// underneath us. The settings changes are actually
@@ -272,13 +298,30 @@ func (st *State) SetEnvironConfig(cfg, old *config.Config) error {
 	if err != nil {
 		return err
 	}
-	newattrs := cfg.AllAttrs()
-	for k, _ := range old.AllAttrs() {
-		if _, ok := newattrs[k]; !ok {
+
+	// Get the existing environment config from state.
+	oldConfig, err := config.New(config.NoDefaults, settings.Map())
+	if err != nil {
+		return err
+	}
+	if additionalValidation != nil {
+		err = additionalValidation(updateAttrs, removeAttrs, oldConfig)
+		if err != nil {
+			return err
+		}
+	}
+	validCfg, err := st.buildAndValidateEnvironConfig(updateAttrs, removeAttrs, oldConfig)
+	if err != nil {
+		return err
+	}
+
+	validAttrs := validCfg.AllAttrs()
+	for k, _ := range oldConfig.AllAttrs() {
+		if _, ok := validAttrs[k]; !ok {
 			settings.Delete(k)
 		}
 	}
-	settings.Update(newattrs)
+	settings.Update(validAttrs)
 	_, err = settings.Write()
 	return err
 }
@@ -290,6 +333,13 @@ func (st *State) EnvironConstraints() (constraints.Value, error) {
 
 // SetEnvironConstraints replaces the current environment constraints.
 func (st *State) SetEnvironConstraints(cons constraints.Value) error {
+	unsupported, err := st.validateConstraints(cons)
+	if len(unsupported) > 0 {
+		logger.Warningf(
+			"setting environment constraints: unsupported constraints: %v", strings.Join(unsupported, ","))
+	} else if err != nil {
+		return err
+	}
 	return writeConstraints(st, environGlobalKey, cons)
 }
 
@@ -371,7 +421,7 @@ func machineIdLessThan(id1, id2 string) bool {
 // Machine returns the machine with the given id.
 func (st *State) Machine(id string) (*Machine, error) {
 	mdoc := &machineDoc{}
-	sel := D{{"_id", id}}
+	sel := bson.D{{"_id", id}}
 	err := st.machines.Find(sel).One(mdoc)
 	if err == mgo.ErrNotFound {
 		return nil, errors.NotFoundf("machine %s", id)
@@ -424,6 +474,8 @@ func (st *State) FindEntity(tag string) (Entity, error) {
 		return env, nil
 	case names.RelationTagKind:
 		return st.KeyRelation(id)
+	case names.NetworkTagKind:
+		return st.Network(id)
 	}
 	return nil, err
 }
@@ -448,6 +500,8 @@ func (st *State) parseTag(tag string) (coll string, id string, err error) {
 		coll = st.relations.Name
 	case names.EnvironTagKind:
 		coll = st.environments.Name
+	case names.NetworkTagKind:
+		coll = st.networks.Name
 	default:
 		return "", "", fmt.Errorf("%q is not a valid collection tag", tag)
 	}
@@ -462,7 +516,7 @@ func (st *State) AddCharm(ch charm.Charm, curl *charm.URL, bundleURL *url.URL, b
 	// check for that situation and update the existing charm record
 	// if necessary, otherwise add a new record.
 	var existing charmDoc
-	err = st.charms.Find(D{{"_id", curl.String()}, {"placeholder", true}}).One(&existing)
+	err = st.charms.Find(bson.D{{"_id", curl.String()}, {"placeholder", true}}).One(&existing)
 	if err == mgo.ErrNotFound {
 		cdoc := &charmDoc{
 			URL:          curl,
@@ -486,10 +540,10 @@ func (st *State) AddCharm(ch charm.Charm, curl *charm.URL, bundleURL *url.URL, b
 // to storage and placeholders are never returned.
 func (st *State) Charm(curl *charm.URL) (*Charm, error) {
 	cdoc := &charmDoc{}
-	what := D{
+	what := bson.D{
 		{"_id", curl},
-		{"placeholder", D{{"$ne", true}}},
-		{"pendingupload", D{{"$ne", true}}},
+		{"placeholder", bson.D{{"$ne", true}}},
+		{"pendingupload", bson.D{{"$ne", true}}},
 	}
 	err := st.charms.Find(what).One(&cdoc)
 	if err == mgo.ErrNotFound {
@@ -510,7 +564,7 @@ func (st *State) LatestPlaceholderCharm(curl *charm.URL) (*Charm, error) {
 	noRevURL := curl.WithRevision(-1)
 	curlRegex := "^" + regexp.QuoteMeta(noRevURL.String())
 	var docs []charmDoc
-	err := st.charms.Find(D{{"_id", D{{"$regex", curlRegex}}}, {"placeholder", true}}).All(&docs)
+	err := st.charms.Find(bson.D{{"_id", bson.D{{"$regex", curlRegex}}}, {"placeholder", true}}).All(&docs)
 	if err != nil {
 		return nil, fmt.Errorf("cannot get charm %q: %v", curl, err)
 	}
@@ -548,7 +602,7 @@ func (st *State) PrepareLocalCharmUpload(curl *charm.URL) (chosenUrl *charm.URL,
 	for attempt := 0; attempt < 3; attempt++ {
 		// Find the highest revision of that charm in state.
 		var docs []charmDoc
-		err = st.charms.Find(D{{"_id", D{{"$regex", curlRegex}}}}).Select(D{{"_id", 1}}).All(&docs)
+		err = st.charms.Find(bson.D{{"_id", bson.D{{"$regex", curlRegex}}}}).Select(bson.D{{"_id", 1}}).All(&docs)
 		if err != nil {
 			return nil, err
 		}
@@ -641,12 +695,12 @@ func (st *State) PrepareStoreCharmUpload(curl *charm.URL) (*Charm, error) {
 			ops = []txn.Op{{
 				C:  st.charms.Name,
 				Id: curl,
-				Assert: D{
+				Assert: bson.D{
 					{"bundlesha256", ""},
 					{"pendingupload", false},
 					{"placeholder", true},
 				},
-				Update: D{{"$set", D{
+				Update: bson.D{{"$set", bson.D{
 					{"pendingupload", true},
 					{"placeholder", false},
 				}}},
@@ -678,8 +732,8 @@ func (st *State) PrepareStoreCharmUpload(curl *charm.URL) (*Charm, error) {
 }
 
 var (
-	stillPending     = D{{"pendingupload", true}}
-	stillPlaceholder = D{{"placeholder", true}}
+	stillPending     = bson.D{{"pendingupload", true}}
+	stillPlaceholder = bson.D{{"placeholder", true}}
 )
 
 // AddStoreCharmPlaceholder creates a charm document in state for the given charm URL which
@@ -697,7 +751,7 @@ func (st *State) AddStoreCharmPlaceholder(curl *charm.URL) (err error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		// See if the charm already exists in state and exit early if that's the case.
 		var doc charmDoc
-		err = st.charms.Find(D{{"_id", curl.String()}}).Select(D{{"_id", 1}}).One(&doc)
+		err = st.charms.Find(bson.D{{"_id", curl.String()}}).Select(bson.D{{"_id", 1}}).One(&doc)
 		if err != nil && err != mgo.ErrNotFound {
 			return err
 		}
@@ -745,7 +799,7 @@ func (st *State) deleteOldPlaceholderCharmsOps(curl *charm.URL) ([]txn.Op, error
 	curlRegex := "^" + regexp.QuoteMeta(noRevURL.String())
 	var docs []charmDoc
 	err := st.charms.Find(
-		D{{"_id", D{{"$regex", curlRegex}}}, {"placeholder", true}}).Select(D{{"_id", 1}}).All(&docs)
+		bson.D{{"_id", bson.D{{"$regex", curlRegex}}}, {"placeholder", true}}).Select(bson.D{{"_id", 1}}).All(&docs)
 	if err != nil {
 		return nil, err
 	}
@@ -815,7 +869,7 @@ func (st *State) UpdateUploadedCharm(ch charm.Charm, curl *charm.URL, bundleURL 
 func (st *State) updateCharmDoc(
 	ch charm.Charm, curl *charm.URL, bundleURL *url.URL, bundleSha256 string, preReq interface{}) (*Charm, error) {
 
-	updateFields := D{{"$set", D{
+	updateFields := bson.D{{"$set", bson.D{
 		{"meta", ch.Meta()},
 		{"config", ch.Config()},
 		{"bundleurl", bundleURL},
@@ -868,8 +922,8 @@ func (st *State) addPeerRelationsOps(serviceName string, peers map[string]charm.
 // AddService creates a new service, running the supplied charm, with the
 // supplied name (which must be unique). If the charm defines peer relations,
 // they will be created automatically.
-func (st *State) AddService(name, ownerTag string, ch *Charm) (service *Service, err error) {
-	defer utils.ErrorContextf(&err, "cannot add service %q", name)
+func (st *State) AddService(name, ownerTag string, ch *Charm, includeNetworks, excludeNetworks []string) (service *Service, err error) {
+	defer errors.Maskf(&err, "cannot add service %q", name)
 	kind, ownerId, err := names.ParseTag(ownerTag, names.UserTagKind)
 	if err != nil || kind != names.UserTagKind {
 		return nil, fmt.Errorf("Invalid ownertag %s", ownerTag)
@@ -912,6 +966,11 @@ func (st *State) AddService(name, ownerTag string, ch *Charm) (service *Service,
 	ops := []txn.Op{
 		env.assertAliveOp(),
 		createConstraintsOp(st, svc.globalKey(), constraints.Value{}),
+		// TODO(dimitern) 2014-04-04 bug #1302498
+		// Once we can add networks independently of machine
+		// provisioning, we should check the given networks are valid
+		// and known before setting them.
+		createRequestedNetworksOp(st, svc.globalKey(), includeNetworks, excludeNetworks),
 		createSettingsOp(st, svc.settingsKey(), nil),
 		{
 			C:      st.users.Name,
@@ -939,7 +998,7 @@ func (st *State) AddService(name, ownerTag string, ch *Charm) (service *Service,
 
 	if err := st.runTransaction(ops); err == txn.ErrAborted {
 		err := env.Refresh()
-		if (err == nil && env.Life() != Alive) || errors.IsNotFoundError(err) {
+		if (err == nil && env.Life() != Alive) || errors.IsNotFound(err) {
 			return nil, fmt.Errorf("environment is no longer alive")
 		} else if err != nil {
 			return nil, err
@@ -962,13 +1021,92 @@ func (st *State) AddService(name, ownerTag string, ch *Charm) (service *Service,
 	return svc, nil
 }
 
+// AddNetwork creates a new network with the given params. If a
+// network with the same name or provider id already exists in state,
+// an error satisfying errors.IsAlreadyExists is returned.
+func (st *State) AddNetwork(args NetworkInfo) (n *Network, err error) {
+	defer errors.Contextf(&err, "cannot add network %q", args.Name)
+	if args.CIDR != "" {
+		_, _, err := net.ParseCIDR(args.CIDR)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if args.Name == "" {
+		return nil, fmt.Errorf("name must be not empty")
+	}
+	if !names.IsNetwork(args.Name) {
+		return nil, fmt.Errorf("invalid name")
+	}
+	if args.ProviderId == "" {
+		return nil, fmt.Errorf("provider id must be not empty")
+	}
+	if args.VLANTag < 0 || args.VLANTag > 4094 {
+		return nil, fmt.Errorf("invalid VLAN tag %d: must be between 0 and 4094", args.VLANTag)
+	}
+	doc := newNetworkDoc(args)
+	ops := []txn.Op{{
+		C:      st.networks.Name,
+		Id:     args.Name,
+		Assert: txn.DocMissing,
+		Insert: doc,
+	}}
+	err = st.runTransaction(ops)
+	switch err {
+	case txn.ErrAborted:
+		if _, err = st.Network(args.Name); err == nil {
+			return nil, errors.AlreadyExistsf("network %q", args.Name)
+		} else if err != nil {
+			return nil, err
+		}
+	case nil:
+		// We have a unique key restriction on the ProviderId field,
+		// which will cause the insert to fail if there is another
+		// record with the same provider id in the table. The txn
+		// logic does not report insertion errors, so we check that
+		// the record has actually been inserted correctly before
+		// reporting success.
+		if _, err = st.Network(args.Name); err != nil {
+			return nil, errors.AlreadyExistsf("network with provider id %q", args.ProviderId)
+		}
+		return newNetwork(st, doc), nil
+	}
+	return nil, err
+}
+
+// Network returns the network with the given name.
+func (st *State) Network(name string) (*Network, error) {
+	doc := &networkDoc{}
+	err := st.networks.FindId(name).One(doc)
+	if err == mgo.ErrNotFound {
+		return nil, errors.NotFoundf("network %q", name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cannot get network %q: %v", name, err)
+	}
+	return newNetwork(st, doc), nil
+}
+
+// AllNetworks returns all known networks in the environment.
+func (st *State) AllNetworks() (networks []*Network, err error) {
+	docs := []networkDoc{}
+	err = st.networks.Find(nil).All(&docs)
+	if err != nil {
+		return nil, fmt.Errorf("cannot get all networks")
+	}
+	for _, doc := range docs {
+		networks = append(networks, newNetwork(st, &doc))
+	}
+	return networks, nil
+}
+
 // Service returns a service state by name.
 func (st *State) Service(name string) (service *Service, err error) {
 	if !names.IsService(name) {
 		return nil, fmt.Errorf("%q is not a valid service name", name)
 	}
 	sdoc := &serviceDoc{}
-	sel := D{{"_id", name}}
+	sel := bson.D{{"_id", name}}
 	err = st.services.Find(sel).One(sdoc)
 	if err == mgo.ErrNotFound {
 		return nil, errors.NotFoundf("service %q", name)
@@ -982,7 +1120,7 @@ func (st *State) Service(name string) (service *Service, err error) {
 // AllServices returns all deployed services in the environment.
 func (st *State) AllServices() (services []*Service, err error) {
 	sdocs := []serviceDoc{}
-	err = st.services.Find(D{}).All(&sdocs)
+	err = st.services.Find(bson.D{}).All(&sdocs)
 	if err != nil {
 		return nil, fmt.Errorf("cannot get all services")
 	}
@@ -1107,7 +1245,7 @@ func (st *State) endpoints(name string, filter func(ep Endpoint) bool) ([]Endpoi
 // AddRelation creates a new relation with the given endpoints.
 func (st *State) AddRelation(eps ...Endpoint) (r *Relation, err error) {
 	key := relationKey(eps)
-	defer utils.ErrorContextf(&err, "cannot add relation %q", key)
+	defer errors.Maskf(&err, "cannot add relation %q", key)
 	// Enforce basic endpoint sanity. The epCount restrictions may be relaxed
 	// in the future; if so, this method is likely to need significant rework.
 	if len(eps) != 2 {
@@ -1146,7 +1284,7 @@ func (st *State) AddRelation(eps ...Endpoint) (r *Relation, err error) {
 		series := map[string]bool{}
 		for _, ep := range eps {
 			svc, err := st.Service(ep.ServiceName)
-			if errors.IsNotFoundError(err) {
+			if errors.IsNotFound(err) {
 				return nil, fmt.Errorf("service %q does not exist", ep.ServiceName)
 			} else if err != nil {
 				return nil, err
@@ -1164,8 +1302,8 @@ func (st *State) AddRelation(eps ...Endpoint) (r *Relation, err error) {
 			ops = append(ops, txn.Op{
 				C:      st.services.Name,
 				Id:     ep.ServiceName,
-				Assert: D{{"life", Alive}, {"charmurl", ch.URL()}},
-				Update: D{{"$inc", D{{"relationcount", 1}}}},
+				Assert: bson.D{{"life", Alive}, {"charmurl", ch.URL()}},
+				Update: bson.D{{"$inc", bson.D{{"relationcount", 1}}}},
 			})
 		}
 		if matchSeries && len(series) != 1 {
@@ -1211,7 +1349,7 @@ func (st *State) EndpointsRelation(endpoints ...Endpoint) (*Relation, error) {
 // be derived unambiguously from the relation's endpoints).
 func (st *State) KeyRelation(key string) (*Relation, error) {
 	doc := relationDoc{}
-	err := st.relations.Find(D{{"_id", key}}).One(&doc)
+	err := st.relations.Find(bson.D{{"_id", key}}).One(&doc)
 	if err == mgo.ErrNotFound {
 		return nil, errors.NotFoundf("relation %q", key)
 	}
@@ -1224,7 +1362,7 @@ func (st *State) KeyRelation(key string) (*Relation, error) {
 // Relation returns the existing relation with the given id.
 func (st *State) Relation(id int) (*Relation, error) {
 	doc := relationDoc{}
-	err := st.relations.Find(D{{"id", id}}).One(&doc)
+	err := st.relations.Find(bson.D{{"id", id}}).One(&doc)
 	if err == mgo.ErrNotFound {
 		return nil, errors.NotFoundf("relation %d", id)
 	}
@@ -1232,6 +1370,28 @@ func (st *State) Relation(id int) (*Relation, error) {
 		return nil, fmt.Errorf("cannot get relation %d: %v", id, err)
 	}
 	return newRelation(st, &doc), nil
+}
+
+// AllRelations returns all relations in the environment ordered by id.
+func (st *State) AllRelations() (relations []*Relation, err error) {
+	docs := relationDocSlice{}
+	err = st.relations.Find(nil).All(&docs)
+	if err != nil {
+		return nil, errors.Annotate(err, "cannot get all relations")
+	}
+	sort.Sort(docs)
+	for _, v := range docs {
+		relations = append(relations, newRelation(st, &v))
+	}
+	return
+}
+
+type relationDocSlice []relationDoc
+
+func (rdc relationDocSlice) Len() int      { return len(rdc) }
+func (rdc relationDocSlice) Swap(i, j int) { rdc[i], rdc[j] = rdc[j], rdc[i] }
+func (rdc relationDocSlice) Less(i, j int) bool {
+	return rdc[i].Id < rdc[j].Id
 }
 
 // Unit returns a unit by name.
@@ -1257,7 +1417,7 @@ func (st *State) AssignUnit(u *Unit, policy AssignmentPolicy) (err error) {
 	if !u.IsPrincipal() {
 		return fmt.Errorf("subordinate unit %q cannot be assigned directly to a machine", u)
 	}
-	defer utils.ErrorContextf(&err, "cannot assign unit %q to machine", u)
+	defer errors.Maskf(&err, "cannot assign unit %q to machine", u)
 	var m *Machine
 	switch policy {
 	case AssignLocal:
@@ -1299,14 +1459,14 @@ func (st *State) SetAdminMongoPassword(password string) error {
 		// On 2.2+, we get a "need to login" error without a code when
 		// adding the first user because we go from no-auth+no-login to
 		// auth+no-login. Not great. Hopefully being fixed in 2.4.
-		if err := admin.AddUser("admin", password, false); err != nil && err.Error() != "need to login" {
+		if err := admin.AddUser(AdminUser, password, false); err != nil && err.Error() != "need to login" {
 			return fmt.Errorf("cannot set admin password: %v", err)
 		}
-		if err := admin.Login("admin", password); err != nil {
+		if err := admin.Login(AdminUser, password); err != nil {
 			return fmt.Errorf("cannot login after setting password: %v", err)
 		}
 	} else {
-		if err := admin.RemoveUser("admin"); err != nil && err != mgo.ErrNotFound {
+		if err := admin.RemoveUser(AdminUser); err != nil && err != mgo.ErrNotFound {
 			return fmt.Errorf("cannot disable admin password: %v", err)
 		}
 	}
@@ -1319,6 +1479,9 @@ func (st *State) setMongoPassword(name, password string) error {
 	}
 	if err := st.db.Session.DB("presence").AddUser(name, password, false); err != nil {
 		return fmt.Errorf("cannot set password in presence db for %q: %v", name, err)
+	}
+	if err := st.db.Session.DB("admin").AddUser(name, password, false); err != nil {
+		return fmt.Errorf("cannot set password in admin db for %q: %v", name, err)
 	}
 	return nil
 }
@@ -1343,11 +1506,11 @@ type StateServerInfo struct {
 	VotingMachineIds []string
 }
 
-// StateServerInfo returns returns information about
+// StateServerInfo returns information about
 // the currently configured state server machines.
 func (st *State) StateServerInfo() (*StateServerInfo, error) {
 	var doc stateServersDoc
-	err := st.stateServers.Find(D{{"_id", environGlobalKey}}).One(&doc)
+	err := st.stateServers.Find(bson.D{{"_id", environGlobalKey}}).One(&doc)
 	if err != nil {
 		return nil, fmt.Errorf("cannot get state servers document: %v", err)
 	}
@@ -1355,6 +1518,38 @@ func (st *State) StateServerInfo() (*StateServerInfo, error) {
 		MachineIds:       doc.MachineIds,
 		VotingMachineIds: doc.VotingMachineIds,
 	}, nil
+}
+
+const stateServingInfoKey = "stateServingInfo"
+
+// StateServingInfo returns information for running a state server machine
+func (st *State) StateServingInfo() (params.StateServingInfo, error) {
+	var info params.StateServingInfo
+	err := st.stateServers.Find(bson.D{{"_id", stateServingInfoKey}}).One(&info)
+	if err != nil {
+		return info, err
+	}
+	if info.StatePort == 0 {
+		return params.StateServingInfo{}, errors.NotFoundf("state serving info")
+	}
+	return info, nil
+}
+
+// SetStateServingInfo stores information needed for running a state server
+func (st *State) SetStateServingInfo(info params.StateServingInfo) error {
+	if info.StatePort == 0 || info.APIPort == 0 ||
+		info.Cert == "" || info.PrivateKey == "" {
+		return fmt.Errorf("incomplete state serving info set in state")
+	}
+	ops := []txn.Op{{
+		C:      st.stateServers.Name,
+		Id:     stateServingInfoKey,
+		Update: bson.D{{"$set", info}},
+	}}
+	if err := st.runTransaction(ops); err != nil {
+		return fmt.Errorf("cannot set state serving info: %v", err)
+	}
+	return nil
 }
 
 // ResumeTransactions resumes all pending transactions.
@@ -1368,6 +1563,7 @@ var tagPrefix = map[byte]string{
 	'u': names.UnitTagKind + "-",
 	'e': names.EnvironTagKind + "-",
 	'r': names.RelationTagKind + "-",
+	'n': names.NetworkTagKind + "-",
 }
 
 func tagForGlobalKey(key string) (string, bool) {

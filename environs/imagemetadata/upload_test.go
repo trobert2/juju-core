@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs/filestorage"
@@ -16,14 +17,13 @@ import (
 	"launchpad.net/juju-core/environs/imagemetadata/testing"
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/storage"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	coretesting "launchpad.net/juju-core/testing"
 )
 
 var _ = gc.Suite(&uploadSuite{})
 
 type uploadSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 }
 
 func createImageMetadata(c *gc.C) (sourceDir string, destDir string, destStor storage.Storage, metadata *imagemetadata.ImageMetadata) {

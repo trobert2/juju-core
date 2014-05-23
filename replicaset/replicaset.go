@@ -3,33 +3,68 @@ package replicaset
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	"github.com/juju/loggo"
 	"labix.org/v2/mgo"
 	"labix.org/v2/mgo/bson"
 )
 
-// MaxPeers defines the maximum number of peers that mongo supports.
-const MaxPeers = 7
+const (
+	// MaxPeers defines the maximum number of peers that mongo supports.
+	MaxPeers = 7
+
+	// maxInitiateAttempts is the maximum number of times to attempt
+	// replSetInitiate for each call to Initiate.
+	maxInitiateAttempts = 10
+
+	// initiateAttemptDelay is the amount of time to sleep between failed
+	// attempts to replSetInitiate.
+	initiateAttemptDelay = 100 * time.Millisecond
+
+	// rsMembersUnreachableError is the error message returned from mongo
+	// when it thinks that replicaset members are unreachable. This can
+	// occur if replSetInitiate is executed shortly after starting up mongo.
+	rsMembersUnreachableError = "all members and seeds must be reachable to initiate set"
+)
+
+var logger = loggo.GetLogger("juju.replicaset")
 
 // Initiate sets up a replica set with the given replica set name with the
 // single given member.  It need be called only once for a given mongo replica
-// set.
+// set.  The tags specified will be added as tags on the member that is created
+// in the replica set.
 //
 // Note that you must set DialWithInfo and set Direct = true when dialing into a
-// specific non-initiated mongo server.  The session will be set to Monotonic
-// mode.
+// specific non-initiated mongo server.
 //
 // See http://docs.mongodb.org/manual/reference/method/rs.initiate/ for more
 // details.
-func Initiate(session *mgo.Session, address, name string) error {
-	session.SetMode(mgo.Monotonic, true)
+func Initiate(session *mgo.Session, address, name string, tags map[string]string) error {
+	monotonicSession := session.Clone()
+	defer monotonicSession.Close()
+	monotonicSession.SetMode(mgo.Monotonic, true)
 	cfg := Config{
 		Name:    name,
 		Version: 1,
-		Members: []Member{{Id: 1, Address: address}},
+		Members: []Member{{
+			Id:      1,
+			Address: address,
+			Tags:    tags,
+		}},
 	}
-	return session.Run(bson.D{{"replSetInitiate", cfg}}, nil)
+	logger.Infof("Initiating replicaset with config %#v", cfg)
+	var err error
+	for i := 0; i < maxInitiateAttempts; i++ {
+		err = monotonicSession.Run(bson.D{{"replSetInitiate", cfg}}, nil)
+		if err != nil && err.Error() == rsMembersUnreachableError {
+			time.Sleep(initiateAttemptDelay)
+			continue
+		}
+		break
+	}
+	return err
 }
 
 // Member holds configuration information for a replica set member.
@@ -75,6 +110,45 @@ type Member struct {
 	Votes *int `bson:"votes,omitempty"`
 }
 
+func fmtConfigForLog(config *Config) string {
+	memberInfo := make([]string, len(config.Members))
+	for i, member := range config.Members {
+		memberInfo[i] = fmt.Sprintf("Member{%d %q %v}", member.Id, member.Address, member.Tags)
+
+	}
+	return fmt.Sprintf("{Name: %s, Version: %d, Members: {%s}}",
+		config.Name, config.Version, strings.Join(memberInfo, ", "))
+}
+
+// applyRelSetConfig applies the new config to the mongo session. It also logs
+// what the changes are. It checks if the replica set changes cause the DB
+// connection to be dropped. If so, it Refreshes the session and tries to Ping
+// again.
+func applyRelSetConfig(cmd string, session *mgo.Session, oldconfig, newconfig *Config) error {
+	logger.Debugf("%s() changing replica set\nfrom %s\n  to %s",
+		cmd, fmtConfigForLog(oldconfig), fmtConfigForLog(newconfig))
+	err := session.Run(bson.D{{"replSetReconfig", newconfig}}, nil)
+	// We will only try to Ping 2 times
+	for i := 0; i < 2; i++ {
+		if err == io.EOF {
+			// If the primary changes due to replSetReconfig, then all
+			// current connections are dropped.
+			// Refreshing should fix us up.
+			logger.Debugf("got EOF while running %s(), calling session.Refresh()", cmd)
+			session.Refresh()
+		} else if err != nil {
+			// For all errors that aren't EOF, return immediately
+			return err
+		}
+		// err is either nil or EOF and we called Refresh, so Ping to
+		// make sure we're actually connected
+		err = session.Ping()
+		// Change the command because it is the new command we ran
+		cmd = "Ping"
+	}
+	return err
+}
+
 // Add adds the given members to the session's replica set.  Duplicates of
 // existing replicas will be ignored.
 //
@@ -85,6 +159,7 @@ func Add(session *mgo.Session, members ...Member) error {
 		return err
 	}
 
+	oldconfig := *config
 	config.Version++
 	max := 0
 	for _, member := range config.Members {
@@ -108,7 +183,7 @@ outerLoop:
 		}
 		config.Members = append(config.Members, newMember)
 	}
-	return session.Run(bson.D{{"replSetReconfig", config}}, nil)
+	return applyRelSetConfig("Add", session, &oldconfig, config)
 }
 
 // Remove removes members with the given addresses from the replica set. It is
@@ -118,6 +193,7 @@ func Remove(session *mgo.Session, addrs ...string) error {
 	if err != nil {
 		return err
 	}
+	oldconfig := *config
 	config.Version++
 	for _, rem := range addrs {
 		for n, repl := range config.Members {
@@ -127,14 +203,7 @@ func Remove(session *mgo.Session, addrs ...string) error {
 			}
 		}
 	}
-	err = session.Run(bson.D{{"replSetReconfig", config}}, nil)
-	if err == io.EOF {
-		// EOF means we got disconnected due to the Remove... this is normal.
-		// Refreshing should fix us up.
-		session.Refresh()
-		err = nil
-	}
-	return err
+	return applyRelSetConfig("Remove", session, &oldconfig, config)
 }
 
 // Set changes the current set of replica set members.  Members will have their
@@ -145,6 +214,8 @@ func Set(session *mgo.Session, members []Member) error {
 		return err
 	}
 
+	// Copy the current configuration for logging
+	oldconfig := *config
 	config.Version++
 
 	// Assign ids to members that did not previously exist, starting above the
@@ -170,14 +241,7 @@ func Set(session *mgo.Session, members []Member) error {
 
 	config.Members = members
 
-	err = session.Run(bson.D{{"replSetReconfig", config}}, nil)
-	if err == io.EOF {
-		// EOF means we got disconnected due to a Remove... this is normal.
-		// Refreshing should fix us up.
-		session.Refresh()
-		err = nil
-	}
-	return err
+	return applyRelSetConfig("Set", session, &oldconfig, config)
 }
 
 // Config reports information about the configuration of a given mongo node
@@ -207,6 +271,22 @@ func IsMaster(session *mgo.Session) (*IsMasterResults, error) {
 	return results, nil
 }
 
+var ErrMasterNotConfigured = fmt.Errorf("mongo master not configured")
+
+// MasterHostPort returns the "address:port" string for the primary
+// mongo server in the replicaset. It returns ErrMasterNotConfigured if
+// the replica set has not yet been initiated.
+func MasterHostPort(session *mgo.Session) (string, error) {
+	results, err := IsMaster(session)
+	if err != nil {
+		return "", err
+	}
+	if results.PrimaryAddress == "" {
+		return "", ErrMasterNotConfigured
+	}
+	return results.PrimaryAddress, nil
+}
+
 // CurrentMembers returns the current members of the replica set.
 func CurrentMembers(session *mgo.Session) ([]Member, error) {
 	cfg, err := CurrentConfig(session)
@@ -216,12 +296,19 @@ func CurrentMembers(session *mgo.Session) ([]Member, error) {
 	return cfg.Members, nil
 }
 
-// CurrentConfig returns the Config for the given session's replica set.
+// CurrentConfig returns the Config for the given session's replica set.  If
+// there is no current config, the error returned will be mgo.ErrNotFound.
 func CurrentConfig(session *mgo.Session) (*Config, error) {
 	cfg := &Config{}
-	err := session.DB("local").C("system.replset").Find(nil).One(cfg)
+	monotonicSession := session.Clone()
+	defer monotonicSession.Close()
+	monotonicSession.SetMode(mgo.Monotonic, true)
+	err := monotonicSession.DB("local").C("system.replset").Find(nil).One(cfg)
+	if err == mgo.ErrNotFound {
+		return nil, err
+	}
 	if err != nil {
-		return nil, fmt.Errorf("Error getting replset config : %s", err.Error())
+		return nil, fmt.Errorf("cannot get replset config: %s", err.Error())
 	}
 	return cfg, nil
 }
@@ -239,7 +326,7 @@ func CurrentStatus(session *mgo.Session) (*Status, error) {
 	status := &Status{}
 	err := session.Run("replSetGetStatus", status)
 	if err != nil {
-		return nil, fmt.Errorf("Error from replSetGetStatus: %v", err)
+		return nil, fmt.Errorf("cannot get replica set status: %v", err)
 	}
 	return status, nil
 }

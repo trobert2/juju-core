@@ -75,7 +75,7 @@ func (ru *RelationUnit) EnterScope() error {
 			Unit:     ru.unit.tag,
 		}},
 	}
-	err := ru.st.caller.Call("Uniter", "", "EnterScope", args, &result)
+	err := ru.st.call("EnterScope", args, &result)
 	if err != nil {
 		return err
 	}
@@ -95,7 +95,7 @@ func (ru *RelationUnit) LeaveScope() error {
 			Unit:     ru.unit.tag,
 		}},
 	}
-	err := ru.st.caller.Call("Uniter", "", "LeaveScope", args, &result)
+	err := ru.st.call("LeaveScope", args, &result)
 	if err != nil {
 		return err
 	}
@@ -112,12 +112,12 @@ func (ru *RelationUnit) Settings() (*Settings, error) {
 			Unit:     ru.unit.tag,
 		}},
 	}
-	err := ru.st.caller.Call("Uniter", "", "ReadSettings", args, &results)
+	err := ru.st.call("ReadSettings", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -143,12 +143,12 @@ func (ru *RelationUnit) ReadSettings(uname string) (params.RelationSettings, err
 			RemoteUnit: tag,
 		}},
 	}
-	err := ru.st.caller.Call("Uniter", "", "ReadRemoteSettings", args, &results)
+	err := ru.st.call("ReadRemoteSettings", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -167,12 +167,12 @@ func (ru *RelationUnit) Watch() (watcher.RelationUnitsWatcher, error) {
 			Unit:     ru.unit.tag,
 		}},
 	}
-	err := ru.st.caller.Call("Uniter", "", "WatchRelationUnits", args, &results)
+	err := ru.st.call("WatchRelationUnits", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {

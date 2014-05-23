@@ -4,10 +4,9 @@
 package common
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
-
-	"launchpad.net/juju-core/log"
 )
 
 // Resource represents any resource that should be cleaned up when an
@@ -52,6 +51,26 @@ func (rs *Resources) Register(r Resource) string {
 	return id
 }
 
+// RegisterNamed registers the given resource. Callers must supply a unique
+// name for the given resource. It is an error to try to register another
+// resource with the same name as an already registered name. (This could be
+// softened that you can overwrite an existing one and it will be Stopped and
+// replaced, but we don't have a need for that yet.)
+// It is also an error to supply a name that is an integer string, since that
+// collides with the auto-naming from Register.
+func (rs *Resources) RegisterNamed(name string, r Resource) error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if _, err := strconv.Atoi(name); err == nil {
+		return fmt.Errorf("RegisterNamed does not allow integer names: %q", name)
+	}
+	if _, ok := rs.resources[name]; ok {
+		return fmt.Errorf("resource %q already registered", name)
+	}
+	rs.resources[name] = r
+	return nil
+}
+
 // Stop stops the resource with the given id and unregisters it.
 // It returns any error from the underlying Stop call.
 // It does not return an error if the resource has already
@@ -80,7 +99,7 @@ func (rs *Resources) StopAll() {
 	defer rs.mu.Unlock()
 	for _, r := range rs.resources {
 		if err := r.Stop(); err != nil {
-			log.Errorf("state/api: error stopping %T resource: %v", r, err)
+			logger.Errorf("error stopping %T resource: %v", r, err)
 		}
 	}
 	rs.resources = make(map[string]Resource)
@@ -91,4 +110,16 @@ func (rs *Resources) Count() int {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	return len(rs.resources)
+}
+
+// StringResource is just a regular 'string' that matches the Resource
+// interface.
+type StringResource string
+
+func (StringResource) Stop() error {
+	return nil
+}
+
+func (s StringResource) String() string {
+	return string(s)
 }

@@ -7,19 +7,21 @@ import (
 	"errors"
 	"strings"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
+	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/manual"
 	"launchpad.net/juju-core/environs/storage"
 	"launchpad.net/juju-core/environs/tools"
 	"launchpad.net/juju-core/instance"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/juju/arch"
+	coretesting "launchpad.net/juju-core/testing"
 )
 
 type environSuite struct {
-	testbase.LoggingSuite
+	coretesting.FakeJujuHomeSuite
 	env *manualEnviron
 }
 
@@ -30,6 +32,7 @@ type dummyStorage struct {
 var _ = gc.Suite(&environSuite{})
 
 func (s *environSuite) SetUpTest(c *gc.C) {
+	s.FakeJujuHomeSuite.SetUpTest(c)
 	env, err := manualProvider{}.Open(MinimalConfig(c))
 	c.Assert(err, gc.IsNil)
 	s.env = env.(*manualEnviron)
@@ -84,9 +87,18 @@ func (s *environSuite) TestInstances(c *gc.C) {
 func (s *environSuite) TestDestroy(c *gc.C) {
 	var resultStderr string
 	var resultErr error
-	runSSHCommandTesting := func(host string, command []string) (string, error) {
+	runSSHCommandTesting := func(host string, command []string, stdin string) (string, error) {
 		c.Assert(host, gc.Equals, "ubuntu@hostname")
-		c.Assert(command, gc.DeepEquals, []string{"sudo", "pkill", "-6", "jujud"})
+		c.Assert(command, gc.DeepEquals, []string{"sudo", "/bin/bash"})
+		c.Assert(stdin, gc.DeepEquals, `
+set -x
+pkill -6 jujud && exit
+stop juju-db
+rm -f /etc/init/juju*
+rm -f /etc/rsyslog.d/*juju*
+rm -fr '/var/lib/juju' '/var/log/juju'
+exit 0
+`)
 		return resultStderr, resultErr
 	}
 	s.PatchValue(&runSSHCommand, runSSHCommandTesting)
@@ -128,4 +140,23 @@ func (s *environSuite) TestEnvironSupportsCustomSources(c *gc.C) {
 	url, err := sources[0].URL("")
 	c.Assert(err, gc.IsNil)
 	c.Assert(strings.Contains(url, "/tools"), jc.IsTrue)
+}
+
+func (s *environSuite) TestSupportedArchitectures(c *gc.C) {
+	arches, err := s.env.SupportedArchitectures()
+	c.Assert(err, gc.IsNil)
+	c.Assert(arches, gc.DeepEquals, arch.AllSupportedArches)
+}
+
+func (s *environSuite) TestSupportNetworks(c *gc.C) {
+	c.Assert(s.env.SupportNetworks(), jc.IsFalse)
+}
+
+func (s *environSuite) TestConstraintsValidator(c *gc.C) {
+	validator, err := s.env.ConstraintsValidator()
+	c.Assert(err, gc.IsNil)
+	cons := constraints.MustParse("arch=amd64 instance-type=foo tags=bar cpu-power=10 cpu-cores=2 mem=1G")
+	unsupported, err := validator.Validate(cons)
+	c.Assert(err, gc.IsNil)
+	c.Assert(unsupported, jc.SameContents, []string{"cpu-power", "instance-type", "tags"})
 }

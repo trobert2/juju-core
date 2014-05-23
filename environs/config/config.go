@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/errgo/errgo"
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/cert"
@@ -33,9 +34,6 @@ const (
 	// When ports are opened for one machine, all machines will have the same
 	// port opened.
 	FwGlobal = "global"
-
-	// DefaultSeries returns the most recent Ubuntu LTS release name.
-	DefaultSeries string = "precise"
 
 	// DefaultStatePort is the default port the state server is listening on.
 	DefaultStatePort int = 37017
@@ -59,7 +57,52 @@ const (
 	// refreshing the addresses, in seconds. Not too frequent, as we
 	// refresh addresses from the provider each time.
 	DefaultBootstrapSSHAddressesDelay int = 10
+
+	// fallbackLtsSeries is the latest LTS series we'll use, if we fail to
+	// obtain this information from the system.
+	fallbackLtsSeries string = "precise"
 )
+
+var latestLtsSeries string
+
+type HasDefaultSeries interface {
+	DefaultSeries() (string, bool)
+}
+
+// PreferredSeries returns the preferred series to use when a charm does not
+// explicitly specify a series.
+func PreferredSeries(cfg HasDefaultSeries) string {
+	if series, ok := cfg.DefaultSeries(); ok {
+		return series
+	}
+	return LatestLtsSeries()
+}
+
+func LatestLtsSeries() string {
+	if latestLtsSeries == "" {
+		series, err := distroLtsSeries()
+		if err != nil {
+			latestLtsSeries = fallbackLtsSeries
+		} else {
+			latestLtsSeries = series
+		}
+	}
+	return latestLtsSeries
+}
+
+// distroLtsSeries returns the latest LTS series, if this information is
+// available on this system.
+func distroLtsSeries() (string, error) {
+	out, err := exec.Command("distro-info", "--lts").Output()
+	if err != nil {
+		return "", err
+	}
+	series := strings.TrimSpace(string(out))
+	if !charm.IsValidSeries(series) {
+		return "", fmt.Errorf("not a valid LTS series: %q", series)
+	}
+	return series, nil
+}
 
 // Config holds an immutable environment configuration.
 type Config struct {
@@ -162,7 +205,6 @@ func (c *Config) fillInDefaults() error {
 	// For backward compatibility purposes, we treat as unset string
 	// valued attributes that are set to the empty string, and fill
 	// out their defaults accordingly.
-	c.fillInStringDefault("default-series")
 	c.fillInStringDefault("firewall-mode")
 
 	// Load authorized-keys-path into authorized-keys if necessary.
@@ -216,6 +258,16 @@ func (cfg *Config) processDeprecatedAttributes() {
 	// Even if the user has edited their environment yaml to remove the deprecated tools-url value,
 	// we still want it in the config for upgrades.
 	cfg.defined["tools-url"], _ = cfg.ToolsURL()
+
+	// Copy across lxc-use-clone to lxc-clone.
+	if lxcUseClone, ok := cfg.defined["lxc-use-clone"]; ok {
+		_, newValSpecified := cfg.LXCUseClone()
+		// Ensure the new attribute name "lxc-clone" is set.
+		if !newValSpecified {
+			cfg.defined["lxc-clone"] = lxcUseClone
+		}
+	}
+
 	// Update the provider type from null to manual.
 	if cfg.Type() == "null" {
 		cfg.defined["type"] = "manual"
@@ -278,7 +330,7 @@ func Validate(cfg, old *Config) error {
 	caKey, caKeyOK := cfg.CAPrivateKey()
 	if caCertOK || caKeyOK {
 		if err := verifyKeyPair(caCert, caKey); err != nil {
-			return errgo.Annotate(err, "bad CA certificate/key in configuration")
+			return errors.Annotate(err, "bad CA certificate/key in configuration")
 		}
 	}
 
@@ -407,9 +459,17 @@ func (c *Config) Name() string {
 	return c.mustString("name")
 }
 
-// DefaultSeries returns the default Ubuntu series for the environment.
-func (c *Config) DefaultSeries() string {
-	return c.mustString("default-series")
+// DefaultSeries returns the configured default Ubuntu series for the environment,
+// and whether the default series was explicitly configured on the environment.
+func (c *Config) DefaultSeries() (string, bool) {
+	if s, ok := c.defined["default-series"]; ok {
+		if series, ok := s.(string); ok && series != "" {
+			return series, true
+		} else if !ok {
+			logger.Warningf("invalid default-series: %q", s)
+		}
+	}
+	return "", false
 }
 
 // StatePort returns the state server port for the environment.
@@ -430,16 +490,23 @@ func (c *Config) SyslogPort() int {
 // RsyslogCACert returns the certificate of the CA that signed the
 // rsyslog certificate, in PEM format, or nil if one hasn't been
 // generated yet.
-func (c *Config) RsyslogCACert() []byte {
+func (c *Config) RsyslogCACert() string {
 	if s, ok := c.defined["rsyslog-ca-cert"]; ok {
-		return []byte(s.(string))
+		return s.(string)
 	}
-	return nil
+	return ""
 }
 
 // AuthorizedKeys returns the content for ssh's authorized_keys file.
 func (c *Config) AuthorizedKeys() string {
 	return c.mustString("authorized-keys")
+}
+
+// ProxySSH returns a flag indicating whether SSH commands
+// should be proxied through the API server.
+func (c *Config) ProxySSH() bool {
+	value, _ := c.defined["proxy-ssh"].(bool)
+	return value
 }
 
 // ProxySettings returns all four proxy settings; http, https, ftp, and no
@@ -530,20 +597,20 @@ func (c *Config) BootstrapSSHOpts() SSHTimeoutOpts {
 
 // CACert returns the certificate of the CA that signed the state server
 // certificate, in PEM format, and whether the setting is available.
-func (c *Config) CACert() ([]byte, bool) {
+func (c *Config) CACert() (string, bool) {
 	if s, ok := c.defined["ca-cert"]; ok {
-		return []byte(s.(string)), true
+		return s.(string), true
 	}
-	return nil, false
+	return "", false
 }
 
 // CAPrivateKey returns the private key of the CA that signed the state
 // server certificate, in PEM format, and whether the setting is available.
-func (c *Config) CAPrivateKey() (key []byte, ok bool) {
+func (c *Config) CAPrivateKey() (key string, ok bool) {
 	if s, ok := c.defined["ca-private-key"]; ok && s != "" {
-		return []byte(s.(string)), true
+		return s.(string), true
 	}
-	return nil, false
+	return "", false
 }
 
 // AdminSecret returns the administrator password.
@@ -641,6 +708,20 @@ func (c *Config) TestMode() bool {
 	return c.defined["test-mode"].(bool)
 }
 
+// LXCUseClone reports whether the LXC provisioner should create a
+// template and use cloning to speed up container provisioning.
+func (c *Config) LXCUseClone() (bool, bool) {
+	v, ok := c.defined["lxc-clone"].(bool)
+	return v, ok
+}
+
+// LXCUseCloneAUFS reports whether the LXC provisioner should create a
+// lxc clone using aufs if available.
+func (c *Config) LXCUseCloneAUFS() (bool, bool) {
+	v, ok := c.defined["lxc-clone-aufs"].(bool)
+	return v, ok
+}
+
 // UnknownAttrs returns a copy of the raw configuration attributes
 // that are supposedly specific to the environment type. They could
 // also be wrong attributes, though. Only the specific environment
@@ -660,6 +741,15 @@ func (c *Config) AllAttrs() map[string]interface{} {
 		allAttrs[k] = v
 	}
 	return allAttrs
+}
+
+// Remove returns a new configuration that has the attributes of c minus attrs.
+func (c *Config) Remove(attrs []string) (*Config, error) {
+	defined := c.AllAttrs()
+	for _, k := range attrs {
+		delete(defined, k)
+	}
+	return New(NoDefaults, defined)
 }
 
 // Apply returns a new configuration that has the attributes of c plus attrs.
@@ -707,9 +797,13 @@ var fields = schema.Fields{
 	"bootstrap-retry-delay":     schema.ForceInt(),
 	"bootstrap-addresses-delay": schema.ForceInt(),
 	"test-mode":                 schema.Bool(),
+	"proxy-ssh":                 schema.Bool(),
+	"lxc-clone":                 schema.Bool(),
+	"lxc-clone-aufs":            schema.Bool(),
 
 	// Deprecated fields, retain for backwards compatibility.
-	"tools-url": schema.String(),
+	"tools-url":     schema.String(),
+	"lxc-use-clone": schema.Bool(),
 }
 
 // alwaysOptional holds configuration defaults for attributes that may
@@ -733,18 +827,18 @@ var alwaysOptional = schema.Defaults{
 	"bootstrap-retry-delay":     schema.Omit,
 	"bootstrap-addresses-delay": schema.Omit,
 	"rsyslog-ca-cert":           schema.Omit,
-
-	// Proxy values default to "", otherwise they can't be set to blank.
-	"http-proxy":      "",
-	"https-proxy":     "",
-	"ftp-proxy":       "",
-	"no-proxy":        "",
-	"apt-http-proxy":  "",
-	"apt-https-proxy": "",
-	"apt-ftp-proxy":   "",
+	"http-proxy":                schema.Omit,
+	"https-proxy":               schema.Omit,
+	"ftp-proxy":                 schema.Omit,
+	"no-proxy":                  schema.Omit,
+	"apt-http-proxy":            schema.Omit,
+	"apt-https-proxy":           schema.Omit,
+	"apt-ftp-proxy":             schema.Omit,
+	"lxc-clone":                 schema.Omit,
 
 	// Deprecated fields, retain for backwards compatibility.
-	"tools-url": "",
+	"tools-url":     "",
+	"lxc-use-clone": schema.Omit,
 
 	// For backward compatibility reasons, the following
 	// attributes default to empty strings rather than being
@@ -756,6 +850,8 @@ var alwaysOptional = schema.Defaults{
 	"image-metadata-url": "", // TODO(rog) omit
 	"tools-metadata-url": "", // TODO(rog) omit
 
+	"default-series": "",
+
 	// For backward compatibility only - default ports were
 	// not filled out in previous versions of the configuration.
 	"state-port":  DefaultStatePort,
@@ -764,8 +860,10 @@ var alwaysOptional = schema.Defaults{
 	// Authentication string sent with requests to the charm store
 	"charm-store-auth": "",
 	// Previously image-stream could be set to an empty value
-	"image-stream": "",
-	"test-mode":    false,
+	"image-stream":   "",
+	"test-mode":      false,
+	"proxy-ssh":      false,
+	"lxc-clone-aufs": false,
 }
 
 func allowEmpty(attr string) bool {
@@ -779,7 +877,6 @@ var defaults = allDefaults()
 // UseDefaults.
 func allDefaults() schema.Defaults {
 	d := schema.Defaults{
-		"default-series":            DefaultSeries,
 		"firewall-mode":             FwInstance,
 		"development":               false,
 		"ssl-hostname-verification": true,
@@ -789,6 +886,7 @@ func allDefaults() schema.Defaults {
 		"bootstrap-timeout":         DefaultBootstrapSSHTimeout,
 		"bootstrap-retry-delay":     DefaultBootstrapSSHRetryDelay,
 		"bootstrap-addresses-delay": DefaultBootstrapSSHAddressesDelay,
+		"proxy-ssh":                 true,
 	}
 	for attr, val := range alwaysOptional {
 		if _, ok := d[attr]; !ok {
@@ -826,6 +924,8 @@ var immutableAttributes = []string{
 	"bootstrap-timeout",
 	"bootstrap-retry-delay",
 	"bootstrap-addresses-delay",
+	"lxc-clone",
+	"lxc-clone-aufs",
 }
 
 var (
@@ -860,14 +960,14 @@ func (cfg *Config) ValidateUnknownAttrs(fields schema.Fields, defaults schema.De
 
 // GenerateStateServerCertAndKey makes sure that the config has a CACert and
 // CAPrivateKey, generates and retruns new certificate and key.
-func (cfg *Config) GenerateStateServerCertAndKey() ([]byte, []byte, error) {
+func (cfg *Config) GenerateStateServerCertAndKey() (string, string, error) {
 	caCert, hasCACert := cfg.CACert()
 	if !hasCACert {
-		return nil, nil, fmt.Errorf("environment configuration has no ca-cert")
+		return "", "", fmt.Errorf("environment configuration has no ca-cert")
 	}
 	caKey, hasCAKey := cfg.CAPrivateKey()
 	if !hasCAKey {
-		return nil, nil, fmt.Errorf("environment configuration has no ca-private-key")
+		return "", "", fmt.Errorf("environment configuration has no ca-private-key")
 	}
 	var noHostnames []string
 	return cert.NewServer(caCert, caKey, time.Now().UTC().AddDate(10, 0, 0), noHostnames)
@@ -911,23 +1011,29 @@ type SSHTimeoutOpts struct {
 	AddressesDelay time.Duration
 }
 
+func addIfNotEmpty(settings map[string]interface{}, key, value string) {
+	if value != "" {
+		settings[key] = value
+	}
+}
+
 // ProxyConfigMap returns a map suitable to be applied to a Config to update
 // proxy settings.
 func ProxyConfigMap(proxy osenv.ProxySettings) map[string]interface{} {
-	return map[string]interface{}{
-		"http-proxy":  proxy.Http,
-		"https-proxy": proxy.Https,
-		"ftp-proxy":   proxy.Ftp,
-		"no-proxy":    proxy.NoProxy,
-	}
+	settings := make(map[string]interface{})
+	addIfNotEmpty(settings, "http-proxy", proxy.Http)
+	addIfNotEmpty(settings, "https-proxy", proxy.Https)
+	addIfNotEmpty(settings, "ftp-proxy", proxy.Ftp)
+	addIfNotEmpty(settings, "no-proxy", proxy.NoProxy)
+	return settings
 }
 
 // AptProxyConfigMap returns a map suitable to be applied to a Config to update
 // proxy settings.
 func AptProxyConfigMap(proxy osenv.ProxySettings) map[string]interface{} {
-	return map[string]interface{}{
-		"apt-http-proxy":  proxy.Http,
-		"apt-https-proxy": proxy.Https,
-		"apt-ftp-proxy":   proxy.Ftp,
-	}
+	settings := make(map[string]interface{})
+	addIfNotEmpty(settings, "apt-http-proxy", proxy.Http)
+	addIfNotEmpty(settings, "apt-https-proxy", proxy.Https)
+	addIfNotEmpty(settings, "apt-ftp-proxy", proxy.Ftp)
+	return settings
 }

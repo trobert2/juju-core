@@ -4,16 +4,16 @@
 package mock_test
 
 import (
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/container/kvm"
 	"launchpad.net/juju-core/container/kvm/mock"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
 type MockSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var _ = gc.Suite(&MockSuite{})

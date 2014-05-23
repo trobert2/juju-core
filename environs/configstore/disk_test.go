@@ -12,12 +12,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs/configstore"
-	"launchpad.net/juju-core/errors"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
 var _ = gc.Suite(&diskInterfaceSuite{})
@@ -63,7 +63,7 @@ func (s *diskInterfaceSuite) TearDownTest(c *gc.C) {
 var _ = gc.Suite(&diskStoreSuite{})
 
 type diskStoreSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 func (*diskStoreSuite) TestNewDisk(c *gc.C) {
@@ -122,7 +122,7 @@ func (*diskStoreSuite) TestReadNotFound(c *gc.C) {
 	store, err := configstore.NewDisk(dir)
 	c.Assert(err, gc.IsNil)
 	info, err := store.ReadInfo("someenv")
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	c.Assert(info, gc.IsNil)
 }
 

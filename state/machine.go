@@ -5,20 +5,23 @@ package state
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
+	"github.com/juju/errors"
 	"labix.org/v2/mgo"
+	"labix.org/v2/mgo/bson"
 	"labix.org/v2/mgo/txn"
 
 	"launchpad.net/juju-core/constraints"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/presence"
 	"launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils"
+	"launchpad.net/juju-core/utils/set"
 	"launchpad.net/juju-core/version"
 )
 
@@ -73,6 +76,15 @@ func MachineJobFromParams(job params.MachineJob) (MachineJob, error) {
 	return -1, fmt.Errorf("invalid machine job %q", job)
 }
 
+// paramsJobsFromJobs converts state jobs to params jobs.
+func paramsJobsFromJobs(jobs []MachineJob) []params.MachineJob {
+	paramsJobs := make([]params.MachineJob, len(jobs))
+	for i, machineJob := range jobs {
+		paramsJobs[i] = machineJob.ToParams()
+	}
+	return paramsJobs
+}
+
 func (job MachineJob) String() string {
 	return string(job.ToParams())
 }
@@ -102,6 +114,9 @@ type machineDoc struct {
 	// machine is capable of hosting.
 	SupportedContainersKnown bool
 	SupportedContainers      []instance.ContainerType `bson:",omitempty"`
+	// Placement is the placement directive that should be used when provisioning
+	// an instance for the machine.
+	Placement string `bson:",omitempty"`
 	// Deprecated. InstanceId, now lives on instanceData.
 	// This attribute is retained so that data from existing machines can be read.
 	// SCHEMACHANGE
@@ -160,20 +175,24 @@ type instanceData struct {
 	Tags       *[]string   `bson:"tags,omitempty"`
 }
 
+func hardwareCharacteristics(instData instanceData) *instance.HardwareCharacteristics {
+	return &instance.HardwareCharacteristics{
+		Arch:     instData.Arch,
+		Mem:      instData.Mem,
+		RootDisk: instData.RootDisk,
+		CpuCores: instData.CpuCores,
+		CpuPower: instData.CpuPower,
+		Tags:     instData.Tags,
+	}
+}
+
 // TODO(wallyworld): move this method to a service.
 func (m *Machine) HardwareCharacteristics() (*instance.HardwareCharacteristics, error) {
-	hc := &instance.HardwareCharacteristics{}
 	instData, err := getInstanceData(m.st, m.Id())
 	if err != nil {
 		return nil, err
 	}
-	hc.Arch = instData.Arch
-	hc.Mem = instData.Mem
-	hc.RootDisk = instData.RootDisk
-	hc.CpuCores = instData.CpuCores
-	hc.CpuPower = instData.CpuPower
-	hc.Tags = instData.Tags
-	return hc, nil
+	return hardwareCharacteristics(instData), nil
 }
 
 func getInstanceData(st *State, id string) (instanceData, error) {
@@ -225,7 +244,7 @@ func (m *Machine) SetHasVote(hasVote bool) error {
 		C:      m.st.machines.Name,
 		Id:     m.doc.Id,
 		Assert: notDeadDoc,
-		Update: D{{"$set", D{{"hasvote", hasVote}}}},
+		Update: bson.D{{"$set", bson.D{{"hasvote", hasVote}}}},
 	}}
 	if err := m.st.runTransaction(ops); err != nil {
 		return fmt.Errorf("cannot set HasVote of machine %v: %v", m, onAbort(err, errDead))
@@ -262,7 +281,8 @@ func (m *Machine) IsManual() (bool, error) {
 }
 
 // AgentTools returns the tools that the agent is currently running.
-// It returns an error that satisfies IsNotFound if the tools have not yet been set.
+// It returns an error that satisfies errors.IsNotFound if the tools
+// have not yet been set.
 func (m *Machine) AgentTools() (*tools.Tools, error) {
 	if m.doc.Tools == nil {
 		return nil, errors.NotFoundf("agent tools for machine %v", m)
@@ -283,7 +303,7 @@ func checkVersionValidity(v version.Binary) error {
 // SetAgentVersion sets the version of juju that the agent is
 // currently running.
 func (m *Machine) SetAgentVersion(v version.Binary) (err error) {
-	defer utils.ErrorContextf(&err, "cannot set agent version for machine %v", m)
+	defer errors.Maskf(&err, "cannot set agent version for machine %v", m)
 	if err = checkVersionValidity(v); err != nil {
 		return err
 	}
@@ -292,7 +312,7 @@ func (m *Machine) SetAgentVersion(v version.Binary) (err error) {
 		C:      m.st.machines.Name,
 		Id:     m.doc.Id,
 		Assert: notDeadDoc,
-		Update: D{{"$set", D{{"tools", tools}}}},
+		Update: bson.D{{"$set", bson.D{{"tools", tools}}}},
 	}}
 	if err := m.st.runTransaction(ops); err != nil {
 		return onAbort(err, errDead)
@@ -324,7 +344,7 @@ func (m *Machine) setPasswordHash(passwordHash string) error {
 		C:      m.st.machines.Name,
 		Id:     m.doc.Id,
 		Assert: notDeadDoc,
-		Update: D{{"$set", D{{"passwordhash", passwordHash}}}},
+		Update: bson.D{{"$set", bson.D{{"passwordhash", passwordHash}}}},
 	}}
 	if err := m.st.runTransaction(ops); err != nil {
 		return fmt.Errorf("cannot set password of machine %v: %v", m, onAbort(err, errDead))
@@ -377,8 +397,8 @@ func (m *Machine) ForceDestroy() error {
 		ops := []txn.Op{{
 			C:      m.st.machines.Name,
 			Id:     m.doc.Id,
-			Assert: D{{"jobs", D{{"$nin", []MachineJob{JobManageEnviron}}}}},
-		}, m.st.newCleanupOp("machine", m.doc.Id)}
+			Assert: bson.D{{"jobs", bson.D{{"$nin", []MachineJob{JobManageEnviron}}}}},
+		}, m.st.newCleanupOp(cleanupForceDestroyedMachine, m.doc.Id)}
 		if err := m.st.runTransaction(ops); err != txn.ErrAborted {
 			return err
 		}
@@ -477,15 +497,15 @@ func (original *Machine) advanceLifecycle(life Life) (err error) {
 	op := txn.Op{
 		C:      m.st.machines.Name,
 		Id:     m.doc.Id,
-		Update: D{{"$set", D{{"life", life}}}},
+		Update: bson.D{{"$set", bson.D{{"life", life}}}},
 	}
-	advanceAsserts := D{
-		{"jobs", D{{"$nin", []MachineJob{JobManageEnviron}}}},
-		{"$or", []D{
-			{{"principals", D{{"$size", 0}}}},
-			{{"principals", D{{"$exists", false}}}},
+	advanceAsserts := bson.D{
+		{"jobs", bson.D{{"$nin", []MachineJob{JobManageEnviron}}}},
+		{"$or", []bson.D{
+			{{"principals", bson.D{{"$size", 0}}}},
+			{{"principals", bson.D{{"$exists", false}}}},
 		}},
-		{"hasvote", D{{"$ne", true}}},
+		{"hasvote", bson.D{{"$ne", true}}},
 	}
 	// 3 attempts: one with original data, one with refreshed data, and a final
 	// one intended to determine the cause of failure of the preceding attempt.
@@ -497,7 +517,7 @@ func (original *Machine) advanceLifecycle(life Life) (err error) {
 		// context of the new state API, but we maintain consistency in the
 		// face of uncertainty.
 		if i != 0 {
-			if m, err = m.st.Machine(m.doc.Id); errors.IsNotFoundError(err) {
+			if m, err = m.st.Machine(m.doc.Id); errors.IsNotFound(err) {
 				return nil
 			} else if err != nil {
 				return err
@@ -549,10 +569,35 @@ func (original *Machine) advanceLifecycle(life Life) (err error) {
 	return fmt.Errorf("machine %s cannot advance lifecycle: %v", m, ErrExcessiveContention)
 }
 
-// Remove removes the machine from state. It will fail if the machine is not
-// Dead.
+func (m *Machine) removeNetworkInterfacesOps() ([]txn.Op, error) {
+	if m.doc.Life != Dead {
+		return nil, fmt.Errorf("machine is not dead")
+	}
+	var doc networkInterfaceDoc
+	ops := []txn.Op{{
+		C:      m.st.machines.Name,
+		Id:     m.doc.Id,
+		Assert: isDeadDoc,
+	}}
+	sel := bson.D{{"machineid", m.doc.Id}}
+	iter := m.st.networkInterfaces.Find(sel).Select(bson.D{{"_id", 1}}).Iter()
+	for iter.Next(&doc) {
+		ops = append(ops, txn.Op{
+			C:      m.st.networkInterfaces.Name,
+			Id:     doc.Id,
+			Remove: true,
+		})
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	return ops, nil
+}
+
+// Remove removes the machine from state. It will fail if the machine
+// is not Dead.
 func (m *Machine) Remove() (err error) {
-	defer utils.ErrorContextf(&err, "cannot remove machine %s", m.doc.Id)
+	defer errors.Maskf(&err, "cannot remove machine %s", m.doc.Id)
 	if m.doc.Life != Dead {
 		return fmt.Errorf("machine is not dead")
 	}
@@ -564,14 +609,25 @@ func (m *Machine) Remove() (err error) {
 			Remove: true,
 		},
 		{
+			C:      m.st.machines.Name,
+			Id:     m.doc.Id,
+			Assert: isDeadDoc,
+		},
+		{
 			C:      m.st.instanceData.Name,
 			Id:     m.doc.Id,
 			Remove: true,
 		},
 		removeStatusOp(m.st, m.globalKey()),
 		removeConstraintsOp(m.st, m.globalKey()),
+		removeRequestedNetworksOp(m.st, m.globalKey()),
 		annotationRemoveOp(m.st, m.globalKey()),
 	}
+	ifacesOps, err := m.removeNetworkInterfacesOps()
+	if err != nil {
+		return err
+	}
+	ops = append(ops, ifacesOps...)
 	ops = append(ops, removeContainerRefOps(m.st, m.Id())...)
 	// The only abort conditions in play indicate that the machine has already
 	// been removed.
@@ -579,8 +635,8 @@ func (m *Machine) Remove() (err error) {
 }
 
 // Refresh refreshes the contents of the machine from the underlying
-// state. It returns an error that satisfies IsNotFound if the machine has
-// been removed.
+// state. It returns an error that satisfies errors.IsNotFound if the
+// machine has been removed.
 func (m *Machine) Refresh() error {
 	doc := machineDoc{}
 	err := m.st.machines.FindId(m.doc.Id).One(&doc)
@@ -601,7 +657,7 @@ func (m *Machine) AgentAlive() (bool, error) {
 
 // WaitAgentAlive blocks until the respective agent is alive.
 func (m *Machine) WaitAgentAlive(timeout time.Duration) (err error) {
-	defer utils.ErrorContextf(&err, "waiting for agent of machine %v", m)
+	defer errors.Maskf(&err, "waiting for agent of machine %v", m)
 	ch := make(chan presence.Change)
 	m.st.pwatcher.Watch(m.globalKey(), ch)
 	defer m.st.pwatcher.Unwatch(m.globalKey(), ch)
@@ -641,7 +697,7 @@ func (m *Machine) InstanceId() (instance.Id, error) {
 		return m.doc.InstanceId, nil
 	}
 	instData, err := getInstanceData(m.st, m.Id())
-	if (err == nil && instData.InstanceId == "") || errors.IsNotFoundError(err) {
+	if (err == nil && instData.InstanceId == "") || errors.IsNotFound(err) {
 		err = NotProvisionedError(m.Id())
 	}
 	if err != nil {
@@ -662,7 +718,7 @@ func (m *Machine) InstanceStatus() (string, error) {
 		return "", err
 	}
 	instData, err := getInstanceData(m.st, m.Id())
-	if (err == nil && instId == "") || errors.IsNotFoundError(err) {
+	if (err == nil && instId == "") || errors.IsNotFound(err) {
 		err = NotProvisionedError(m.Id())
 	}
 	if err != nil {
@@ -673,17 +729,17 @@ func (m *Machine) InstanceStatus() (string, error) {
 
 // SetInstanceStatus sets the provider specific instance status for a machine.
 func (m *Machine) SetInstanceStatus(status string) (err error) {
-	defer utils.ErrorContextf(&err, "cannot set instance status for machine %q", m)
+	defer errors.Maskf(&err, "cannot set instance status for machine %q", m)
 
 	// SCHEMACHANGE - we can't do this yet until the schema is updated
 	// so just do a txn.DocExists for now.
-	// provisioned := D{{"instanceid", D{{"$ne", ""}}}}
+	// provisioned := bson.D{{"instanceid", bson.D{{"$ne", ""}}}}
 	ops := []txn.Op{
 		{
 			C:      m.st.instanceData.Name,
 			Id:     m.doc.Id,
 			Assert: txn.DocExists,
-			Update: D{{"$set", D{{"status", status}}}},
+			Update: bson.D{{"$set", bson.D{{"status", status}}}},
 		},
 	}
 
@@ -697,16 +753,16 @@ func (m *Machine) SetInstanceStatus(status string) (err error) {
 
 // Units returns all the units that have been assigned to the machine.
 func (m *Machine) Units() (units []*Unit, err error) {
-	defer utils.ErrorContextf(&err, "cannot get units assigned to machine %v", m)
+	defer errors.Maskf(&err, "cannot get units assigned to machine %v", m)
 	pudocs := []unitDoc{}
-	err = m.st.units.Find(D{{"machineid", m.doc.Id}}).All(&pudocs)
+	err = m.st.units.Find(bson.D{{"machineid", m.doc.Id}}).All(&pudocs)
 	if err != nil {
 		return nil, err
 	}
 	for _, pudoc := range pudocs {
 		units = append(units, newUnit(m.st, &pudoc))
 		docs := []unitDoc{}
-		err = m.st.units.Find(D{{"principal", pudoc.Name}}).All(&docs)
+		err = m.st.units.Find(bson.D{{"principal", pudoc.Name}}).All(&docs)
 		if err != nil {
 			return nil, err
 		}
@@ -726,7 +782,7 @@ func (m *Machine) Units() (units []*Unit, err error) {
 // lost) after starting the instance, we can be sure that only a single
 // instance will be able to act for that machine.
 func (m *Machine) SetProvisioned(id instance.Id, nonce string, characteristics *instance.HardwareCharacteristics) (err error) {
-	defer utils.ErrorContextf(&err, "cannot set instance data for machine %q", m)
+	defer errors.Maskf(&err, "cannot set instance data for machine %q", m)
 
 	if id == "" || nonce == "" {
 		return fmt.Errorf("instance id and nonce cannot be empty")
@@ -747,13 +803,13 @@ func (m *Machine) SetProvisioned(id instance.Id, nonce string, characteristics *
 	}
 	// SCHEMACHANGE
 	// TODO(wallyworld) - do not check instanceId on machineDoc after schema is upgraded
-	notSetYet := D{{"instanceid", ""}, {"nonce", ""}}
+	notSetYet := bson.D{{"instanceid", ""}, {"nonce", ""}}
 	ops := []txn.Op{
 		{
 			C:      m.st.machines.Name,
 			Id:     m.doc.Id,
 			Assert: append(isAliveDoc, notSetYet...),
-			Update: D{{"$set", D{{"instanceid", id}, {"nonce", nonce}}}},
+			Update: bson.D{{"$set", bson.D{{"instanceid", id}, {"nonce", nonce}}}},
 		}, {
 			C:      m.st.instanceData.Name,
 			Id:     m.doc.Id,
@@ -779,6 +835,41 @@ func (m *Machine) SetProvisioned(id instance.Id, nonce string, characteristics *
 	return fmt.Errorf("already set")
 }
 
+// SetInstanceInfo is used to provision a machine and in one steps set
+// it's instance id, nonce, hardware characteristics, add networks and
+// network interfaces as needed.
+//
+// TODO(dimitern) Do all the operations described in a single
+// transaction, rather than using separate calls. Alternatively,
+// we can add all the things to create/set in a document in some
+// collection and have a worker that takes care of the actual work.
+// Merge SetProvisioned() in here or drop it at that point.
+func (m *Machine) SetInstanceInfo(
+	id instance.Id, nonce string, characteristics *instance.HardwareCharacteristics,
+	networks []NetworkInfo, interfaces []NetworkInterfaceInfo) error {
+
+	// Add the networks and interfaces first.
+	for _, network := range networks {
+		_, err := m.st.AddNetwork(network)
+		if err != nil && errors.IsAlreadyExists(err) {
+			// Ignore already existing networks.
+			continue
+		} else if err != nil {
+			return err
+		}
+	}
+	for _, iface := range interfaces {
+		_, err := m.AddNetworkInterface(iface)
+		if err != nil && errors.IsAlreadyExists(err) {
+			// Ignore already existing network interfaces.
+			continue
+		} else if err != nil {
+			return err
+		}
+	}
+	return m.SetProvisioned(id, nonce, characteristics)
+}
+
 // notProvisionedError records an error when a machine is not provisioned.
 type notProvisionedError struct {
 	machineId string
@@ -798,35 +889,41 @@ func IsNotProvisionedError(err error) bool {
 	return ok
 }
 
+func mergedAddresses(machineAddresses, providerAddresses []address) []instance.Address {
+	merged := make([]instance.Address, len(providerAddresses), len(providerAddresses)+len(machineAddresses))
+	var providerValues set.Strings
+	for i, address := range providerAddresses {
+		providerValues.Add(address.Value)
+		merged[i] = address.InstanceAddress()
+	}
+	for _, address := range machineAddresses {
+		if !providerValues.Contains(address.Value) {
+			merged = append(merged, address.InstanceAddress())
+		}
+	}
+	return merged
+}
+
 // Addresses returns any hostnames and ips associated with a machine,
 // determined both by the machine itself, and by asking the provider.
 //
 // The addresses returned by the provider shadow any of the addresses
-// that the machine reported with the same address value.
+// that the machine reported with the same address value. Provider-reported
+// addresses always come before machine-reported addresses.
 func (m *Machine) Addresses() (addresses []instance.Address) {
-	merged := make(map[string]instance.Address)
-	for _, address := range m.doc.MachineAddresses {
-		merged[address.Value] = address.InstanceAddress()
-	}
-	for _, address := range m.doc.Addresses {
-		merged[address.Value] = address.InstanceAddress()
-	}
-	for _, address := range merged {
-		addresses = append(addresses, address)
-	}
-	return
+	return mergedAddresses(m.doc.MachineAddresses, m.doc.Addresses)
 }
 
 // SetAddresses records any addresses related to the machine, sourced
 // by asking the provider.
-func (m *Machine) SetAddresses(addresses []instance.Address) (err error) {
+func (m *Machine) SetAddresses(addresses ...instance.Address) (err error) {
 	stateAddresses := instanceAddressesToAddresses(addresses)
 	ops := []txn.Op{
 		{
 			C:      m.st.machines.Name,
 			Id:     m.doc.Id,
 			Assert: notDeadDoc,
-			Update: D{{"$set", D{{"addresses", stateAddresses}}}},
+			Update: bson.D{{"$set", bson.D{{"addresses", stateAddresses}}}},
 		},
 	}
 
@@ -848,14 +945,14 @@ func (m *Machine) MachineAddresses() (addresses []instance.Address) {
 
 // SetMachineAddresses records any addresses related to the machine, sourced
 // by asking the machine.
-func (m *Machine) SetMachineAddresses(addresses []instance.Address) (err error) {
+func (m *Machine) SetMachineAddresses(addresses ...instance.Address) (err error) {
 	stateAddresses := instanceAddressesToAddresses(addresses)
 	ops := []txn.Op{
 		{
 			C:      m.st.machines.Name,
 			Id:     m.doc.Id,
 			Assert: notDeadDoc,
-			Update: D{{"$set", D{{"machineaddresses", stateAddresses}}}},
+			Update: bson.D{{"$set", bson.D{{"machineaddresses", stateAddresses}}}},
 		},
 	}
 
@@ -864,6 +961,126 @@ func (m *Machine) SetMachineAddresses(addresses []instance.Address) (err error) 
 	}
 	m.doc.MachineAddresses = stateAddresses
 	return nil
+}
+
+// RequestedNetworks returns the list of network names the machine
+// should be on (includeNetworks) or not (excludeNetworks).
+func (m *Machine) RequestedNetworks() (includeNetworks, excludeNetworks []string, err error) {
+	return readRequestedNetworks(m.st, m.globalKey())
+}
+
+// Networks returns the list of configured networks on the machine.
+// The configured and requested networks on a machine must match.
+func (m *Machine) Networks() ([]*Network, error) {
+	includeNetworks, _, err := m.RequestedNetworks()
+	if err != nil {
+		return nil, err
+	}
+	docs := []networkDoc{}
+	sel := bson.D{{"_id", bson.D{{"$in", includeNetworks}}}}
+	err = m.st.networks.Find(sel).All(&docs)
+	if err != nil {
+		return nil, err
+	}
+	networks := make([]*Network, len(docs))
+	for i, doc := range docs {
+		networks[i] = newNetwork(m.st, &doc)
+	}
+	return networks, nil
+}
+
+// NetworkInterfaces returns the list of configured network interfaces
+// of the machine.
+func (m *Machine) NetworkInterfaces() ([]*NetworkInterface, error) {
+	docs := []networkInterfaceDoc{}
+	err := m.st.networkInterfaces.Find(bson.D{{"machineid", m.doc.Id}}).All(&docs)
+	if err != nil {
+		return nil, err
+	}
+	ifaces := make([]*NetworkInterface, len(docs))
+	for i, doc := range docs {
+		ifaces[i] = newNetworkInterface(m.st, &doc)
+	}
+	return ifaces, nil
+}
+
+// AddNetworkInterface creates a new network interface with the given
+// args for this machine. The machine must be alive and not yet
+// provisioned, and there must be no other interface with the same MAC
+// address on the same network, or the same name on that machine for
+// this to succeed. If a network interface already exists, the
+// returned error satisfies errors.IsAlreadyExists.
+func (m *Machine) AddNetworkInterface(args NetworkInterfaceInfo) (iface *NetworkInterface, err error) {
+	defer errors.Contextf(&err, "cannot add network interface %q to machine %q", args.InterfaceName, m.doc.Id)
+
+	if args.MACAddress == "" {
+		return nil, fmt.Errorf("MAC address must be not empty")
+	}
+	if _, err = net.ParseMAC(args.MACAddress); err != nil {
+		return nil, err
+	}
+	if args.InterfaceName == "" {
+		return nil, fmt.Errorf("interface name must be not empty")
+	}
+	aliveAndNotProvisioned := append(isAliveDoc, bson.D{{"nonce", ""}}...)
+	doc := newNetworkInterfaceDoc(args)
+	doc.MachineId = m.doc.Id
+	doc.Id = bson.NewObjectId()
+	ops := []txn.Op{{
+		C:      m.st.networks.Name,
+		Id:     args.NetworkName,
+		Assert: txn.DocExists,
+	}, {
+		C:      m.st.machines.Name,
+		Id:     m.doc.Id,
+		Assert: aliveAndNotProvisioned,
+	}, {
+		C:      m.st.networkInterfaces.Name,
+		Id:     doc.Id,
+		Assert: txn.DocMissing,
+		Insert: doc,
+	}}
+
+	err = m.st.runTransaction(ops)
+	switch err {
+	case txn.ErrAborted:
+		if _, err = m.st.Network(args.NetworkName); err != nil {
+			return nil, err
+		}
+		if err = m.Refresh(); err != nil {
+			return nil, err
+		} else if m.doc.Life != Alive {
+			return nil, fmt.Errorf("machine is not alive")
+		} else if m.doc.Nonce != "" {
+			msg := "machine already provisioned: dynamic network interfaces not currently supported"
+			return nil, fmt.Errorf(msg)
+		}
+		// Should never happen.
+		logger.Errorf("unhandled assert while adding network interface doc %#v", doc)
+	case nil:
+		// We have a unique key restrictions on the following fields:
+		// - InterfaceName, MachineId
+		// - MACAddress, NetworkName
+		// These will cause the insert to fail if there is another record
+		// with the same combination of values in the table.
+		// The txn logic does not report insertion errors, so we check
+		// that the record has actually been inserted correctly before
+		// reporting success.
+		if err = m.st.networkInterfaces.FindId(doc.Id).One(&doc); err == nil {
+			return newNetworkInterface(m.st, doc), nil
+		}
+		sel := bson.D{{"interfacename", args.InterfaceName}, {"machineid", m.doc.Id}}
+		if err = m.st.networkInterfaces.Find(sel).One(nil); err == nil {
+			return nil, errors.AlreadyExistsf("%q on machine %q", args.InterfaceName, m.doc.Id)
+		}
+		sel = bson.D{{"macaddress", args.MACAddress}, {"networkname", args.NetworkName}}
+		if err = m.st.networkInterfaces.Find(sel).One(nil); err == nil {
+			return nil, errors.AlreadyExistsf("MAC address %q on network %q", args.MACAddress, args.NetworkName)
+		}
+		// Should never happen.
+		logger.Errorf("unknown error while adding network interface doc %#v", doc)
+	}
+	return nil, err
 }
 
 // CheckProvisioned returns true if the machine was provisioned with the given nonce.
@@ -876,6 +1093,12 @@ func (m *Machine) String() string {
 	return m.doc.Id
 }
 
+// Placement returns the machine's Placement structure that should be used when
+// provisioning an instance for the machine.
+func (m *Machine) Placement() string {
+	return m.doc.Placement
+}
+
 // Constraints returns the exact constraints that should apply when provisioning
 // an instance for the machine.
 func (m *Machine) Constraints() (constraints.Value, error) {
@@ -886,8 +1109,15 @@ func (m *Machine) Constraints() (constraints.Value, error) {
 // instance for the machine. It will fail if the machine is Dead, or if it
 // is already provisioned.
 func (m *Machine) SetConstraints(cons constraints.Value) (err error) {
-	defer utils.ErrorContextf(&err, "cannot set constraints")
-	notSetYet := D{{"nonce", ""}}
+	defer errors.Maskf(&err, "cannot set constraints")
+	unsupported, err := m.st.validateConstraints(cons)
+	if len(unsupported) > 0 {
+		logger.Warningf(
+			"setting constraints on machine %q: unsupported constraints: %v", m.Id(), strings.Join(unsupported, ","))
+	} else if err != nil {
+		return err
+	}
+	notSetYet := bson.D{{"nonce", ""}}
 	ops := []txn.Op{
 		{
 			C:      m.st.machines.Name,
@@ -939,7 +1169,11 @@ func (m *Machine) SetStatus(status params.Status, info string, data params.Statu
 		StatusInfo: info,
 		StatusData: data,
 	}
-	if err := doc.validateSet(); err != nil {
+	// If a machine is not yet provisioned, we allow its status
+	// to be set back to pending (when a retry is to occur).
+	_, err := m.InstanceId()
+	allowPending := IsNotProvisionedError(err)
+	if err := doc.validateSet(allowPending); err != nil {
 		return err
 	}
 	ops := []txn.Op{{
@@ -1006,8 +1240,8 @@ func (m *Machine) updateSupportedContainers(supportedContainers []instance.Conta
 			C:      m.st.machines.Name,
 			Id:     m.doc.Id,
 			Assert: notDeadDoc,
-			Update: D{
-				{"$set", D{
+			Update: bson.D{
+				{"$set", bson.D{
 					{"supportedcontainers", supportedContainers},
 					{"supportedcontainersknown", true},
 				}}},

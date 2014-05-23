@@ -4,10 +4,10 @@
 package charmrevisionupdater
 
 import (
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/charm"
-	"launchpad.net/juju-core/log"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/apiserver/common"
@@ -49,29 +49,29 @@ func (api *CharmRevisionUpdaterAPI) UpdateLatestRevisions() (params.ErrorResult,
 	// First get the uuid for the environment to use when querying the charm store.
 	env, err := api.state.Environment()
 	if err != nil {
-		return params.ErrorResult{common.ServerError(err)}, nil
+		return params.ErrorResult{Error: common.ServerError(err)}, nil
 	}
 	uuid := env.UUID()
 
 	deployedCharms, err := fetchAllDeployedCharms(api.state)
 	if err != nil {
-		return params.ErrorResult{common.ServerError(err)}, nil
+		return params.ErrorResult{Error: common.ServerError(err)}, nil
 	}
 	// Look up the revision information for all the deployed charms.
 	curls, err := retrieveLatestCharmInfo(deployedCharms, uuid)
 	if err != nil {
-		return params.ErrorResult{common.ServerError(err)}, nil
+		return params.ErrorResult{Error: common.ServerError(err)}, nil
 	}
 	// Add the charms and latest revision info to state as charm placeholders.
 	for _, curl := range curls {
 		if err = api.state.AddStoreCharmPlaceholder(curl); err != nil {
-			return params.ErrorResult{common.ServerError(err)}, nil
+			return params.ErrorResult{Error: common.ServerError(err)}, nil
 		}
 	}
 	return params.ErrorResult{}, nil
 }
 
-// fetchAllServicesAndUnits returns a map from service name to service
+// fetchAllDeployedCharms returns a map from service name to service
 // and a map from service name to unit name to unit.
 func fetchAllDeployedCharms(st *state.State) (map[string]*charm.URL, error) {
 	deployedCharms := make(map[string]*charm.URL)
@@ -108,7 +108,7 @@ func retrieveLatestCharmInfo(deployedCharms map[string]*charm.URL, uuid string) 
 	store := charm.Store.WithJujuAttrs("environment_uuid=" + uuid)
 	revInfo, err := store.Latest(curls...)
 	if err != nil {
-		return nil, log.LoggedErrorf(logger, "finding charm revision info: %v", err)
+		return nil, errors.LoggedErrorf(logger, "finding charm revision info: %v", err)
 	}
 	var latestCurls []*charm.URL
 	for i, info := range revInfo {

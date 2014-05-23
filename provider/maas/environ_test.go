@@ -6,18 +6,19 @@ package maas_test
 import (
 	stdtesting "testing"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 	"launchpad.net/gomaasapi"
 
 	"launchpad.net/juju-core/environs/config"
+	"launchpad.net/juju-core/environs/network"
 	envtesting "launchpad.net/juju-core/environs/testing"
 	"launchpad.net/juju-core/provider/maas"
 	coretesting "launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 type environSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 	envtesting.ToolsFixture
 	testMAASObject  *gomaasapi.TestMAASObject
 	restoreTimeouts func()
@@ -34,29 +35,27 @@ func TestMAAS(t *stdtesting.T) {
 // shared, or into a 'testing' package so we can use it here.
 func (s *environSuite) SetUpSuite(c *gc.C) {
 	s.restoreTimeouts = envtesting.PatchAttemptStrategies(maas.ShortAttempt)
-	s.LoggingSuite.SetUpSuite(c)
+	s.BaseSuite.SetUpSuite(c)
 	TestMAASObject := gomaasapi.NewTestMAAS("1.0")
 	s.testMAASObject = TestMAASObject
 }
 
 func (s *environSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	s.ToolsFixture.SetUpTest(c)
 }
 
 func (s *environSuite) TearDownTest(c *gc.C) {
 	s.testMAASObject.TestServer.Clear()
 	s.ToolsFixture.TearDownTest(c)
-	s.LoggingSuite.TearDownTest(c)
+	s.BaseSuite.TearDownTest(c)
 }
 
 func (s *environSuite) TearDownSuite(c *gc.C) {
 	s.testMAASObject.Close()
 	s.restoreTimeouts()
-	s.LoggingSuite.TearDownSuite(c)
+	s.BaseSuite.TearDownSuite(c)
 }
-
-var _ = gc.Suite(&environSuite{})
 
 func getSimpleTestConfig(c *gc.C, extraAttrs coretesting.Attrs) *config.Config {
 	attrs := coretesting.FakeConfig()
@@ -194,4 +193,52 @@ func (*environSuite) TestNewEnvironSetsConfig(c *gc.C) {
 
 	c.Check(err, gc.IsNil)
 	c.Check(env.Name(), gc.Equals, "testenv")
+}
+
+func (*environSuite) TestNewCloudinitConfig(c *gc.C) {
+	nwInfo := []network.Info{
+		// physical eth0 won't be touched, but it can have VLANs on it.
+		{InterfaceName: "eth0", VLANTag: 0},
+		{InterfaceName: "eth0", VLANTag: 99},
+		// physical NIC given explicitly, then a couple of virtual ones using it.
+		{InterfaceName: "eth1", VLANTag: 0},
+		{InterfaceName: "eth1", VLANTag: 42},
+		{InterfaceName: "eth1", VLANTag: 69},
+		{InterfaceName: "eth2", VLANTag: 0},
+		// physical NIC not given, ensure it gets brought up first, before the virtual one.
+		{InterfaceName: "eth3", VLANTag: 123},
+	}
+	cloudcfg, err := maas.NewCloudinitConfig("testing.invalid", nwInfo)
+	c.Assert(err, gc.IsNil)
+	c.Assert(cloudcfg.AptUpdate(), jc.IsTrue)
+	c.Assert(cloudcfg.RunCmds(), jc.DeepEquals, []interface{}{
+		"set -xe",
+		"mkdir -p '/var/lib/juju'; echo -n 'hostname: testing.invalid\n' > '/var/lib/juju/MAASmachine.txt'",
+		"ifdown eth0",
+		"cat > /etc/network/eth0.config << EOF\niface eth0 inet manual\n\nauto br0\niface br0 inet dhcp\n  bridge_ports eth0\nEOF\n",
+		`sed -i "s/iface eth0 inet dhcp/source \/etc\/network\/eth0.config/" /etc/network/interfaces`,
+		"ifup br0",
+		// Networking/VLAN stuff.
+		"sh -c 'lsmod | grep -q 8021q || modprobe 8021q'",
+		"sh -c 'grep -q 8021q /etc/modules || echo 8021q >> /etc/modules'",
+		"vconfig set_name_type DEV_PLUS_VID_NO_PAD",
+		"vconfig add eth0 99",
+		"cat >> /etc/network/interfaces << EOF\n\nauto eth0.99\niface eth0.99 inet dhcp\nEOF\n",
+		"ifup eth0.99",
+		"cat >> /etc/network/interfaces << EOF\n\nauto eth1\niface eth1 inet dhcp\nEOF\n",
+		"ifup eth1",
+		"vconfig add eth1 42",
+		"cat >> /etc/network/interfaces << EOF\n\nauto eth1.42\niface eth1.42 inet dhcp\nEOF\n",
+		"ifup eth1.42",
+		"vconfig add eth1 69",
+		"cat >> /etc/network/interfaces << EOF\n\nauto eth1.69\niface eth1.69 inet dhcp\nEOF\n",
+		"ifup eth1.69",
+		"cat >> /etc/network/interfaces << EOF\n\nauto eth2\niface eth2 inet dhcp\nEOF\n",
+		"ifup eth2",
+		"cat >> /etc/network/interfaces << EOF\n\nauto eth3\niface eth3 inet dhcp\nEOF\n",
+		"ifup eth3",
+		"vconfig add eth3 123",
+		"cat >> /etc/network/interfaces << EOF\n\nauto eth3.123\niface eth3.123 inet dhcp\nEOF\n",
+		"ifup eth3.123",
+	})
 }

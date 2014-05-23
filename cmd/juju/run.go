@@ -14,6 +14,7 @@ import (
 	"launchpad.net/gnuflag"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/juju"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/state/api/params"
@@ -21,7 +22,7 @@ import (
 
 // RunCommand is responsible for running arbitrary commands on remote machines.
 type RunCommand struct {
-	cmd.EnvCommandBase
+	envcmd.EnvCommandBase
 	out      cmd.Output
 	all      bool
 	timeout  time.Duration
@@ -69,7 +70,6 @@ func (c *RunCommand) Info() *cmd.Info {
 }
 
 func (c *RunCommand) SetFlags(f *gnuflag.FlagSet) {
-	c.EnvCommandBase.SetFlags(f)
 	c.out.AddFlags(f, "smart", cmd.DefaultFormatters)
 	f.BoolVar(&c.all, "all", false, "run the commands on all the machines")
 	f.DurationVar(&c.timeout, "timeout", 5*time.Minute, "how long to wait before the remote command is considered to have failed")

@@ -4,7 +4,7 @@
 package osenv
 
 import (
-    "path"
+	"path"
 )
 
 const (

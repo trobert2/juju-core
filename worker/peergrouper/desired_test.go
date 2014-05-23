@@ -8,26 +8,25 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	stdtesting "testing"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
+
+	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/replicaset"
-	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
-func TestPackage(t *stdtesting.T) {
-	coretesting.MgoTestPackage(t)
-}
-
 type desiredPeerGroupSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var _ = gc.Suite(&desiredPeerGroupSuite{})
 
-const mongoPort = 1234
+const (
+	mongoPort = 1234
+	apiPort   = 5678
+)
 
 var desiredPeerGroupTests = []struct {
 	about    string
@@ -152,7 +151,14 @@ var desiredPeerGroupTests = []struct {
 	machines: append(mkMachines("11v 12v"), &machine{
 		id:        "13",
 		wantsVote: true,
-		hostPort:  "0.1.99.13:1234",
+		mongoHostPorts: []instance.HostPort{{
+			Address: instance.Address{
+				Value:        "0.1.99.13",
+				Type:         instance.Ipv4Address,
+				NetworkScope: instance.NetworkCloudLocal,
+			},
+			Port: 1234,
+		}},
 	}),
 	statuses:     mkStatuses("1s 2p 3p"),
 	members:      mkMembers("1v 2v 3v"),
@@ -165,9 +171,9 @@ var desiredPeerGroupTests = []struct {
 }, {
 	about: "a machine's address is ignored if it changes to empty",
 	machines: append(mkMachines("11v 12v"), &machine{
-		id:        "13",
-		wantsVote: true,
-		hostPort:  "",
+		id:             "13",
+		wantsVote:      true,
+		mongoHostPorts: nil,
 	}),
 	statuses:      mkStatuses("1s 2p 3p"),
 	members:       mkMembers("1v 2v 3v"),
@@ -200,7 +206,9 @@ func (*desiredPeerGroupSuite) TestDesiredPeerGroup(c *gc.C) {
 			continue
 		}
 		for i, m := range test.machines {
-			c.Assert(voting[m], gc.Equals, test.expectVoting[i], gc.Commentf("machine %s", m.id))
+			vote, votePresent := voting[m]
+			c.Check(votePresent, jc.IsTrue)
+			c.Check(vote, gc.Equals, test.expectVoting[i], gc.Commentf("machine %s", m.id))
 		}
 		// Assure ourselves that the total number of desired votes is odd in
 		// all circumstances.
@@ -212,7 +220,11 @@ func (*desiredPeerGroupSuite) TestDesiredPeerGroup(c *gc.C) {
 		info.members = members
 		members, voting, err = desiredPeerGroup(info)
 		c.Assert(members, gc.IsNil)
-		c.Assert(voting, gc.IsNil)
+		for i, m := range test.machines {
+			vote, votePresent := voting[m]
+			c.Check(votePresent, jc.IsTrue)
+			c.Check(vote, gc.Equals, test.expectVoting[i], gc.Commentf("machine %s", m.id))
+		}
 		c.Assert(err, gc.IsNil)
 	}
 }
@@ -247,8 +259,15 @@ func mkMachines(description string) []*machine {
 	ms := make([]*machine, len(descrs))
 	for i, d := range descrs {
 		ms[i] = &machine{
-			id:        fmt.Sprint(d.id),
-			hostPort:  fmt.Sprintf("0.1.2.%d:%d", d.id, mongoPort),
+			id: fmt.Sprint(d.id),
+			mongoHostPorts: []instance.HostPort{{
+				Address: instance.Address{
+					Value:        fmt.Sprintf("0.1.2.%d", d.id),
+					Type:         instance.Ipv4Address,
+					NetworkScope: instance.NetworkCloudLocal,
+				},
+				Port: mongoPort,
+			}},
 			wantsVote: strings.Contains(d.flags, "v"),
 		}
 	}
@@ -256,7 +275,7 @@ func mkMachines(description string) []*machine {
 }
 
 func memberTag(id string) map[string]string {
-	return map[string]string{"juju-machine-id": id}
+	return map[string]string{jujuMachineTag: id}
 }
 
 // mkMembers returns a slice of *replicaset.Member
@@ -385,8 +404,44 @@ func parseDescr(s string) []descr {
 	return descrs
 }
 
+func assertMembers(c *gc.C, obtained interface{}, expected []replicaset.Member) {
+	c.Assert(obtained, gc.FitsTypeOf, []replicaset.Member{})
+	sort.Sort(membersById(obtained.([]replicaset.Member)))
+	sort.Sort(membersById(expected))
+	c.Assert(obtained, jc.DeepEquals, expected)
+}
+
 type membersById []replicaset.Member
 
 func (l membersById) Len() int           { return len(l) }
 func (l membersById) Swap(i, j int)      { l[i], l[j] = l[j], l[i] }
 func (l membersById) Less(i, j int) bool { return l[i].Id < l[j].Id }
+
+// assertAPIHostPorts asserts of two sets of instance.HostPort slices are the same.
+func assertAPIHostPorts(c *gc.C, got, want [][]instance.HostPort) {
+	c.Assert(got, gc.HasLen, len(want))
+	sort.Sort(hostPortSliceByHostPort(got))
+	sort.Sort(hostPortSliceByHostPort(want))
+	c.Assert(got, gc.DeepEquals, want)
+}
+
+type hostPortSliceByHostPort [][]instance.HostPort
+
+func (h hostPortSliceByHostPort) Len() int      { return len(h) }
+func (h hostPortSliceByHostPort) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h hostPortSliceByHostPort) Less(i, j int) bool {
+	a, b := h[i], h[j]
+	if len(a) != len(b) {
+		return len(a) < len(b)
+	}
+	for i := range a {
+		av, bv := a[i], b[i]
+		if av.Value != bv.Value {
+			return av.Value < bv.Value
+		}
+		if av.Port != bv.Port {
+			return av.Port < bv.Port
+		}
+	}
+	return false
+}

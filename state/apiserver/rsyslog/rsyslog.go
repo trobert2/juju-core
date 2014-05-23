@@ -36,21 +36,13 @@ func (api *RsyslogAPI) SetRsyslogCert(args params.SetRsyslogCertParams) (params.
 		result.Error = common.ServerError(common.ErrBadCreds)
 		return result, nil
 	}
-	if _, err := cert.ParseCert(args.CACert); err != nil {
+	if _, err := cert.ParseCert(string(args.CACert)); err != nil {
 		result.Error = common.ServerError(err)
 		return result, nil
 	}
-	old, err := api.st.EnvironConfig()
-	if err != nil {
-		return params.ErrorResult{}, err
-	}
-	cfg, err := old.Apply(map[string]interface{}{"rsyslog-ca-cert": string(args.CACert)})
-	if err != nil {
+	attrs := map[string]interface{}{"rsyslog-ca-cert": string(args.CACert)}
+	if err := api.st.UpdateEnvironConfig(attrs, nil, nil); err != nil {
 		result.Error = common.ServerError(err)
-	} else {
-		if err := api.st.SetEnvironConfig(cfg, old); err != nil {
-			result.Error = common.ServerError(err)
-		}
 	}
 	return result, nil
 }

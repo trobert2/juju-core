@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/juju/errors"
 	"launchpad.net/goamz/s3"
 
 	"launchpad.net/juju-core/environs/storage"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/utils"
 )
 
@@ -83,7 +83,7 @@ var storageAttempt = utils.AttemptStrategy{
 	Delay: 200 * time.Millisecond,
 }
 
-// ConsistencyStrategy is specified in the StorageReader interface.
+// DefaultConsistencyStrategy is specified in the StorageReader interface.
 func (s *ec2storage) DefaultConsistencyStrategy() utils.AttemptStrategy {
 	return storageAttempt
 }
@@ -216,7 +216,7 @@ func deleteBucket(s *ec2storage) (err error) {
 
 func maybeNotFound(err error) error {
 	if err != nil && s3ErrorStatusCode(err) == 404 {
-		return errors.NewNotFoundError(err, "")
+		return errors.NewNotFound(err, "")
 	}
 	return err
 }

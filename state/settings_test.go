@@ -4,17 +4,16 @@
 package state
 
 import (
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	"labix.org/v2/mgo/txn"
 	gc "launchpad.net/gocheck"
 
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 type SettingsSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 	testing.MgoSuite
 	state *State
 	key   string
@@ -27,7 +26,7 @@ var _ = gc.Suite(&SettingsSuite{})
 func TestingStateInfo() *Info {
 	return &Info{
 		Addrs:  []string{testing.MgoServer.Addr()},
-		CACert: []byte(testing.CACert),
+		CACert: testing.CACert,
 	}
 }
 
@@ -40,17 +39,17 @@ func TestingDialOpts() DialOpts {
 }
 
 func (s *SettingsSuite) SetUpSuite(c *gc.C) {
-	s.LoggingSuite.SetUpSuite(c)
+	s.BaseSuite.SetUpSuite(c)
 	s.MgoSuite.SetUpSuite(c)
 }
 
 func (s *SettingsSuite) TearDownSuite(c *gc.C) {
 	s.MgoSuite.TearDownSuite(c)
-	s.LoggingSuite.TearDownSuite(c)
+	s.BaseSuite.TearDownSuite(c)
 }
 
 func (s *SettingsSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	s.MgoSuite.SetUpTest(c)
 	// TODO(dfc) this logic is duplicated with the metawatcher_test.
 	state, err := Open(TestingStateInfo(), TestingDialOpts(), Policy(nil))
@@ -63,7 +62,7 @@ func (s *SettingsSuite) SetUpTest(c *gc.C) {
 func (s *SettingsSuite) TearDownTest(c *gc.C) {
 	s.state.Close()
 	s.MgoSuite.TearDownTest(c)
-	s.LoggingSuite.TearDownTest(c)
+	s.BaseSuite.TearDownTest(c)
 }
 
 func (s *SettingsSuite) TestCreateEmptySettings(c *gc.C) {
@@ -82,7 +81,7 @@ func (s *SettingsSuite) TestCannotOverwrite(c *gc.C) {
 func (s *SettingsSuite) TestCannotReadMissing(c *gc.C) {
 	_, err := readSettings(s.state, s.key)
 	c.Assert(err, gc.ErrorMatches, "settings not found")
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *SettingsSuite) TestCannotWriteMissing(c *gc.C) {
@@ -95,7 +94,7 @@ func (s *SettingsSuite) TestCannotWriteMissing(c *gc.C) {
 	node.Set("foo", "bar")
 	_, err = node.Write()
 	c.Assert(err, gc.ErrorMatches, "settings not found")
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *SettingsSuite) TestUpdateWithWrite(c *gc.C) {

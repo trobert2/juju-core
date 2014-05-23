@@ -8,7 +8,6 @@ import (
 
 	"github.com/juju/loggo"
 
-	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils/ssh"
@@ -20,7 +19,7 @@ var logger = loggo.GetLogger("juju.environs.bootstrap")
 // Bootstrap bootstraps the given environment. The supplied constraints are
 // used to provision the instance, and are also set within the bootstrapped
 // environment.
-func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, cons constraints.Value) error {
+func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, args environs.BootstrapParams) error {
 	cfg := environ.Config()
 	if secret := cfg.AdminSecret(); secret == "" {
 		return fmt.Errorf("environment configuration has no admin-secret")
@@ -43,8 +42,9 @@ func Bootstrap(ctx environs.BootstrapContext, environ environs.Environ, cons con
 	if err := environs.VerifyStorage(environ.Storage()); err != nil {
 		return err
 	}
+	logger.Debugf("environment %q supports service/machine networks: %v", environ.Name(), environ.SupportNetworks())
 	logger.Infof("bootstrapping environment %q", environ.Name())
-	return environ.Bootstrap(ctx, cons)
+	return environ.Bootstrap(ctx, args)
 }
 
 // SetBootstrapTools returns the newest tools from the given tools list,
@@ -55,7 +55,7 @@ func SetBootstrapTools(environ environs.Environ, possibleTools coretools.List) (
 	}
 	var newVersion version.Number
 	newVersion, toolsList := possibleTools.Newest()
-	logger.Infof("picked newest version: %s", newVersion)
+	logger.Infof("newest version: %s", newVersion)
 	cfg := environ.Config()
 	if agentVersion, _ := cfg.AgentVersion(); agentVersion != newVersion {
 		cfg, err := cfg.Apply(map[string]interface{}{
@@ -68,11 +68,49 @@ func SetBootstrapTools(environ environs.Environ, possibleTools coretools.List) (
 			return nil, fmt.Errorf("failed to update environment configuration: %v", err)
 		}
 	}
+	bootstrapVersion := newVersion
+	// We should only ever bootstrap the exact same version as the client,
+	// or we risk bootstrap incompatibility. We still set agent-version to
+	// the newest version, so the agent will immediately upgrade itself.
+	if !isCompatibleVersion(newVersion, version.Current.Number) {
+		compatibleVersion, compatibleTools := findCompatibleTools(possibleTools, version.Current.Number)
+		if len(compatibleTools) == 0 {
+			logger.Warningf(
+				"failed to find %s tools, will attempt to use %s",
+				version.Current.Number, newVersion,
+			)
+		} else {
+			bootstrapVersion, toolsList = compatibleVersion, compatibleTools
+		}
+	}
+	logger.Infof("picked bootstrap tools version: %s", bootstrapVersion)
 	return toolsList, nil
 }
 
-// EnsureNotBootstrapped returns null if the environment is not bootstrapped,
-// and an error if it is or if the function was not able to tell.
+// findCompatibleTools finds tools in the list that have the same major, minor
+// and patch level as version.Current.
+//
+// Build number is not important to match; uploaded tools will have
+// incremented build number, and we want to match them.
+func findCompatibleTools(possibleTools coretools.List, version version.Number) (version.Number, coretools.List) {
+	var compatibleTools coretools.List
+	for _, tools := range possibleTools {
+		if isCompatibleVersion(tools.Version.Number, version) {
+			compatibleTools = append(compatibleTools, tools)
+		}
+	}
+	return compatibleTools.Newest()
+}
+
+func isCompatibleVersion(v1, v2 version.Number) bool {
+	v1.Build = 0
+	v2.Build = 0
+	return v1.Compare(v2) == 0
+}
+
+// EnsureNotBootstrapped returns nil if the environment is not
+// bootstrapped, and an error if it is or if the function was not able
+// to tell.
 func EnsureNotBootstrapped(env environs.Environ) error {
 	_, err := LoadState(env.Storage())
 	// If there is no error loading the bootstrap state, then we are

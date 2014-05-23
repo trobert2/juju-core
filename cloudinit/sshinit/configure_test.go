@@ -17,13 +17,12 @@ import (
 	envtools "launchpad.net/juju-core/environs/tools"
 	"launchpad.net/juju-core/state/api/params"
 	coretesting "launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/version"
 )
 
 type configureSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 }
 
 var _ = gc.Suite(&configureSuite{})
@@ -55,10 +54,11 @@ func testConfig(c *gc.C, stateServer bool, vers version.Binary) *config.Config {
 func (s *configureSuite) getCloudConfig(c *gc.C, stateServer bool, vers version.Binary) *cloudinit.Config {
 	var mcfg *envcloudinit.MachineConfig
 	if stateServer {
-		mcfg = environs.NewBootstrapMachineConfig("http://whatever/dotcom", "private-key")
+		mcfg = environs.NewBootstrapMachineConfig("private-key")
+		mcfg.InstanceId = "instance-id"
 		mcfg.Jobs = []params.MachineJob{params.JobManageEnviron, params.JobHostUnits}
 	} else {
-		mcfg = environs.NewMachineConfig("0", "ya", "", nil, nil)
+		mcfg = environs.NewMachineConfig("0", "ya", "", nil, nil, nil, nil)
 		mcfg.Jobs = []params.MachineJob{params.JobHostUnits}
 	}
 	mcfg.Tools = &tools.Tools{
@@ -117,19 +117,11 @@ func (s *configureSuite) TestAptSources(c *gc.C) {
 			"(.|\n)*install -D -m 644 /dev/null '/etc/apt/preferences.d/50-cloud-tools'(.|\n)*",
 		)
 
-		// Only Quantal requires the PPA (for mongo).
-		needsJujuPPA := series == "quantal"
-		c.Assert(
-			script,
-			checkIff(gc.Matches, needsJujuPPA),
-			"(.|\n)*add-apt-repository.*ppa:juju/stable(.|\n)*",
-		)
-
 		// Only install python-software-properties (add-apt-repository)
 		// if we need to.
 		c.Assert(
 			script,
-			checkIff(gc.Matches, needsCloudTools || needsJujuPPA),
+			checkIff(gc.Matches, needsCloudTools),
 			aptgetRegexp+"install.*python-software-properties(.|\n)*",
 		)
 	}

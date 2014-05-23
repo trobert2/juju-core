@@ -20,7 +20,6 @@ import (
 	"launchpad.net/juju-core/state/multiwatcher"
 	"launchpad.net/juju-core/state/watcher"
 	"launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 var dottedConfig = `
@@ -29,32 +28,32 @@ options:
 `
 
 type storeManagerStateSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 	testing.MgoSuite
 	State *State
 }
 
 func (s *storeManagerStateSuite) SetUpSuite(c *gc.C) {
-	s.LoggingSuite.SetUpSuite(c)
+	s.BaseSuite.SetUpSuite(c)
 	s.MgoSuite.SetUpSuite(c)
 }
 
 func (s *storeManagerStateSuite) TearDownSuite(c *gc.C) {
 	s.MgoSuite.TearDownSuite(c)
-	s.LoggingSuite.TearDownSuite(c)
+	s.BaseSuite.TearDownSuite(c)
 }
 
 func (s *storeManagerStateSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	s.MgoSuite.SetUpTest(c)
 	s.State = TestingInitialize(c, nil, Policy(nil))
-	s.State.AddUser("admin", "pass")
+	s.State.AddUser(AdminUser, "pass")
 }
 
 func (s *storeManagerStateSuite) TearDownTest(c *gc.C) {
 	s.State.Close()
 	s.MgoSuite.TearDownTest(c)
-	s.LoggingSuite.TearDownTest(c)
+	s.BaseSuite.TearDownTest(c)
 }
 
 func (s *storeManagerStateSuite) Reset(c *gc.C) {
@@ -76,10 +75,19 @@ func (s *storeManagerStateSuite) setUpScenario(c *gc.C) (entities entityInfoSlic
 	c.Assert(m.Tag(), gc.Equals, "machine-0")
 	err = m.SetProvisioned(instance.Id("i-"+m.Tag()), "fake_nonce", nil)
 	c.Assert(err, gc.IsNil)
+	hc, err := m.HardwareCharacteristics()
+	c.Assert(err, gc.IsNil)
+	err = m.SetAddresses(instance.NewAddress("example.com", instance.NetworkUnknown))
+	c.Assert(err, gc.IsNil)
 	add(&params.MachineInfo{
-		Id:         "0",
-		InstanceId: "i-machine-0",
-		Status:     params.StatusPending,
+		Id:                      "0",
+		InstanceId:              "i-machine-0",
+		Status:                  params.StatusPending,
+		Life:                    params.Alive,
+		Series:                  "quantal",
+		Jobs:                    []params.MachineJob{JobManageEnviron.ToParams()},
+		Addresses:               m.Addresses(),
+		HardwareCharacteristics: hc,
 	})
 
 	wordpress := AddTestingService(c, s.State, "wordpress", AddTestingCharm(c, s.State, "wordpress"))
@@ -95,7 +103,7 @@ func (s *storeManagerStateSuite) setUpScenario(c *gc.C) (entities entityInfoSlic
 		Exposed:     true,
 		CharmURL:    serviceCharmURL(wordpress).String(),
 		OwnerTag:    "user-admin",
-		Life:        params.Life(Alive.String()),
+		Life:        params.Alive,
 		MinUnits:    3,
 		Constraints: constraints.MustParse("mem=100M"),
 		Config:      charm.Settings{"blog-title": "boring"},
@@ -113,7 +121,7 @@ func (s *storeManagerStateSuite) setUpScenario(c *gc.C) (entities entityInfoSlic
 		Name:     "logging",
 		CharmURL: serviceCharmURL(logging).String(),
 		OwnerTag: "user-admin",
-		Life:     params.Life(Alive.String()),
+		Life:     params.Alive,
 		Config:   charm.Settings{},
 	})
 
@@ -158,11 +166,18 @@ func (s *storeManagerStateSuite) setUpScenario(c *gc.C) (entities entityInfoSlic
 		c.Assert(err, gc.IsNil)
 		err = m.SetStatus(params.StatusError, m.Tag(), nil)
 		c.Assert(err, gc.IsNil)
+		hc, err := m.HardwareCharacteristics()
+		c.Assert(err, gc.IsNil)
 		add(&params.MachineInfo{
-			Id:         fmt.Sprint(i + 1),
-			InstanceId: "i-" + m.Tag(),
-			Status:     params.StatusError,
-			StatusInfo: m.Tag(),
+			Id:                      fmt.Sprint(i + 1),
+			InstanceId:              "i-" + m.Tag(),
+			Status:                  params.StatusError,
+			StatusInfo:              m.Tag(),
+			Life:                    params.Alive,
+			Series:                  "quantal",
+			Jobs:                    []params.MachineJob{JobHostUnits.ToParams()},
+			Addresses:               []instance.Address{},
+			HardwareCharacteristics: hc,
 		})
 		err = wu.AssignToMachine(m)
 		c.Assert(err, gc.IsNil)
@@ -275,6 +290,10 @@ var allWatcherChangedTests = []struct {
 				Id:         "0",
 				Status:     params.StatusError,
 				StatusInfo: "failure",
+				Life:       params.Alive,
+				Series:     "quantal",
+				Jobs:       []params.MachineJob{JobHostUnits.ToParams()},
+				Addresses:  []instance.Address{},
 			},
 		},
 	},
@@ -289,9 +308,11 @@ var allWatcherChangedTests = []struct {
 			},
 		},
 		setUp: func(c *gc.C, st *State) {
-			m, err := st.AddMachine("quantal", JobManageEnviron)
+			m, err := st.AddMachine("trusty", JobManageEnviron)
 			c.Assert(err, gc.IsNil)
 			err = m.SetProvisioned("i-0", "bootstrap_nonce", nil)
+			c.Assert(err, gc.IsNil)
+			err = m.SetSupportedContainers([]instance.ContainerType{instance.LXC})
 			c.Assert(err, gc.IsNil)
 		},
 		change: watcher.Change{
@@ -300,10 +321,17 @@ var allWatcherChangedTests = []struct {
 		},
 		expectContents: []params.EntityInfo{
 			&params.MachineInfo{
-				Id:         "0",
-				InstanceId: "i-0",
-				Status:     params.StatusError,
-				StatusInfo: "another failure",
+				Id:                       "0",
+				InstanceId:               "i-0",
+				Status:                   params.StatusError,
+				StatusInfo:               "another failure",
+				Life:                     params.Alive,
+				Series:                   "trusty",
+				Jobs:                     []params.MachineJob{JobManageEnviron.ToParams()},
+				Addresses:                []instance.Address{},
+				HardwareCharacteristics:  &instance.HardwareCharacteristics{},
+				SupportedContainers:      []instance.ContainerType{instance.LXC},
+				SupportedContainersKnown: true,
 			},
 		},
 	},
@@ -329,15 +357,73 @@ var allWatcherChangedTests = []struct {
 			wordpress := AddTestingService(c, st, "wordpress", AddTestingCharm(c, st, "wordpress"))
 			u, err := wordpress.AddUnit()
 			c.Assert(err, gc.IsNil)
-			err = u.SetPublicAddress("public")
+			err = u.OpenPort("tcp", 12345)
 			c.Assert(err, gc.IsNil)
-			err = u.SetPrivateAddress("private")
+			m, err := st.AddMachine("quantal", JobHostUnits)
+			c.Assert(err, gc.IsNil)
+			err = u.AssignToMachine(m)
+			c.Assert(err, gc.IsNil)
+			err = u.SetStatus(params.StatusError, "failure", nil)
+			c.Assert(err, gc.IsNil)
+		},
+		change: watcher.Change{
+			C:  "units",
+			Id: "wordpress/0",
+		},
+		expectContents: []params.EntityInfo{
+			&params.UnitInfo{
+				Name:       "wordpress/0",
+				Service:    "wordpress",
+				Series:     "quantal",
+				MachineId:  "0",
+				Ports:      []instance.Port{{"tcp", 12345}},
+				Status:     params.StatusError,
+				StatusInfo: "failure",
+			},
+		},
+	}, {
+		about: "unit is updated if it's in backing and in multiwatcher.Store",
+		add: []params.EntityInfo{&params.UnitInfo{
+			Name:       "wordpress/0",
+			Status:     params.StatusError,
+			StatusInfo: "another failure",
+		}},
+		setUp: func(c *gc.C, st *State) {
+			wordpress := AddTestingService(c, st, "wordpress", AddTestingCharm(c, st, "wordpress"))
+			u, err := wordpress.AddUnit()
+			c.Assert(err, gc.IsNil)
+			err = u.OpenPort("udp", 17070)
+			c.Assert(err, gc.IsNil)
+		},
+		change: watcher.Change{
+			C:  "units",
+			Id: "wordpress/0",
+		},
+		expectContents: []params.EntityInfo{
+			&params.UnitInfo{
+				Name:       "wordpress/0",
+				Service:    "wordpress",
+				Series:     "quantal",
+				Ports:      []instance.Port{{"udp", 17070}},
+				Status:     params.StatusError,
+				StatusInfo: "another failure",
+			},
+		},
+	}, {
+		about: "unit addresses are read from the assigned machine for recent Juju releases",
+		setUp: func(c *gc.C, st *State) {
+			wordpress := AddTestingService(c, st, "wordpress", AddTestingCharm(c, st, "wordpress"))
+			u, err := wordpress.AddUnit()
 			c.Assert(err, gc.IsNil)
 			err = u.OpenPort("tcp", 12345)
 			c.Assert(err, gc.IsNil)
 			m, err := st.AddMachine("quantal", JobHostUnits)
 			c.Assert(err, gc.IsNil)
 			err = u.AssignToMachine(m)
+			c.Assert(err, gc.IsNil)
+			publicAddress := instance.NewAddress("public", instance.NetworkPublic)
+			privateAddress := instance.NewAddress("private", instance.NetworkCloudLocal)
+			err = m.SetAddresses(publicAddress, privateAddress)
 			c.Assert(err, gc.IsNil)
 			err = u.SetStatus(params.StatusError, "failure", nil)
 			c.Assert(err, gc.IsNil)
@@ -357,37 +443,6 @@ var allWatcherChangedTests = []struct {
 				Ports:          []instance.Port{{"tcp", 12345}},
 				Status:         params.StatusError,
 				StatusInfo:     "failure",
-			},
-		},
-	}, {
-		about: "unit is updated if it's in backing and in multiwatcher.Store",
-		add: []params.EntityInfo{&params.UnitInfo{
-			Name:       "wordpress/0",
-			Status:     params.StatusError,
-			StatusInfo: "another failure",
-		}},
-		setUp: func(c *gc.C, st *State) {
-			wordpress := AddTestingService(c, st, "wordpress", AddTestingCharm(c, st, "wordpress"))
-			u, err := wordpress.AddUnit()
-			c.Assert(err, gc.IsNil)
-			err = u.SetPublicAddress("public")
-			c.Assert(err, gc.IsNil)
-			err = u.OpenPort("udp", 17070)
-			c.Assert(err, gc.IsNil)
-		},
-		change: watcher.Change{
-			C:  "units",
-			Id: "wordpress/0",
-		},
-		expectContents: []params.EntityInfo{
-			&params.UnitInfo{
-				Name:          "wordpress/0",
-				Service:       "wordpress",
-				Series:        "quantal",
-				PublicAddress: "public",
-				Ports:         []instance.Port{{"udp", 17070}},
-				Status:        params.StatusError,
-				StatusInfo:    "another failure",
 			},
 		},
 	},
@@ -426,7 +481,7 @@ var allWatcherChangedTests = []struct {
 				Exposed:  true,
 				CharmURL: "local:quantal/quantal-wordpress-3",
 				OwnerTag: "user-admin",
-				Life:     params.Life(Alive.String()),
+				Life:     params.Alive,
 				MinUnits: 42,
 				Config:   charm.Settings{},
 			},
@@ -454,7 +509,7 @@ var allWatcherChangedTests = []struct {
 				Name:        "wordpress",
 				CharmURL:    "local:quantal/quantal-wordpress-3",
 				OwnerTag:    "user-admin",
-				Life:        params.Life(Alive.String()),
+				Life:        params.Alive,
 				Constraints: constraints.MustParse("mem=99M"),
 				Config:      charm.Settings{"blog-title": "boring"},
 			},
@@ -481,7 +536,7 @@ var allWatcherChangedTests = []struct {
 				Name:     "wordpress",
 				CharmURL: "local:quantal/quantal-wordpress-3",
 				OwnerTag: "user-admin",
-				Life:     params.Life(Alive.String()),
+				Life:     params.Alive,
 				Config:   charm.Settings{"blog-title": "boring"},
 			},
 		},
@@ -919,7 +974,7 @@ func (s *storeManagerStateSuite) TestChanged(c *gc.C) {
 	}
 }
 
-// StateWatcher tests the integration of the state watcher
+// TestStateWatcher tests the integration of the state watcher
 // with the state-based backing. Most of the logic is tested elsewhere -
 // this just tests end-to-end.
 func (s *storeManagerStateSuite) TestStateWatcher(c *gc.C) {
@@ -927,7 +982,7 @@ func (s *storeManagerStateSuite) TestStateWatcher(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 	c.Assert(m0.Id(), gc.Equals, "0")
 
-	m1, err := s.State.AddMachine("quantal", JobHostUnits)
+	m1, err := s.State.AddMachine("saucy", JobHostUnits)
 	c.Assert(err, gc.IsNil)
 	c.Assert(m1.Id(), gc.Equals, "1")
 
@@ -938,18 +993,32 @@ func (s *storeManagerStateSuite) TestStateWatcher(c *gc.C) {
 	s.State.StartSync()
 	checkNext(c, w, b, []params.Delta{{
 		Entity: &params.MachineInfo{
-			Id:     "0",
-			Status: params.StatusPending,
+			Id:        "0",
+			Status:    params.StatusPending,
+			Life:      params.Alive,
+			Series:    "quantal",
+			Jobs:      []params.MachineJob{JobManageEnviron.ToParams()},
+			Addresses: []instance.Address{},
 		},
 	}, {
 		Entity: &params.MachineInfo{
-			Id:     "1",
-			Status: params.StatusPending,
+			Id:        "1",
+			Status:    params.StatusPending,
+			Life:      params.Alive,
+			Series:    "saucy",
+			Jobs:      []params.MachineJob{JobHostUnits.ToParams()},
+			Addresses: []instance.Address{},
 		},
 	}}, "")
 
 	// Make some changes to the state.
-	err = m0.SetProvisioned("i-0", "bootstrap_nonce", nil)
+	arch := "amd64"
+	mem := uint64(4096)
+	hc := &instance.HardwareCharacteristics{
+		Arch: &arch,
+		Mem:  &mem,
+	}
+	err = m0.SetProvisioned("i-0", "bootstrap_nonce", hc)
 	c.Assert(err, gc.IsNil)
 	err = m1.Destroy()
 	c.Assert(err, gc.IsNil)
@@ -957,7 +1026,7 @@ func (s *storeManagerStateSuite) TestStateWatcher(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 	err = m1.Remove()
 	c.Assert(err, gc.IsNil)
-	m2, err := s.State.AddMachine("quantal", JobHostUnits)
+	m2, err := s.State.AddMachine("trusty", JobHostUnits)
 	c.Assert(err, gc.IsNil)
 	c.Assert(m2.Id(), gc.Equals, "2")
 	s.State.StartSync()
@@ -976,19 +1045,32 @@ func (s *storeManagerStateSuite) TestStateWatcher(c *gc.C) {
 	checkDeltasEqual(c, b, deltas, []params.Delta{{
 		Removed: true,
 		Entity: &params.MachineInfo{
-			Id:     "1",
-			Status: params.StatusPending,
+			Id:        "1",
+			Status:    params.StatusPending,
+			Life:      params.Alive,
+			Series:    "saucy",
+			Jobs:      []params.MachineJob{JobHostUnits.ToParams()},
+			Addresses: []instance.Address{},
 		},
 	}, {
 		Entity: &params.MachineInfo{
-			Id:     "2",
-			Status: params.StatusPending,
+			Id:        "2",
+			Status:    params.StatusPending,
+			Life:      params.Alive,
+			Series:    "trusty",
+			Jobs:      []params.MachineJob{JobHostUnits.ToParams()},
+			Addresses: []instance.Address{},
 		},
 	}, {
 		Entity: &params.MachineInfo{
-			Id:         "0",
-			InstanceId: "i-0",
-			Status:     params.StatusPending,
+			Id:                      "0",
+			InstanceId:              "i-0",
+			Status:                  params.StatusPending,
+			Life:                    params.Alive,
+			Series:                  "quantal",
+			Jobs:                    []params.MachineJob{JobManageEnviron.ToParams()},
+			Addresses:               []instance.Address{},
+			HardwareCharacteristics: hc,
 		},
 	}})
 

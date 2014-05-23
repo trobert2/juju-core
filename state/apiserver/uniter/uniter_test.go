@@ -6,11 +6,12 @@ package uniter_test
 import (
 	stdtesting "testing"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/charm"
 	envtesting "launchpad.net/juju-core/environs/testing"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/juju/testing"
 	"launchpad.net/juju-core/state"
@@ -21,7 +22,6 @@ import (
 	"launchpad.net/juju-core/state/apiserver/uniter"
 	statetesting "launchpad.net/juju-core/state/testing"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 func Test(t *stdtesting.T) {
@@ -109,7 +109,7 @@ func (s *uniterSuite) TestSetStatus(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 
 	args := params.SetStatus{
-		Entities: []params.SetEntityStatus{
+		Entities: []params.EntityStatus{
 			{Tag: "unit-mysql-0", Status: params.StatusError, Info: "not really"},
 			{Tag: "unit-wordpress-0", Status: params.StatusStopped, Info: "foobar"},
 			{Tag: "unit-foo-42", Status: params.StatusStarted, Info: "blah"},
@@ -320,7 +320,7 @@ func (s *uniterSuite) TestPublicAddress(c *gc.C) {
 	})
 
 	// Now set it an try again.
-	err = s.wordpressUnit.SetPublicAddress("1.2.3.4")
+	err = s.machine0.SetAddresses(instance.NewAddress("1.2.3.4", instance.NetworkPublic))
 	c.Assert(err, gc.IsNil)
 	address, ok := s.wordpressUnit.PublicAddress()
 	c.Assert(address, gc.Equals, "1.2.3.4")
@@ -335,36 +335,6 @@ func (s *uniterSuite) TestPublicAddress(c *gc.C) {
 			{Error: apiservertesting.ErrUnauthorized},
 		},
 	})
-}
-
-func (s *uniterSuite) TestSetPublicAddress(c *gc.C) {
-	err := s.wordpressUnit.SetPublicAddress("1.2.3.4")
-	c.Assert(err, gc.IsNil)
-	address, ok := s.wordpressUnit.PublicAddress()
-	c.Assert(address, gc.Equals, "1.2.3.4")
-	c.Assert(ok, jc.IsTrue)
-
-	args := params.SetEntityAddresses{Entities: []params.SetEntityAddress{
-		{Tag: "unit-mysql-0", Address: "4.3.2.1"},
-		{Tag: "unit-wordpress-0", Address: "4.4.2.2"},
-		{Tag: "unit-foo-42", Address: "2.2.4.4"},
-	}}
-	result, err := s.uniter.SetPublicAddress(args)
-	c.Assert(err, gc.IsNil)
-	c.Assert(result, gc.DeepEquals, params.ErrorResults{
-		Results: []params.ErrorResult{
-			{apiservertesting.ErrUnauthorized},
-			{nil},
-			{apiservertesting.ErrUnauthorized},
-		},
-	})
-
-	// Verify wordpressUnit's address has changed.
-	err = s.wordpressUnit.Refresh()
-	c.Assert(err, gc.IsNil)
-	address, ok = s.wordpressUnit.PublicAddress()
-	c.Assert(address, gc.Equals, "4.4.2.2")
-	c.Assert(ok, jc.IsTrue)
 }
 
 func (s *uniterSuite) TestPrivateAddress(c *gc.C) {
@@ -388,7 +358,7 @@ func (s *uniterSuite) TestPrivateAddress(c *gc.C) {
 	})
 
 	// Now set it and try again.
-	err = s.wordpressUnit.SetPrivateAddress("1.2.3.4")
+	err = s.machine0.SetAddresses(instance.NewAddress("1.2.3.4", instance.NetworkCloudLocal))
 	c.Assert(err, gc.IsNil)
 	address, ok := s.wordpressUnit.PrivateAddress()
 	c.Assert(address, gc.Equals, "1.2.3.4")
@@ -403,36 +373,6 @@ func (s *uniterSuite) TestPrivateAddress(c *gc.C) {
 			{Error: apiservertesting.ErrUnauthorized},
 		},
 	})
-}
-
-func (s *uniterSuite) TestSetPrivateAddress(c *gc.C) {
-	err := s.wordpressUnit.SetPrivateAddress("1.2.3.4")
-	c.Assert(err, gc.IsNil)
-	address, ok := s.wordpressUnit.PrivateAddress()
-	c.Assert(address, gc.Equals, "1.2.3.4")
-	c.Assert(ok, jc.IsTrue)
-
-	args := params.SetEntityAddresses{Entities: []params.SetEntityAddress{
-		{Tag: "unit-mysql-0", Address: "4.3.2.1"},
-		{Tag: "unit-wordpress-0", Address: "4.4.2.2"},
-		{Tag: "unit-foo-42", Address: "2.2.4.4"},
-	}}
-	result, err := s.uniter.SetPrivateAddress(args)
-	c.Assert(err, gc.IsNil)
-	c.Assert(result, gc.DeepEquals, params.ErrorResults{
-		Results: []params.ErrorResult{
-			{apiservertesting.ErrUnauthorized},
-			{nil},
-			{apiservertesting.ErrUnauthorized},
-		},
-	})
-
-	// Verify wordpressUnit's address has changed.
-	err = s.wordpressUnit.Refresh()
-	c.Assert(err, gc.IsNil)
-	address, ok = s.wordpressUnit.PrivateAddress()
-	c.Assert(address, gc.Equals, "4.4.2.2")
-	c.Assert(ok, jc.IsTrue)
 }
 
 func (s *uniterSuite) TestResolved(c *gc.C) {
@@ -596,7 +536,7 @@ func (s *uniterSuite) TestDestroy(c *gc.C) {
 
 	// Verify wordpressUnit is destroyed and removed.
 	err = s.wordpressUnit.Refresh()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *uniterSuite) TestDestroyAllSubordinates(c *gc.C) {
@@ -1011,7 +951,7 @@ func (s *uniterSuite) assertInScope(c *gc.C, relUnit *state.RelationUnit, inScop
 
 func (s *uniterSuite) TestEnterScope(c *gc.C) {
 	// Set wordpressUnit's private address first.
-	err := s.wordpressUnit.SetPrivateAddress("1.2.3.4")
+	err := s.machine0.SetAddresses(instance.NewAddress("1.2.3.4", instance.NetworkCloudLocal))
 	c.Assert(err, gc.IsNil)
 
 	rel := s.addRelation(c, "wordpress", "mysql")
@@ -1106,6 +1046,44 @@ func (s *uniterSuite) TestLeaveScope(c *gc.C) {
 	readSettings, err := relUnit.ReadSettings(s.wordpressUnit.Name())
 	c.Assert(err, gc.IsNil)
 	c.Assert(readSettings, gc.DeepEquals, settings)
+}
+
+func (s *uniterSuite) TestJoinedRelations(c *gc.C) {
+	rel := s.addRelation(c, "wordpress", "mysql")
+	relUnit, err := rel.Unit(s.wordpressUnit)
+	c.Assert(err, gc.IsNil)
+	err = relUnit.EnterScope(nil)
+	c.Assert(err, gc.IsNil)
+
+	args := params.Entities{
+		Entities: []params.Entity{
+			{s.wordpressUnit.Tag()},
+			{s.mysqlUnit.Tag()},
+			{"unit-unknown-1"},
+			{"service-wordpress"},
+			{"machine-0"},
+			{rel.Tag()},
+		},
+	}
+	expect := params.StringsResults{
+		Results: []params.StringsResult{
+			{Result: []string{rel.Tag()}},
+			{Error: apiservertesting.ErrUnauthorized},
+			{Error: apiservertesting.ErrUnauthorized},
+			{Error: apiservertesting.ErrUnauthorized},
+			{Error: apiservertesting.ErrUnauthorized},
+			{Error: apiservertesting.ErrUnauthorized},
+		},
+	}
+	check := func() {
+		result, err := s.uniter.JoinedRelations(args)
+		c.Assert(err, gc.IsNil)
+		c.Assert(result, gc.DeepEquals, expect)
+	}
+	check()
+	err = relUnit.PrepareLeaveScope()
+	c.Assert(err, gc.IsNil)
+	check()
 }
 
 func (s *uniterSuite) TestReadSettings(c *gc.C) {
@@ -1209,11 +1187,11 @@ func (s *uniterSuite) TestReadRemoteSettings(c *gc.C) {
 	// We don't set the remote unit settings on purpose to test the error.
 	expectErr := `cannot read settings for unit "mysql/0" in relation "wordpress:db mysql:server": settings not found`
 	c.Assert(err, gc.IsNil)
-	c.Assert(result, gc.DeepEquals, params.RelationSettingsResults{
+	c.Assert(result, jc.DeepEquals, params.RelationSettingsResults{
 		Results: []params.RelationSettingsResult{
 			{Error: apiservertesting.ErrUnauthorized},
 			{Error: apiservertesting.ErrUnauthorized},
-			{Error: &params.Error{Message: expectErr}},
+			{Error: apiservertesting.ServerError(expectErr)},
 			{Error: apiservertesting.ErrUnauthorized},
 			{Error: apiservertesting.ErrUnauthorized},
 			{Error: apiservertesting.ErrUnauthorized},
@@ -1424,17 +1402,18 @@ func (s *uniterSuite) TestWatchRelationUnits(c *gc.C) {
 }
 
 func (s *uniterSuite) TestAPIAddresses(c *gc.C) {
-	err := s.machine0.SetAddresses([]instance.Address{
-		instance.NewAddress("0.1.2.3"),
-	})
-	c.Assert(err, gc.IsNil)
-	apiAddresses, err := s.State.APIAddresses()
+	hostPorts := [][]instance.HostPort{{{
+		Address: instance.NewAddress("0.1.2.3", instance.NetworkUnknown),
+		Port:    1234,
+	}}}
+
+	err := s.State.SetAPIHostPorts(hostPorts)
 	c.Assert(err, gc.IsNil)
 
 	result, err := s.uniter.APIAddresses()
 	c.Assert(err, gc.IsNil)
 	c.Assert(result, gc.DeepEquals, params.StringsResult{
-		Result: apiAddresses,
+		Result: []string{"0.1.2.3:1234"},
 	})
 }
 

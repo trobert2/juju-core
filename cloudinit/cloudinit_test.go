@@ -10,14 +10,14 @@ import (
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/cloudinit"
-	"launchpad.net/juju-core/testing/testbase"
+	coretesting "launchpad.net/juju-core/testing"
 	sshtesting "launchpad.net/juju-core/utils/ssh/testing"
 )
 
 // TODO integration tests, but how?
 
 type S struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 }
 
 var _ = gc.Suite(S{})
@@ -209,11 +209,18 @@ runcmd:
 		},
 	},
 	{
-		"Packages with --target-release",
-		"packages:\n- --target-release 'precise-updates/cloud-tools' 'mongodb-server'\n- --target-release 'precise-updates/cloud-tools' 'juju'\n",
+		"Packages",
+		"packages:\n- juju\n- ubuntu\n",
 		func(cfg *cloudinit.Config) {
-			cfg.AddPackage("mongodb-server")
 			cfg.AddPackage("juju")
+			cfg.AddPackage("ubuntu")
+		},
+	},
+	{
+		"Packages with --target-release",
+		"packages:\n- --target-release 'precise-updates/cloud-tools' 'mongodb-server'\n",
+		func(cfg *cloudinit.Config) {
+			cfg.AddPackageFromTargetRelease("mongodb-server", "precise-updates/cloud-tools")
 		},
 	},
 	{
@@ -306,7 +313,7 @@ func (S) TestPackages(c *gc.C) {
 	cfg.AddPackage("d!")
 	expectedPackages := []string{"a b c", "d!"}
 	c.Assert(cfg.Packages(), gc.DeepEquals, expectedPackages)
-	cfg.AddPackage("package")
+	cfg.AddPackageFromTargetRelease("package", "series")
 	expectedPackages = append(expectedPackages, "--target-release 'series' 'package'")
 	c.Assert(cfg.Packages(), gc.DeepEquals, expectedPackages)
 }

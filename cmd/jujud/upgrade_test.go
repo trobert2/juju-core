@@ -8,13 +8,13 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/agent"
 	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/state"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
 )
@@ -36,7 +36,7 @@ func (s *UpgradeSuite) SetUpTest(c *gc.C) {
 
 	// Capture all apt commands.
 	s.aptCmds = nil
-	aptCmds := s.HookCommandOutput(&utils.AptCommandOutput, nil, nil)
+	aptCmds := s.agentSuite.HookCommandOutput(&utils.AptCommandOutput, nil, nil)
 	go func() {
 		for cmd := range aptCmds {
 			s.aptCmds = append(s.aptCmds, cmd)
@@ -65,7 +65,7 @@ func (s *UpgradeSuite) TestUpgradeStepsHostMachine(c *gc.C) {
 }
 
 func (s *UpgradeSuite) assertUpgradeSteps(c *gc.C, job state.MachineJob) {
-	s.PatchValue(&version.Current, s.upgradeToVersion)
+	s.agentSuite.PatchValue(&version.Current, s.upgradeToVersion)
 	err := s.State.SetEnvironAgentVersion(s.upgradeToVersion.Number)
 	c.Assert(err, gc.IsNil)
 
@@ -82,7 +82,7 @@ func (s *UpgradeSuite) assertUpgradeSteps(c *gc.C, job state.MachineJob) {
 	// Wait for upgrade steps to run.
 	success := false
 	for attempt := coretesting.LongAttempt.Start(); attempt.Next(); {
-		conf, err := agent.ReadConf(agent.ConfigPath(oldConfig.DataDir(), s.machine.Tag()))
+		conf, err := agent.ReadConfig(agent.ConfigPath(oldConfig.DataDir(), s.machine.Tag()))
 		c.Assert(err, gc.IsNil)
 		success = conf.UpgradedToVersion() == s.upgradeToVersion.Number
 		if success {

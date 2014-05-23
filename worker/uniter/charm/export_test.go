@@ -1,4 +1,4 @@
-// Copyright 2012, 2013 Canonical Ltd.
+// Copyright 2012-2014 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
 package charm
@@ -11,4 +11,14 @@ func GitDeployerDataPath(d Deployer) string {
 // exported so we can get the deployer current git repo from tests.
 func GitDeployerCurrent(d Deployer) *GitDir {
 	return d.(*gitDeployer).current
+}
+
+func IsGitDeployer(d Deployer) bool {
+	_, ok := d.(*gitDeployer)
+	return ok
+}
+
+func IsManifestDeployer(d Deployer) bool {
+	_, ok := d.(*manifestDeployer)
+	return ok
 }

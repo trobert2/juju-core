@@ -5,7 +5,9 @@ package testing
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path"
@@ -14,30 +16,71 @@ import (
 	"strings"
 	"time"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs/filestorage"
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/storage"
+	"launchpad.net/juju-core/environs/sync"
 	"launchpad.net/juju-core/environs/tools"
-	jc "launchpad.net/juju-core/testing/checkers"
+	coretesting "launchpad.net/juju-core/testing"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/utils/set"
 	"launchpad.net/juju-core/version"
+	"launchpad.net/juju-core/version/ubuntu"
 )
 
+func GetMockBundleTools(c *gc.C) tools.BundleToolsFunc {
+	return func(w io.Writer, forceVersion *version.Number) (vers version.Binary, sha256Hash string, err error) {
+		vers = version.Current
+		if forceVersion != nil {
+			vers.Number = *forceVersion
+		}
+		sha256Hash = fmt.Sprintf("%x", sha256.New().Sum(nil))
+		return vers, sha256Hash, err
+	}
+}
+
+// GetMockBuildTools returns a sync.BuildToolsTarballFunc implementation which generates
+// a fake tools tarball.
+func GetMockBuildTools(c *gc.C) sync.BuildToolsTarballFunc {
+	return func(forceVersion *version.Number) (*sync.BuiltTools, error) {
+		vers := version.Current
+		if forceVersion != nil {
+			vers.Number = *forceVersion
+		}
+
+		tgz, checksum := coretesting.TarGz(
+			coretesting.NewTarFile("jujud", 0777, "jujud contents "+vers.String()))
+
+		toolsDir, err := ioutil.TempDir("", "juju-tools")
+		c.Assert(err, gc.IsNil)
+		name := "name"
+		ioutil.WriteFile(filepath.Join(toolsDir, name), tgz, 0777)
+
+		return &sync.BuiltTools{
+			Dir:         toolsDir,
+			StorageName: name,
+			Version:     vers,
+			Size:        int64(len(tgz)),
+			Sha256Hash:  checksum,
+		}, nil
+	}
+}
+
 // MakeTools creates some fake tools with the given version strings.
-func MakeTools(c *gc.C, metadataDir, subdir string, versionStrings []string) {
-	makeTools(c, metadataDir, subdir, versionStrings, false)
+func MakeTools(c *gc.C, metadataDir, subdir string, versionStrings []string) coretools.List {
+	return makeTools(c, metadataDir, subdir, versionStrings, false)
 }
 
-// MakeTools creates some fake tools (including checksums) with the given version strings.
-func MakeToolsWithCheckSum(c *gc.C, metadataDir, subdir string, versionStrings []string) {
-	makeTools(c, metadataDir, subdir, versionStrings, true)
+// MakeToolsWithCheckSum creates some fake tools (including checksums) with the given version strings.
+func MakeToolsWithCheckSum(c *gc.C, metadataDir, subdir string, versionStrings []string) coretools.List {
+	return makeTools(c, metadataDir, subdir, versionStrings, true)
 }
 
-func makeTools(c *gc.C, metadataDir, subdir string, versionStrings []string, withCheckSum bool) {
+func makeTools(c *gc.C, metadataDir, subdir string, versionStrings []string, withCheckSum bool) coretools.List {
 	toolsDir := filepath.Join(metadataDir, storage.BaseToolsPath)
 	if subdir != "" {
 		toolsDir = filepath.Join(toolsDir, subdir)
@@ -64,6 +107,7 @@ func makeTools(c *gc.C, metadataDir, subdir string, versionStrings []string, wit
 	c.Assert(err, gc.IsNil)
 	err = tools.MergeAndWriteMetadata(stor, toolsList, false)
 	c.Assert(err, gc.IsNil)
+	return toolsList
 }
 
 // SHA256sum creates the sha256 checksum for the specified file.
@@ -122,7 +166,7 @@ func ParseMetadataFromStorage(c *gc.C, stor storage.StorageReader, expectMirrors
 				toolsMetadata := item.(*tools.ToolsMetadata)
 				toolsMetadataMap[key] = toolsMetadata
 				toolsVersions.Add(key)
-				seriesVersion, err := simplestreams.SeriesVersion(toolsMetadata.Release)
+				seriesVersion, err := ubuntu.SeriesVersion(toolsMetadata.Release)
 				c.Assert(err, gc.IsNil)
 				productId := fmt.Sprintf("com.ubuntu.juju:%s:%s", seriesVersion, toolsMetadata.Arch)
 				expectedProductIds.Add(productId)
@@ -202,7 +246,7 @@ func UploadToStorage(c *gc.C, stor storage.Storage, versions ...version.Binary) 
 	return uploaded
 }
 
-// UploadToStorage uploads tools and metadata for the specified versions to dir.
+// UploadToDirectory uploads tools and metadata for the specified versions to dir.
 func UploadToDirectory(c *gc.C, dir string, versions ...version.Binary) map[version.Binary]string {
 	uploaded := map[version.Binary]string{}
 	if len(versions) == 0 {

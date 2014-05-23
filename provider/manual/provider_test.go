@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs"
@@ -14,19 +15,17 @@ import (
 	"launchpad.net/juju-core/environs/storage"
 	"launchpad.net/juju-core/provider/manual"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/utils"
 )
 
 type providerSuite struct {
-	testbase.LoggingSuite
+	coretesting.FakeJujuHomeSuite
 }
 
 var _ = gc.Suite(&providerSuite{})
 
 func (s *providerSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.FakeJujuHomeSuite.SetUpTest(c)
 	s.PatchValue(manual.InitUbuntuUser, func(host, user, keys string, stdin io.Reader, stdout io.Writer) error {
 		return nil
 	})

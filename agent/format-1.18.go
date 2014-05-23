@@ -4,6 +4,10 @@
 package agent
 
 import (
+	"fmt"
+	"net"
+	"strconv"
+
 	"launchpad.net/goyaml"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/version"
@@ -41,6 +45,9 @@ type format_1_18Serialization struct {
 	StateServerCert string `yaml:",omitempty"`
 	StateServerKey  string `yaml:",omitempty"`
 	APIPort         int    `yaml:",omitempty"`
+	StatePort       int    `yaml:",omitempty"`
+	SharedSecret    string `yaml:",omitempty"`
+	SystemIdentity  string `yaml:",omitempty"`
 }
 
 func init() {
@@ -52,6 +59,8 @@ func (formatter_1_18) version() string {
 }
 
 func (formatter_1_18) unmarshal(data []byte) (*configInternal, error) {
+	// NOTE: this needs to handle the absence of StatePort and get it from the
+	// address
 	var format format_1_18Serialization
 	if err := goyaml.Unmarshal(data, &format); err != nil {
 		return nil, err
@@ -68,15 +77,15 @@ func (formatter_1_18) unmarshal(data []byte) (*configInternal, error) {
 		jobs:              format.Jobs,
 		upgradedToVersion: *format.UpgradedToVersion,
 		nonce:             format.Nonce,
-		caCert:            []byte(format.CACert),
+		caCert:            format.CACert,
 		oldPassword:       format.OldPassword,
-		stateServerCert:   []byte(format.StateServerCert),
-		stateServerKey:    []byte(format.StateServerKey),
-		apiPort:           format.APIPort,
 		values:            format.Values,
 	}
 	if config.logDir == "" {
 		config.logDir = DefaultLogDir
+	}
+	if config.dataDir == "" {
+		config.dataDir = DefaultDataDir
 	}
 	if len(format.StateAddresses) > 0 {
 		config.stateDetails = &connectionDetails{
@@ -89,6 +98,35 @@ func (formatter_1_18) unmarshal(data []byte) (*configInternal, error) {
 			format.APIAddresses,
 			format.APIPassword,
 		}
+	}
+	if len(format.StateServerKey) != 0 {
+		config.servingInfo = &params.StateServingInfo{
+			Cert:           format.StateServerCert,
+			PrivateKey:     format.StateServerKey,
+			APIPort:        format.APIPort,
+			StatePort:      format.StatePort,
+			SharedSecret:   format.SharedSecret,
+			SystemIdentity: format.SystemIdentity,
+		}
+		// There's a private key, then we need the state port,
+		// which wasn't always in the  1.18 format. If it's not present
+		// we can infer it from the ports in the state addresses.
+		if config.servingInfo.StatePort == 0 {
+			if len(format.StateAddresses) == 0 {
+				return nil, fmt.Errorf("server key found but no state port")
+			}
+
+			_, portString, err := net.SplitHostPort(format.StateAddresses[0])
+			if err != nil {
+				return nil, err
+			}
+			statePort, err := strconv.Atoi(portString)
+			if err != nil {
+				return nil, err
+			}
+			config.servingInfo.StatePort = statePort
+		}
+
 	}
 	return config, nil
 }
@@ -103,10 +141,15 @@ func (formatter_1_18) marshal(config *configInternal) ([]byte, error) {
 		Nonce:             config.nonce,
 		CACert:            string(config.caCert),
 		OldPassword:       config.oldPassword,
-		StateServerCert:   string(config.stateServerCert),
-		StateServerKey:    string(config.stateServerKey),
-		APIPort:           config.apiPort,
 		Values:            config.values,
+	}
+	if config.servingInfo != nil {
+		format.StateServerCert = config.servingInfo.Cert
+		format.StateServerKey = config.servingInfo.PrivateKey
+		format.APIPort = config.servingInfo.APIPort
+		format.StatePort = config.servingInfo.StatePort
+		format.SharedSecret = config.servingInfo.SharedSecret
+		format.SystemIdentity = config.servingInfo.SystemIdentity
 	}
 	if config.stateDetails != nil {
 		format.StateAddresses = config.stateDetails.addresses

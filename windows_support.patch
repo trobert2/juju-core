@@ -1,0 +1,5311 @@
+=== modified file '.bzrignore'
+--- .bzrignore	2014-03-10 00:10:29 +0000
++++ .bzrignore	2014-05-23 22:26:03 +0000
+@@ -8,3 +8,4 @@
+ .emacs.desktop
+ .emacs.desktop.lock
+ *.test
++.git
+
+=== modified file 'agent/agent.go'
+--- agent/agent.go	2014-05-13 04:50:10 +0000
++++ agent/agent.go	2014-05-23 12:12:22 +0000
+@@ -14,6 +14,7 @@
+ 	"regexp"
+ 	"strconv"
+ 	"strings"
++	"runtime"
+ 
+ 	"github.com/juju/errors"
+ 	"github.com/juju/loggo"
+@@ -24,17 +25,18 @@
+ 	"launchpad.net/juju-core/state/api/params"
+ 	"launchpad.net/juju-core/utils"
+ 	"launchpad.net/juju-core/version"
++	"launchpad.net/juju-core/juju/osenv"
+ )
+ 
+ var logger = loggo.GetLogger("juju.agent")
+ 
+ // DefaultLogDir defines the default log directory for juju agents.
+ // It's defined as a variable so it could be overridden in tests.
+-var DefaultLogDir = "/var/log/juju"
++var DefaultLogDir = path.Join(osenv.LogDir, "juju")
+ 
+ // DefaultDataDir defines the default data directory for juju agents.
+ // It's defined as a variable so it could be overridden in tests.
+-var DefaultDataDir = "/var/lib/juju"
++var DefaultDataDir = path.Join(osenv.LibDir, "juju")
+ 
+ // SystemIdentity is the name of the file where the environment SSH key is kept.
+ const SystemIdentity = "system-identity"
+@@ -96,7 +98,7 @@
+ 	// WriteCommands returns shell commands to write the agent configuration.
+ 	// It returns an error if the configuration does not have all the right
+ 	// elements.
+-	WriteCommands() ([]string, error)
++	WriteCommands(serie string) ([]string, error)
+ 
+ 	// StateServingInfo returns the details needed to run
+ 	// a state server and reports whether those details
+@@ -479,6 +481,9 @@
+ 	if err := os.MkdirAll(configDir, 0755); err != nil {
+ 		return fmt.Errorf("cannot create agent config dir %q: %v", configDir, err)
+ 	}
++	if runtime.GOOS == "windows" {
++		return utils.WriteFile(c.configFilePath, data, 0600)
++	}
+ 	return utils.AtomicWriteFile(c.configFilePath, data, 0600)
+ }
+ 
+@@ -594,7 +599,24 @@
+ 	return buf.Bytes(), nil
+ }
+ 
+-func (c *configInternal) WriteCommands() ([]string, error) {
++func (c *configInternal) WriteCommands(serie string) ([]string, error) {
++	if version.IsWindows(serie) {
++		return c.winWriteCommands()
++	}
++	return c.writeCommands()
++}
++
++func (c *configInternal) winWriteCommands() ([]string, error) {
++	data, err := c.fileContents()
++	if err != nil {
++		return nil, err
++	}
++	commands := []string{"mkdir " + utils.ShQuote(c.Dir())}
++	commands = append(commands, winWriteFileCommands(c.File(agentConfigFilename), data, 0600)...)
++	return commands, nil
++}
++
++func (c *configInternal) writeCommands() ([]string, error) {
+ 	data, err := c.fileContents()
+ 	if err != nil {
+ 		return nil, err
+
+=== modified file 'agent/format.go'
+--- agent/format.go	2014-03-06 16:08:30 +0000
++++ agent/format.go	2014-05-22 23:38:22 +0000
+@@ -73,6 +73,12 @@
+ 	}
+ }
+ 
++func winWriteFileCommands(filename string, contents []byte, permission int) []string {
++	return []string{
++		fmt.Sprintf("Set-Content '%s' @\"\n%s\n\"@", filename, contents),
++	}
++}
++
+ func getFormatter(version string) (formatter, error) {
+ 	version = strings.TrimSpace(version)
+ 	format, ok := formats[version]
+
+=== modified file 'agent/tools/toolsdir.go'
+--- agent/tools/toolsdir.go	2014-05-13 04:50:10 +0000
++++ agent/tools/toolsdir.go	2014-05-22 23:40:21 +0000
+@@ -165,23 +165,3 @@
+ 	}
+ 	return &tools, nil
+ }
+-
+-// ChangeAgentTools atomically replaces the agent-specific symlink
+-// under dataDir so it points to the previously unpacked
+-// version vers. It returns the new tools read.
+-func ChangeAgentTools(dataDir string, agentName string, vers version.Binary) (*coretools.Tools, error) {
+-	tools, err := ReadTools(dataDir, vers)
+-	if err != nil {
+-		return nil, err
+-	}
+-	tmpName := ToolsDir(dataDir, "tmplink-"+agentName)
+-	err = os.Symlink(tools.Version.String(), tmpName)
+-	if err != nil {
+-		return nil, fmt.Errorf("cannot create tools symlink: %v", err)
+-	}
+-	err = os.Rename(tmpName, ToolsDir(dataDir, agentName))
+-	if err != nil {
+-		return nil, fmt.Errorf("cannot update tools symlink: %v", err)
+-	}
+-	return tools, nil
+-}
+
+=== added file 'agent/tools/toolsdir_linux.go'
+--- agent/tools/toolsdir_linux.go	1970-01-01 00:00:00 +0000
++++ agent/tools/toolsdir_linux.go	2014-05-22 23:40:56 +0000
+@@ -0,0 +1,30 @@
++package tools
++
++import (
++    "fmt"
++    "os"
++
++    coretools "launchpad.net/juju-core/tools"
++    "launchpad.net/juju-core/version"
++//    "launchpad.net/juju-core/utils"
++)
++
++// ChangeAgentTools atomically replaces the agent-specific symlink
++// under dataDir so it points to the previously unpacked
++// version vers. It returns the new tools read.
++func ChangeAgentTools(dataDir string, agentName string, vers version.Binary) (*coretools.Tools, error) {
++	tools, err := ReadTools(dataDir, vers)
++	if err != nil {
++		return nil, err
++	}
++	tmpName := ToolsDir(dataDir, "tmplink-"+agentName)
++	err = os.Symlink(tools.Version.String(), tmpName)
++	if err != nil {
++		return nil, fmt.Errorf("cannot create tools symlink: %v", err)
++	}
++	err = os.Rename(tmpName, ToolsDir(dataDir, agentName))
++	if err != nil {
++		return nil, fmt.Errorf("cannot update tools symlink: %v", err)
++	}
++	return tools, nil
++}
+\ No newline at end of file
+
+=== added file 'agent/tools/toolsdir_windows.go'
+--- agent/tools/toolsdir_windows.go	1970-01-01 00:00:00 +0000
++++ agent/tools/toolsdir_windows.go	2014-05-23 21:39:46 +0000
+@@ -0,0 +1,43 @@
++package tools
++
++import (
++    "fmt"
++    "os"
++
++    coretools "launchpad.net/juju-core/tools"
++    "launchpad.net/juju-core/version"
++    "launchpad.net/juju-core/utils"
++)
++
++// ChangeAgentTools atomically replaces the agent-specific symlink
++// under dataDir so it points to the previously unpacked
++// version vers. It returns the new tools read.
++func ChangeAgentTools(dataDir string, agentName string, vers version.Binary) (*coretools.Tools, error) {
++    logger.Infof("reading tools %q --> %q", dataDir, vers)
++    tools, err := ReadTools(dataDir, vers)
++    logger.Infof("-->reading tools %q --> %q", tools, err)
++    if err != nil {
++        return nil, err
++    }
++    tmpName := ToolsDir(dataDir, "tmplink-"+agentName)
++    toolPath := ToolsDir(dataDir, tools.Version.String())
++    logger.Infof("Create symlink %q --> %q", tmpName, tools.Version.String())
++    err = utils.Symlink(toolPath, tmpName)
++    logger.Infof("-->Create symlink %q", err)
++    if err != nil {
++        return nil, fmt.Errorf("cannot create tools symlink: %v", err)
++    }
++
++    toolsDir := ToolsDir(dataDir, agentName)
++    if _, err := os.Stat(toolsDir); err == nil {
++        _ = os.RemoveAll(toolsDir)
++    }
++
++    err = os.Rename(tmpName, toolsDir)
++    logger.Infof("-->Rename %q", err)
++    if err != nil {
++        return nil, fmt.Errorf("cannot update tools symlink: %v", err)
++    }
++    logger.Infof("-->Tools %q", tools)
++    return tools, nil
++}
+
+=== added file 'cert/cert_x509.go'
+--- cert/cert_x509.go	1970-01-01 00:00:00 +0000
++++ cert/cert_x509.go	2014-05-23 12:09:59 +0000
+@@ -0,0 +1,78 @@
++package cert
++
++import (
++    "crypto/rand"
++    "io"
++    "fmt"
++    "os"
++    "launchpad.net/juju-core/utils/exec"
++)
++
++func randomID() (string, error){
++    b := make([]byte, 2)
++    _, err := io.ReadFull(rand.Reader, b)
++    if err != nil{
++        return "", err
++    }
++    uuid := fmt.Sprintf("%x", b[0:])
++    return uuid, nil
++}
++
++func Createx509Certificate(password string) (thumbprint, subject string){
++    s, _ := randomID()
++    username := "username-" + s
++    upn := username + "@localhost"
++    subject = "/CN=" + username
++
++    os.Mkdir("working_directory", 0777)
++    h, err := os.Create("working_directory/openssl_config.conf")
++    if err != nil {
++        fmt.Println(err)
++    }
++
++    conf := `distinguished_name  = req_distinguished_name
++[req_distinguished_name]
++[v3_req_client]
++extendedKeyUsage = clientAuth
++subjectAltName = otherName:1.3.6.1.4.1.311.20.2.3;UTF8:` + upn
++    buf := []byte(conf)
++    h.Write(buf)
++    h.Close()
++
++    os.Setenv("OPENSSL_CONF", "working_directory/openssl_config.conf")
++
++    var com exec.RunParams
++
++    com.Commands = `openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -out cert.pem -outform PEM -keyout working_directory/cert.key -subj `+ subject + ` -extensions v3_req_client`
++    resp, err := exec.RunCommands(com)
++    if err != nil {
++        fmt.Println(err)
++    }else if resp.Code != 0{
++        fmt.Println("Error code:", resp.Code)
++    }
++
++
++    com.Commands = `openssl pkcs12 -export -in cert.pem -inkey working_directory/cert.key -out cert.pfx -password pass:` + password
++    resp, err = exec.RunCommands(com)
++    if err != nil {
++        fmt.Println(err)
++    }else if resp.Code != 0{
++        fmt.Println("Error code:", resp.Code)
++    }
++
++    os.Remove(`rm working_directory/openssl_config.conf`)
++    os.RemoveAll("working_directory")
++
++    com.Commands = `openssl x509 -inform PEM -in cert.pem -fingerprint -noout | sed -e 's/\://g' | sed -n 's/^.*=\(.*\)$/\1/p'`
++    resp, err = exec.RunCommands(com)
++    if err != nil {
++        fmt.Println(err)
++    }else if resp.Code != 0{
++        fmt.Println("Error code:", resp.Code)
++    }
++    no := len(resp.Stdout)
++    thumbprint = string(resp.Stdout[:no])
++    fmt.Println(thumbprint)
++    subject = "CN=" + username
++    return
++}
+
+=== modified file 'charm/bundle_test.go'
+--- charm/bundle_test.go	2014-04-02 03:13:07 +0000
++++ charm/bundle_test.go	2014-05-22 23:44:52 +0000
+@@ -21,6 +21,7 @@
+ 	"launchpad.net/juju-core/charm"
+ 	"launchpad.net/juju-core/testing"
+ 	"launchpad.net/juju-core/utils/set"
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ type BundleSuite struct {
+@@ -95,7 +96,7 @@
+ 
+ func (s *BundleSuite) TestManifestSymlink(c *gc.C) {
+ 	srcPath := testing.Charms.ClonedDirPath(c.MkDir(), "dummy")
+-	if err := os.Symlink("../target", filepath.Join(srcPath, "hooks/symlink")); err != nil {
++	if err := utils.Symlink("../target", filepath.Join(srcPath, "hooks/symlink")); err != nil {
+ 		c.Skip("cannot symlink")
+ 	}
+ 	expected := append([]string{"hooks/symlink"}, dummyManifest...)
+@@ -197,7 +198,7 @@
+ 		c.Assert(err, gc.IsNil)
+ 	}
+ 	var haveSymlinks = true
+-	if err := os.Symlink("../target", filepath.Join(srcPath, "hooks/symlink")); err != nil {
++	if err := utils.Symlink("../target", filepath.Join(srcPath, "hooks/symlink")); err != nil {
+ 		haveSymlinks = false
+ 	}
+ 
+@@ -281,7 +282,7 @@
+ 	badLink := filepath.Join(charmDir, "hooks", "badlink")
+ 
+ 	// Symlink targeting a path outside of the charm.
+-	err := os.Symlink("../../target", badLink)
++	err := utils.Symlink("../../target", badLink)
+ 	c.Assert(err, gc.IsNil)
+ 
+ 	bundle := extBundleDir(c, charmDir)
+@@ -293,7 +294,7 @@
+ 
+ 	// Symlink targeting an absolute path.
+ 	os.Remove(badLink)
+-	err = os.Symlink("/target", badLink)
++	err = utils.Symlink("/target", badLink)
+ 	c.Assert(err, gc.IsNil)
+ 
+ 	bundle = extBundleDir(c, charmDir)
+
+=== modified file 'charm/config.go'
+--- charm/config.go	2013-09-11 08:56:44 +0000
++++ charm/config.go	2014-05-22 23:46:45 +0000
+@@ -56,6 +56,7 @@
+ 	"int":     schema.Int(),
+ 	"float":   schema.Float(),
+ 	"boolean": schema.Bool(),
++	"password": schema.String(),
+ }
+ 
+ // parse returns an appropriately-typed value for the supplied string, or
+@@ -71,6 +72,8 @@
+ 		return strconv.ParseFloat(str, 64)
+ 	case "boolean":
+ 		return strconv.ParseBool(str)
++	case "password":
++		return str, nil
+ 	}
+ 	panic(fmt.Errorf("option %q has unknown type %q", name, option.Type))
+ }
+@@ -101,7 +104,7 @@
+ 	}
+ 	for name, option := range config.Options {
+ 		switch option.Type {
+-		case "string", "int", "float", "boolean":
++		case "string", "int", "float", "boolean", "password":
+ 		case "":
+ 			// Missing type is valid in python.
+ 			option.Type = "string"
+
+=== modified file 'charm/dir.go'
+--- charm/dir.go	2014-04-17 00:19:01 +0000
++++ charm/dir.go	2014-05-22 23:48:18 +0000
+@@ -14,6 +14,8 @@
+ 	"strconv"
+ 	"strings"
+ 	"syscall"
++
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ // The Dir type encapsulates access to data and operations
+@@ -200,7 +202,7 @@
+ 	}
+ 	var data []byte
+ 	if mode&os.ModeSymlink != 0 {
+-		target, err := os.Readlink(path)
++		target, err := utils.Readlink(path)
+ 		if err != nil {
+ 			return err
+ 		}
+
+=== modified file 'charm/dir_test.go'
+--- charm/dir_test.go	2014-05-20 04:27:02 +0000
++++ charm/dir_test.go	2014-05-22 23:49:09 +0000
+@@ -17,6 +17,7 @@
+ 
+ 	"launchpad.net/juju-core/charm"
+ 	"launchpad.net/juju-core/testing"
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ type DirSuite struct {
+@@ -46,7 +47,7 @@
+ 	baseDir := c.MkDir()
+ 	charmDir := testing.Charms.ClonedDirPath(baseDir, "dummy")
+ 	var haveSymlinks = true
+-	if err := os.Symlink("../target", filepath.Join(charmDir, "hooks/symlink")); err != nil {
++	if err := utils.Symlink("../target", filepath.Join(charmDir, "hooks/symlink")); err != nil {
+ 		haveSymlinks = false
+ 	}
+ 	dir, err := charm.ReadDir(charmDir)
+@@ -174,7 +175,7 @@
+ 	badFile := filepath.Join(charmDir, "hooks", "badfile")
+ 
+ 	// Symlink targeting a path outside of the charm.
+-	err := os.Symlink("../../target", badFile)
++	err := utils.Symlink("../../target", badFile)
+ 	c.Assert(err, gc.IsNil)
+ 
+ 	dir, err := charm.ReadDir(charmDir)
+@@ -185,7 +186,7 @@
+ 
+ 	// Symlink targeting an absolute path.
+ 	os.Remove(badFile)
+-	err = os.Symlink("/target", badFile)
++	err = utils.Symlink("/target", badFile)
+ 	c.Assert(err, gc.IsNil)
+ 
+ 	dir, err = charm.ReadDir(charmDir)
+
+=== modified file 'charm/repo_test.go'
+--- charm/repo_test.go	2014-05-21 08:44:16 +0000
++++ charm/repo_test.go	2014-05-22 23:49:40 +0000
+@@ -15,6 +15,8 @@
+ 	charmtesting "launchpad.net/juju-core/charm/testing"
+ 	env_config "launchpad.net/juju-core/environs/config"
+ 	"launchpad.net/juju-core/testing"
++
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ type StoreSuite struct {
+@@ -519,7 +521,7 @@
+ func (s *LocalRepoSuite) TestFindsSymlinks(c *gc.C) {
+ 	realPath := testing.Charms.ClonedDirPath(c.MkDir(), "dummy")
+ 	linkPath := filepath.Join(s.seriesPath, "dummy")
+-	err := os.Symlink(realPath, linkPath)
++	err := utils.Symlink(realPath, linkPath)
+ 	c.Assert(err, gc.IsNil)
+ 	ch, err := s.repo.Get(charm.MustParseURL("local:quantal/dummy"))
+ 	c.Assert(err, gc.IsNil)
+
+=== modified file 'charm/url.go'
+--- charm/url.go	2014-05-21 03:07:36 +0000
++++ charm/url.go	2014-05-22 23:50:37 +0000
+@@ -49,7 +49,7 @@
+ var ErrUnresolvedUrl error = fmt.Errorf("charm url series is not resolved")
+ 
+ var (
+-	validSeries = regexp.MustCompile("^[a-z]+([a-z0-9]+)?$")
++	validSeries = regexp.MustCompile("^[a-zA-Z0-9]+([a-zA-Z0-9-]+[a-zA-Z0-9])?$")
+ 	validName   = regexp.MustCompile("^[a-z][a-z0-9]*(-[a-z0-9]*[a-z][a-z0-9]*)*$")
+ )
+ 
+
+=== modified file 'cloudinit/cloudinit.go'
+--- cloudinit/cloudinit.go	2014-02-11 18:24:44 +0000
++++ cloudinit/cloudinit.go	2014-05-22 23:52:12 +0000
+@@ -32,6 +32,20 @@
+ 	return append([]byte("#cloud-config\n"), data...), nil
+ }
+ 
++// Render returns a ps1_sysnative script to be run by cloudbase-init
++func (cfg *Config) RenderWin() ([]byte, error) {
++	// data, err := yaml.Marshal(cfg.attrs)
++	winCmds := cfg.attrs["powershell"]
++	var script []byte
++	header := "#ps1_sysnative\r\n"
++	script = append(script, header...)
++	for _, value := range winCmds.([]*command) {
++            script = append(script, value.literal...)
++            
++    }
++	return script, nil
++}
++
+ func (cfg *Config) set(opt string, yes bool, value interface{}) {
+ 	if yes {
+ 		cfg.attrs[opt] = value
+
+=== modified file 'cloudinit/options.go'
+--- cloudinit/options.go	2014-04-30 23:18:40 +0000
++++ cloudinit/options.go	2014-05-22 23:55:18 +0000
+@@ -179,6 +179,13 @@
+ 	cfg.addCmd("runcmd", &command{literal: cmd})
+ }
+ 
++// AddPSCmd adds a powershell command to be executed
++// at first boot by cloudbase-init
++func (cfg *Config) AddPSCmd(cmd string) {
++	cmdLine := fmt.Sprintf("%s\r\n", cmd)
++	cfg.addCmd("powershell", &command{literal: cmdLine})
++}
++
+ // AddRunCmdArgs is like AddRunCmd except that the command
+ // will be executed with the given arguments properly quoted.
+ func (cfg *Config) AddRunCmdArgs(args ...string) {
+@@ -317,6 +324,13 @@
+ 	}
+ }
+ 
++// AddPSScripts is a simple shorthand for calling AddRunCmd multiple times.
++func (cfg *Config) AddPSScripts(scripts ...string) {
++	for _, s := range scripts {
++		cfg.AddPSCmd(s)
++	}
++}
++
+ // AddFile will add multiple run_cmd entries to safely set the contents of a
+ // specific file to the requested contents.
+ func (cfg *Config) AddFile(filename, data string, mode uint) {
+@@ -334,6 +348,12 @@
+ 	)
+ }
+ 
++func (cfg *Config) WinAddFile(filename, data string, mode uint) {
++	cfg.AddPSScripts(
++		fmt.Sprintf("Set-Content '%s' @\"\n%s\n\"@", filename, data),
++	)
++}
++
+ func shquote(p string) string {
+ 	return utils.ShQuote(p)
+ }
+
+=== modified file 'cloudinit/sshinit/configure_test.go'
+--- cloudinit/sshinit/configure_test.go	2014-05-20 04:27:02 +0000
++++ cloudinit/sshinit/configure_test.go	2014-05-22 23:56:28 +0000
+@@ -58,7 +58,7 @@
+ 		mcfg.InstanceId = "instance-id"
+ 		mcfg.Jobs = []params.MachineJob{params.JobManageEnviron, params.JobHostUnits}
+ 	} else {
+-		mcfg = environs.NewMachineConfig("0", "ya", nil, nil, nil, nil)
++		mcfg = environs.NewMachineConfig("0", "ya", "", nil, nil, nil, nil)
+ 		mcfg.Jobs = []params.MachineJob{params.JobHostUnits}
+ 	}
+ 	mcfg.Tools = &tools.Tools{
+
+=== modified file 'cmd/jujud/agent.go'
+--- cmd/jujud/agent.go	2014-05-16 02:43:52 +0000
++++ cmd/jujud/agent.go	2014-05-23 00:01:15 +0000
+@@ -16,6 +16,7 @@
+ 	"launchpad.net/juju-core/agent"
+ 	"launchpad.net/juju-core/cmd"
+ 	"launchpad.net/juju-core/instance"
++	"launchpad.net/juju-core/juju/osenv"
+ 	"launchpad.net/juju-core/state"
+ 	"launchpad.net/juju-core/state/api"
+ 	apiagent "launchpad.net/juju-core/state/api/agent"
+@@ -43,6 +44,7 @@
+ 	dataDir string
+ 	mu      sync.Mutex
+ 	_config agent.ConfigSetterWriter
++	logfile string
+ }
+ 
+ // AddFlags injects common agent flags into f.
+@@ -51,7 +53,7 @@
+ 	// We need to pass a config location here instead and
+ 	// use it to locate the conf and the infer the data-dir
+ 	// from there instead of passing it like that.
+-	f.StringVar(&c.dataDir, "data-dir", "/var/lib/juju", "directory for juju data")
++	f.StringVar(&c.dataDir, "data-dir", osenv.DataDir, "directory for juju data")
+ }
+ 
+ func (c *AgentConf) CheckArgs(args []string) error {
+
+=== modified file 'cmd/jujud/machine.go'
+--- cmd/jujud/machine.go	2014-05-19 12:59:11 +0000
++++ cmd/jujud/machine.go	2014-05-23 00:09:15 +0000
+@@ -20,6 +20,7 @@
+ 	"launchpad.net/juju-core/agent"
+ 	"launchpad.net/juju-core/agent/mongo"
+ 	"launchpad.net/juju-core/charm"
++	"launchpad.net/juju-core/juju/osenv"
+ 	"launchpad.net/juju-core/cmd"
+ 	"launchpad.net/juju-core/container/kvm"
+ 	"launchpad.net/juju-core/environs"
+@@ -37,25 +38,25 @@
+ 	"launchpad.net/juju-core/utils/voyeur"
+ 	"launchpad.net/juju-core/version"
+ 	"launchpad.net/juju-core/worker"
+-	"launchpad.net/juju-core/worker/apiaddressupdater"
+-	"launchpad.net/juju-core/worker/authenticationworker"
+-	"launchpad.net/juju-core/worker/charmrevisionworker"
++	// "launchpad.net/juju-core/worker/apiaddressupdater"
++	// "launchpad.net/juju-core/worker/authenticationworker"
++	// "launchpad.net/juju-core/worker/charmrevisionworker"
+ 	"launchpad.net/juju-core/worker/cleaner"
+-	"launchpad.net/juju-core/worker/deployer"
+-	"launchpad.net/juju-core/worker/firewaller"
++	// "launchpad.net/juju-core/worker/deployer"
++	// "launchpad.net/juju-core/worker/firewaller"
+ 	"launchpad.net/juju-core/worker/instancepoller"
+ 	"launchpad.net/juju-core/worker/localstorage"
+-	workerlogger "launchpad.net/juju-core/worker/logger"
+-	"launchpad.net/juju-core/worker/machineenvironmentworker"
+-	"launchpad.net/juju-core/worker/machiner"
++	// workerlogger "launchpad.net/juju-core/worker/logger"
++	// "launchpad.net/juju-core/worker/machineenvironmentworker"
++	// "launchpad.net/juju-core/worker/machiner"
+ 	"launchpad.net/juju-core/worker/minunitsworker"
+ 	"launchpad.net/juju-core/worker/peergrouper"
+ 	"launchpad.net/juju-core/worker/provisioner"
+ 	"launchpad.net/juju-core/worker/resumer"
+-	"launchpad.net/juju-core/worker/rsyslog"
++	// "launchpad.net/juju-core/worker/rsyslog"
+ 	"launchpad.net/juju-core/worker/singular"
+ 	"launchpad.net/juju-core/worker/terminationworker"
+-	"launchpad.net/juju-core/worker/upgrader"
++	// "launchpad.net/juju-core/worker/upgrader"
+ )
+ 
+ var logger = loggo.GetLogger("juju.cmd.jujud")
+@@ -69,7 +70,7 @@
+ 
+ var (
+ 	retryDelay      = 3 * time.Second
+-	jujuRun         = "/usr/local/bin/juju-run"
++	jujuRun         = osenv.JujuRun
+ 	useMultipleCPUs = utils.UseMultipleCPUs
+ 
+ 	// The following are defined as variables to
+@@ -222,123 +223,6 @@
+ 	}
+ }
+ 
+-// APIWorker returns a Worker that connects to the API and starts any
+-// workers that need an API connection.
+-func (a *MachineAgent) APIWorker() (worker.Worker, error) {
+-	agentConfig := a.CurrentConfig()
+-	st, entity, err := openAPIState(agentConfig, a)
+-	if err != nil {
+-		return nil, err
+-	}
+-	reportOpenedAPI(st)
+-
+-	// Refresh the configuration, since it may have been updated after opening state.
+-	agentConfig = a.CurrentConfig()
+-
+-	for _, job := range entity.Jobs() {
+-		if job.NeedsState() {
+-			info, err := st.Agent().StateServingInfo()
+-			if err != nil {
+-				return nil, fmt.Errorf("cannot get state serving info: %v", err)
+-			}
+-			err = a.ChangeConfig(func(config agent.ConfigSetter) {
+-				config.SetStateServingInfo(info)
+-			})
+-			if err != nil {
+-				return nil, err
+-			}
+-			agentConfig = a.CurrentConfig()
+-			break
+-		}
+-	}
+-
+-	rsyslogMode := rsyslog.RsyslogModeForwarding
+-	runner := newRunner(connectionIsFatal(st), moreImportant)
+-	var singularRunner worker.Runner
+-	for _, job := range entity.Jobs() {
+-		if job == params.JobManageEnviron {
+-			rsyslogMode = rsyslog.RsyslogModeAccumulate
+-			conn := singularAPIConn{st, st.Agent()}
+-			singularRunner, err = newSingularRunner(runner, conn)
+-			if err != nil {
+-				return nil, fmt.Errorf("cannot make singular API Runner: %v", err)
+-			}
+-			break
+-		}
+-	}
+-
+-	// Run the upgrader and the upgrade-steps worker without waiting for
+-	// the upgrade steps to complete.
+-	runner.StartWorker("upgrader", func() (worker.Worker, error) {
+-		return upgrader.NewUpgrader(st.Upgrader(), agentConfig), nil
+-	})
+-	runner.StartWorker("upgrade-steps", func() (worker.Worker, error) {
+-		return a.upgradeWorker(st, entity.Jobs(), agentConfig), nil
+-	})
+-
+-	// All other workers must wait for the upgrade steps to complete
+-	// before starting.
+-	a.startWorkerAfterUpgrade(runner, "machiner", func() (worker.Worker, error) {
+-		return machiner.NewMachiner(st.Machiner(), agentConfig), nil
+-	})
+-	a.startWorkerAfterUpgrade(runner, "apiaddressupdater", func() (worker.Worker, error) {
+-		return apiaddressupdater.NewAPIAddressUpdater(st.Machiner(), a), nil
+-	})
+-	a.startWorkerAfterUpgrade(runner, "logger", func() (worker.Worker, error) {
+-		return workerlogger.NewLogger(st.Logger(), agentConfig), nil
+-	})
+-	a.startWorkerAfterUpgrade(runner, "machineenvironmentworker", func() (worker.Worker, error) {
+-		return machineenvironmentworker.NewMachineEnvironmentWorker(st.Environment(), agentConfig), nil
+-	})
+-	a.startWorkerAfterUpgrade(runner, "rsyslog", func() (worker.Worker, error) {
+-		return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslogMode)
+-	})
+-
+-	// If not a local provider bootstrap machine, start the worker to
+-	// manage SSH keys.
+-	providerType := agentConfig.Value(agent.ProviderType)
+-	if providerType != provider.Local || a.MachineId != bootstrapMachineId {
+-		a.startWorkerAfterUpgrade(runner, "authenticationworker", func() (worker.Worker, error) {
+-			return authenticationworker.NewWorker(st.KeyUpdater(), agentConfig), nil
+-		})
+-	}
+-
+-	// Perform the operations needed to set up hosting for containers.
+-	if err := a.setupContainerSupport(runner, st, entity, agentConfig); err != nil {
+-		return nil, fmt.Errorf("setting up container support: %v", err)
+-	}
+-	for _, job := range entity.Jobs() {
+-		switch job {
+-		case params.JobHostUnits:
+-			a.startWorkerAfterUpgrade(runner, "deployer", func() (worker.Worker, error) {
+-				apiDeployer := st.Deployer()
+-				context := newDeployContext(apiDeployer, agentConfig)
+-				return deployer.NewDeployer(apiDeployer, context), nil
+-			})
+-		case params.JobManageEnviron:
+-			a.startWorkerAfterUpgrade(singularRunner, "environ-provisioner", func() (worker.Worker, error) {
+-				return provisioner.NewEnvironProvisioner(st.Provisioner(), agentConfig), nil
+-			})
+-			// TODO(axw) 2013-09-24 bug #1229506
+-			// Make another job to enable the firewaller. Not all
+-			// environments are capable of managing ports
+-			// centrally.
+-			a.startWorkerAfterUpgrade(singularRunner, "firewaller", func() (worker.Worker, error) {
+-				return firewaller.NewFirewaller(st.Firewaller())
+-			})
+-			a.startWorkerAfterUpgrade(singularRunner, "charm-revision-updater", func() (worker.Worker, error) {
+-				return charmrevisionworker.NewRevisionUpdateWorker(st.CharmRevisionUpdater()), nil
+-			})
+-		case params.JobManageStateDeprecated:
+-			// Legacy environments may set this, but we ignore it.
+-		default:
+-			// TODO(dimitern): Once all workers moved over to using
+-			// the API, report "unknown job type" here.
+-		}
+-	}
+-	return newCloseWorker(runner, st), nil // Note: a worker.Runner is itself a worker.Worker.
+-}
+-
+ // setupContainerSupport determines what containers can be run on this machine and
+ // initialises suitable infrastructure to support such containers.
+ func (a *MachineAgent) setupContainerSupport(runner worker.Runner, st *api.State, entity *apiagent.Entity, agentConfig agent.Config) error {
+@@ -803,8 +687,12 @@
+ 	if err := os.Remove(jujuRun); err != nil && !os.IsNotExist(err) {
+ 		return err
+ 	}
+-	jujud := filepath.Join(dataDir, "tools", a.Tag(), "jujud")
+-	return os.Symlink(jujud, jujuRun)
++	jujuName := "jujud"
++	if runtime.GOOS == "windows" {
++		jujuName = "jujud.exe"
++	}
++	jujud := filepath.Join(dataDir, "tools", a.Tag(), jujuName)
++	return utils.Symlink(jujud, jujuRun)
+ }
+ 
+ func (a *MachineAgent) uninstallAgent(agentConfig agent.Config) error {
+
+=== added file 'cmd/jujud/machine_linux.go'
+--- cmd/jujud/machine_linux.go	1970-01-01 00:00:00 +0000
++++ cmd/jujud/machine_linux.go	2014-05-23 00:05:48 +0000
+@@ -0,0 +1,141 @@
++package main
++
++import (
++    //"os"
++    "fmt"
++    //"path/filepath"
++
++    "launchpad.net/juju-core/agent"
++    "launchpad.net/juju-core/worker"
++    "launchpad.net/juju-core/worker/authenticationworker"
++    "launchpad.net/juju-core/worker/charmrevisionworker"
++    "launchpad.net/juju-core/worker/deployer"
++    "launchpad.net/juju-core/worker/firewaller"
++    workerlogger "launchpad.net/juju-core/worker/logger"
++    "launchpad.net/juju-core/worker/machineenvironmentworker"
++    "launchpad.net/juju-core/worker/machiner"
++    "launchpad.net/juju-core/worker/rsyslog"
++    "launchpad.net/juju-core/worker/upgrader"
++    "launchpad.net/juju-core/state/api/params"
++    "launchpad.net/juju-core/provider"
++    "launchpad.net/juju-core/worker/provisioner"
++    // "launchpad.net/juju-core/utils"
++    "launchpad.net/juju-core/worker/apiaddressupdater"
++)
++
++// APIWorker returns a Worker that connects to the API and starts any
++// workers that need an API connection.
++func (a *MachineAgent) APIWorker() (worker.Worker, error) {
++	agentConfig := a.CurrentConfig()
++	st, entity, err := openAPIState(agentConfig, a)
++	if err != nil {
++		return nil, err
++	}
++	reportOpenedAPI(st)
++
++	// Refresh the configuration, since it may have been updated after opening state.
++	agentConfig = a.CurrentConfig()
++
++	for _, job := range entity.Jobs() {
++		if job.NeedsState() {
++			info, err := st.Agent().StateServingInfo()
++			if err != nil {
++				return nil, fmt.Errorf("cannot get state serving info: %v", err)
++			}
++			err = a.ChangeConfig(func(config agent.ConfigSetter) {
++				config.SetStateServingInfo(info)
++			})
++			if err != nil {
++				return nil, err
++			}
++			agentConfig = a.CurrentConfig()
++			break
++		}
++	}
++
++	rsyslogMode := rsyslog.RsyslogModeForwarding
++	runner := newRunner(connectionIsFatal(st), moreImportant)
++	var singularRunner worker.Runner
++	for _, job := range entity.Jobs() {
++		if job == params.JobManageEnviron {
++			rsyslogMode = rsyslog.RsyslogModeAccumulate
++			conn := singularAPIConn{st, st.Agent()}
++			singularRunner, err = newSingularRunner(runner, conn)
++			if err != nil {
++				return nil, fmt.Errorf("cannot make singular API Runner: %v", err)
++			}
++			break
++		}
++	}
++
++	// Run the upgrader and the upgrade-steps worker without waiting for
++	// the upgrade steps to complete.
++	runner.StartWorker("upgrader", func() (worker.Worker, error) {
++		return upgrader.NewUpgrader(st.Upgrader(), agentConfig), nil
++	})
++	runner.StartWorker("upgrade-steps", func() (worker.Worker, error) {
++		return a.upgradeWorker(st, entity.Jobs(), agentConfig), nil
++	})
++
++	// All other workers must wait for the upgrade steps to complete
++	// before starting.
++	a.startWorkerAfterUpgrade(runner, "machiner", func() (worker.Worker, error) {
++		return machiner.NewMachiner(st.Machiner(), agentConfig), nil
++	})
++	a.startWorkerAfterUpgrade(runner, "apiaddressupdater", func() (worker.Worker, error) {
++		return apiaddressupdater.NewAPIAddressUpdater(st.Machiner(), a), nil
++	})
++	a.startWorkerAfterUpgrade(runner, "logger", func() (worker.Worker, error) {
++		return workerlogger.NewLogger(st.Logger(), agentConfig), nil
++	})
++	a.startWorkerAfterUpgrade(runner, "machineenvironmentworker", func() (worker.Worker, error) {
++		return machineenvironmentworker.NewMachineEnvironmentWorker(st.Environment(), agentConfig), nil
++	})
++	a.startWorkerAfterUpgrade(runner, "rsyslog", func() (worker.Worker, error) {
++		return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslogMode)
++	})
++
++	// If not a local provider bootstrap machine, start the worker to
++	// manage SSH keys.
++	providerType := agentConfig.Value(agent.ProviderType)
++	if providerType != provider.Local || a.MachineId != bootstrapMachineId {
++		a.startWorkerAfterUpgrade(runner, "authenticationworker", func() (worker.Worker, error) {
++			return authenticationworker.NewWorker(st.KeyUpdater(), agentConfig), nil
++		})
++	}
++
++	// Perform the operations needed to set up hosting for containers.
++	if err := a.setupContainerSupport(runner, st, entity, agentConfig); err != nil {
++		return nil, fmt.Errorf("setting up container support: %v", err)
++	}
++	for _, job := range entity.Jobs() {
++		switch job {
++		case params.JobHostUnits:
++			a.startWorkerAfterUpgrade(runner, "deployer", func() (worker.Worker, error) {
++				apiDeployer := st.Deployer()
++				context := newDeployContext(apiDeployer, agentConfig)
++				return deployer.NewDeployer(apiDeployer, context), nil
++			})
++		case params.JobManageEnviron:
++			a.startWorkerAfterUpgrade(singularRunner, "environ-provisioner", func() (worker.Worker, error) {
++				return provisioner.NewEnvironProvisioner(st.Provisioner(), agentConfig), nil
++			})
++			// TODO(axw) 2013-09-24 bug #1229506
++			// Make another job to enable the firewaller. Not all
++			// environments are capable of managing ports
++			// centrally.
++			a.startWorkerAfterUpgrade(singularRunner, "firewaller", func() (worker.Worker, error) {
++				return firewaller.NewFirewaller(st.Firewaller())
++			})
++			a.startWorkerAfterUpgrade(singularRunner, "charm-revision-updater", func() (worker.Worker, error) {
++				return charmrevisionworker.NewRevisionUpdateWorker(st.CharmRevisionUpdater()), nil
++			})
++		case params.JobManageStateDeprecated:
++			// Legacy environments may set this, but we ignore it.
++		default:
++			// TODO(dimitern): Once all workers moved over to using
++			// the API, report "unknown job type" here.
++		}
++	}
++	return newCloseWorker(runner, st), nil // Note: a worker.Runner is itself a worker.Worker.
++}
+
+=== modified file 'cmd/jujud/machine_test.go'
+--- cmd/jujud/machine_test.go	2014-05-19 13:07:51 +0000
++++ cmd/jujud/machine_test.go	2014-05-23 00:13:55 +0000
+@@ -837,7 +837,7 @@
+ }
+ 
+ func (s *MachineSuite) TestMachineAgentSymlinkJujuRunExists(c *gc.C) {
+-	err := os.Symlink("/nowhere/special", jujuRun)
++	err := utils.Symlink("/nowhere/special", jujuRun)
+ 	c.Assert(err, gc.IsNil)
+ 	_, err = os.Stat(jujuRun)
+ 	c.Assert(err, jc.Satisfies, os.IsNotExist)
+@@ -845,7 +845,7 @@
+ 		// juju-run should have been recreated
+ 		_, err := os.Stat(jujuRun)
+ 		c.Assert(err, gc.IsNil)
+-		link, err := os.Readlink(jujuRun)
++		link, err := utils.Readlink(jujuRun)
+ 		c.Assert(err, gc.IsNil)
+ 		c.Assert(link, gc.Not(gc.Equals), "/nowhere/special")
+ 	})
+
+=== added file 'cmd/jujud/machine_windows.go'
+--- cmd/jujud/machine_windows.go	1970-01-01 00:00:00 +0000
++++ cmd/jujud/machine_windows.go	2014-05-23 00:15:54 +0000
+@@ -0,0 +1,153 @@
++package main
++
++import (
++    // "os"
++    "fmt"
++    // "path/filepath"
++
++    "launchpad.net/juju-core/agent"
++    "launchpad.net/juju-core/worker"
++    // "launchpad.net/juju-core/worker/authenticationworker"
++    "launchpad.net/juju-core/worker/charmrevisionworker"
++    "launchpad.net/juju-core/worker/deployer"
++    "launchpad.net/juju-core/worker/firewaller"
++    workerlogger "launchpad.net/juju-core/worker/logger"
++    // "launchpad.net/juju-core/worker/machineenvironmentworker"
++    "launchpad.net/juju-core/worker/machiner"
++    // "launchpad.net/juju-core/worker/rsyslog"
++    "launchpad.net/juju-core/worker/upgrader"
++    "launchpad.net/juju-core/worker/apiaddressupdater"
++    "launchpad.net/juju-core/state/api/params"
++    // "launchpad.net/juju-core/provider"
++    "launchpad.net/juju-core/worker/provisioner"
++    // "launchpad.net/juju-core/utils"
++)
++
++// APIWorker returns a Worker that connects to the API and starts any
++// workers that need an API connection.
++func (a *MachineAgent) APIWorker() (worker.Worker, error) {
++	agentConfig := a.CurrentConfig()
++	st, entity, err := openAPIState(agentConfig, a)
++	if err != nil {
++		return nil, err
++	}
++	reportOpenedAPI(st)
++
++	// Refresh the configuration, since it may have been updated after opening state.
++	agentConfig = a.CurrentConfig()
++
++	for _, job := range entity.Jobs() {
++		if job.NeedsState() {
++			info, err := st.Agent().StateServingInfo()
++			if err != nil {
++				return nil, fmt.Errorf("cannot get state serving info: %v", err)
++			}
++			err = a.ChangeConfig(func(config agent.ConfigSetter) {
++				config.SetStateServingInfo(info)
++			})
++			if err != nil {
++				return nil, err
++			}
++			agentConfig = a.CurrentConfig()
++			break
++		}
++	}
++
++	// rsyslogMode := rsyslog.RsyslogModeForwarding
++	runner := newRunner(connectionIsFatal(st), moreImportant)
++	var singularRunner worker.Runner
++	/*
++	for _, job := range entity.Jobs() {
++		if job == params.JobManageEnviron {
++			rsyslogMode = rsyslog.RsyslogModeAccumulate
++			conn := singularAPIConn{st, st.Agent()}
++			singularRunner, err = newSingularRunner(runner, conn)
++			if err != nil {
++				return nil, fmt.Errorf("cannot make singular API Runner: %v", err)
++			}
++			break
++		}
++	} */
++
++	// Run the upgrader and the upgrade-steps worker without waiting for
++	// the upgrade steps to complete.
++	runner.StartWorker("upgrader", func() (worker.Worker, error) {
++		return upgrader.NewUpgrader(st.Upgrader(), agentConfig), nil
++	})
++	runner.StartWorker("upgrade-steps", func() (worker.Worker, error) {
++		return a.upgradeWorker(st, entity.Jobs(), agentConfig), nil
++	})
++
++	// All other workers must wait for the upgrade steps to complete
++	// before starting.
++	a.startWorkerAfterUpgrade(runner, "machiner", func() (worker.Worker, error) {
++		return machiner.NewMachiner(st.Machiner(), agentConfig), nil
++	})
++	a.startWorkerAfterUpgrade(runner, "apiaddressupdater", func() (worker.Worker, error) {
++		return apiaddressupdater.NewAPIAddressUpdater(st.Machiner(), a), nil
++	})
++	a.startWorkerAfterUpgrade(runner, "logger", func() (worker.Worker, error) {
++		return workerlogger.NewLogger(st.Logger(), agentConfig), nil
++	})
++
++	// TODO: gsamfira: Port machineenvironmentworker to windows. Proxy settings can be written
++    // in the registry
++	/*
++	a.startWorkerAfterUpgrade(runner, "machineenvironmentworker", func() (worker.Worker, error) {
++		return machineenvironmentworker.NewMachineEnvironmentWorker(st.Environment(), agentConfig), nil
++	})
++	*/
++	// gsamfira: No syslog support on windows (yet)
++	/*
++	a.startWorkerAfterUpgrade(runner, "rsyslog", func() (worker.Worker, error) {
++		return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslogMode)
++	})
++	*/
++	// If not a local provider bootstrap machine, start the worker to
++	// manage SSH keys.
++	
++	// TODO: gsamfira: This will need to be ported at a later time to setup x509 keys for
++    // WinRm
++	/*
++	providerType := agentConfig.Value(agent.ProviderType)
++	if providerType != provider.Local || a.MachineId != bootstrapMachineId {
++		a.startWorkerAfterUpgrade(runner, "authenticationworker", func() (worker.Worker, error) {
++			return authenticationworker.NewWorker(st.KeyUpdater(), agentConfig), nil
++		})
++	}
++	*/
++	// Perform the operations needed to set up hosting for containers.
++	if err := a.setupContainerSupport(runner, st, entity, agentConfig); err != nil {
++		return nil, fmt.Errorf("setting up container support: %v", err)
++	}
++	for _, job := range entity.Jobs() {
++		switch job {
++		case params.JobHostUnits:
++			a.startWorkerAfterUpgrade(runner, "deployer", func() (worker.Worker, error) {
++				apiDeployer := st.Deployer()
++				context := newDeployContext(apiDeployer, agentConfig)
++				return deployer.NewDeployer(apiDeployer, context), nil
++			})
++		case params.JobManageEnviron:
++			a.startWorkerAfterUpgrade(singularRunner, "environ-provisioner", func() (worker.Worker, error) {
++				return provisioner.NewEnvironProvisioner(st.Provisioner(), agentConfig), nil
++			})
++			// TODO(axw) 2013-09-24 bug #1229506
++			// Make another job to enable the firewaller. Not all
++			// environments are capable of managing ports
++			// centrally.
++			a.startWorkerAfterUpgrade(singularRunner, "firewaller", func() (worker.Worker, error) {
++				return firewaller.NewFirewaller(st.Firewaller())
++			})
++			a.startWorkerAfterUpgrade(singularRunner, "charm-revision-updater", func() (worker.Worker, error) {
++				return charmrevisionworker.NewRevisionUpdateWorker(st.CharmRevisionUpdater()), nil
++			})
++		case params.JobManageStateDeprecated:
++			// Legacy environments may set this, but we ignore it.
++		default:
++			// TODO(dimitern): Once all workers moved over to using
++			// the API, report "unknown job type" here.
++		}
++	}
++	return newCloseWorker(runner, st), nil // Note: a worker.Runner is itself a worker.Worker.
++}
+
+=== modified file 'cmd/jujud/main.go'
+--- cmd/jujud/main.go	2014-04-08 16:27:27 +0000
++++ cmd/jujud/main.go	2014-05-23 00:29:36 +0000
+@@ -11,6 +11,7 @@
+ 	"path/filepath"
+ 	"strings"
+ 	"time"
++	"runtime"
+ 
+ 	"github.com/juju/loggo"
+ 
+@@ -20,6 +21,7 @@
+ 
+ 	// Import the providers.
+ 	_ "launchpad.net/juju-core/provider/all"
++	"launchpad.net/juju-core/juju/osenv"
+ )
+ 
+ var jujudDoc = `
+@@ -77,7 +79,7 @@
+ 	if err != nil {
+ 		return
+ 	}
+-	client, err := rpc.Dial("unix", socketPath)
++	client, err := rpc.Dial(osenv.SocketType, socketPath)
+ 	if err != nil {
+ 		return
+ 	}
+@@ -117,14 +119,24 @@
+ 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+ 		os.Exit(2)
+ 	}
++
++	jujudName := "jujud"
++	jujucName := "jujuc"
++	jujuRunName := "juju-run"
++
++	if runtime.GOOS == "windows" {
++		jujudName = "jujud.exe"
++		jujucName = "jujuc.exe"
++		jujuRunName = "juju-run.exe"
++	}
+ 	commandName := filepath.Base(args[0])
+-	if commandName == "jujud" {
++	if commandName == jujudName {
+ 		code, err = jujuDMain(args, ctx)
+-	} else if commandName == "jujuc" {
++	} else if commandName == jujucName {
+ 		fmt.Fprint(os.Stderr, jujudDoc)
+ 		code = 2
+ 		err = fmt.Errorf("jujuc should not be called directly")
+-	} else if commandName == "juju-run" {
++	} else if commandName == jujuRunName {
+ 		code = cmd.Main(&RunCommand{}, ctx, args[1:])
+ 	} else {
+ 		code, err = jujuCMain(commandName, args)
+
+=== modified file 'cmd/jujud/run.go'
+--- cmd/jujud/run.go	2014-04-01 07:47:11 +0000
++++ cmd/jujud/run.go	2014-05-23 00:31:59 +0000
+@@ -8,6 +8,8 @@
+ 	"net/rpc"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
++	"path"
+ 
+ 	"launchpad.net/gnuflag"
+ 
+@@ -16,11 +18,13 @@
+ 	"launchpad.net/juju-core/utils/exec"
+ 	"launchpad.net/juju-core/utils/fslock"
+ 	"launchpad.net/juju-core/worker/uniter"
++	"launchpad.net/juju-core/juju/osenv"
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ var (
+-	AgentDir = "/var/lib/juju/agents"
+-	LockDir  = "/var/lib/juju/locks"
++	AgentDir = path.Join(osenv.DataDir, "agents")
++	LockDir  = path.Join(osenv.DataDir, "locks")
+ )
+ 
+ type RunCommand struct {
+@@ -118,8 +122,15 @@
+ 	}
+ 
+ 	socketPath := filepath.Join(unitDir, uniter.RunListenerFile)
++	if runtime.GOOS == "windows" {
++		sock, errSock := utils.ReadSocketFile(socketPath)
++		if errSock != nil {
++			return nil, errSock
++		}
++		socketPath = sock
++	}
+ 	// make sure the socket exists
+-	client, err := rpc.Dial("unix", socketPath)
++	client, err := rpc.Dial(osenv.SocketType, socketPath)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -149,6 +160,10 @@
+ 
+ 	runCmd := `[ -f "/home/ubuntu/.juju-proxy" ] && . "/home/ubuntu/.juju-proxy"` + "\n" + c.commands
+ 
++	if runtime.GOOS == "windows"{
++		runCmd = c.commands
++	}
++
+ 	return exec.RunCommands(
+ 		exec.RunParams{
+ 			Commands: runCmd,
+
+=== modified file 'cmd/jujud/unit.go'
+--- cmd/jujud/unit.go	2014-05-13 23:18:30 +0000
++++ cmd/jujud/unit.go	2014-05-23 00:36:37 +0000
+@@ -104,9 +104,11 @@
+ 	runner.StartWorker("apiaddressupdater", func() (worker.Worker, error) {
+ 		return apiaddressupdater.NewAPIAddressUpdater(st.Uniter(), a), nil
+ 	})
+-	runner.StartWorker("rsyslog", func() (worker.Worker, error) {
+-		return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslog.RsyslogModeForwarding)
+-	})
++	if runtime.GOOS != "windows" {
++		runner.StartWorker("rsyslog", func() (worker.Worker, error) {
++			return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslog.RsyslogModeForwarding)
++		})
++	}
+ 	return newCloseWorker(runner, st), nil
+ }
+ 
+
+=== modified file 'cmd/logging.go'
+--- cmd/logging.go	2014-03-25 22:31:46 +0000
++++ cmd/logging.go	2014-05-23 00:40:13 +0000
+@@ -59,6 +59,7 @@
+ 	if log.Verbose && log.Quiet {
+ 		return fmt.Errorf(`"verbose" and "quiet" flags clash, please use one or the other, not both`)
+ 	}
++	var writer loggo.Writer
+ 	ctx.quiet = log.Quiet
+ 	ctx.verbose = log.Verbose
+ 	if log.Path != "" {
+@@ -67,7 +68,7 @@
+ 		if err != nil {
+ 			return err
+ 		}
+-		writer := log.GetLogWriter(target)
++		writer = log.GetLogWriter(target)
+ 		err = loggo.RegisterWriter("logfile", writer, loggo.TRACE)
+ 		if err != nil {
+ 			return err
+@@ -88,7 +89,11 @@
+ 
+ 	if log.ShowLog {
+ 		// We replace the default writer to use ctx.Stderr rather than os.Stderr.
+-		writer := log.GetLogWriter(ctx.Stderr)
++		// gsamfira: we may want a debug log in a logfile. If you mean to print it to
++		// stderr, jut omit the --log-file arg
++		if log.Path == "" {
++			writer = log.GetLogWriter(ctx.Stderr)
++		}
+ 		_, err := loggo.ReplaceDefaultWriter(writer)
+ 		if err != nil {
+ 			return err
+@@ -97,7 +102,9 @@
+ 		loggo.RemoveWriter("default")
+ 		// Create a simple writer that doesn't show filenames, or timestamps,
+ 		// and only shows warning or above.
+-		writer := loggo.NewSimpleWriter(ctx.Stderr, &warningFormatter{})
++		if log.Path == "" {
++			writer = loggo.NewSimpleWriter(ctx.Stderr, &warningFormatter{})
++		}
+ 		err := loggo.RegisterWriter("warning", writer, loggo.WARNING)
+ 		if err != nil {
+ 			return err
+
+=== modified file 'container/kvm/live_test.go'
+--- container/kvm/live_test.go	2014-05-20 04:27:02 +0000
++++ container/kvm/live_test.go	2014-05-23 00:40:52 +0000
+@@ -84,7 +84,7 @@
+ 	machineNonce := "fake-nonce"
+ 	stateInfo := jujutesting.FakeStateInfo(machineId)
+ 	apiInfo := jujutesting.FakeAPIInfo(machineId)
+-	machineConfig := environs.NewMachineConfig(machineId, machineNonce, nil, nil, stateInfo, apiInfo)
++	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "", nil, nil, stateInfo, apiInfo)
+ 	network := container.BridgeNetworkConfig("virbr0")
+ 
+ 	machineConfig.Tools = &tools.Tools{
+
+=== modified file 'container/lxc/lxc_test.go'
+--- container/lxc/lxc_test.go	2014-05-20 04:27:02 +0000
++++ container/lxc/lxc_test.go	2014-05-23 00:41:32 +0000
+@@ -27,6 +27,8 @@
+ 	instancetest "launchpad.net/juju-core/instance/testing"
+ 	"launchpad.net/juju-core/juju/osenv"
+ 	coretesting "launchpad.net/juju-core/testing"
++
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ func Test(t *stdtesting.T) {
+@@ -211,7 +213,7 @@
+ 	c.Assert(err, gc.IsNil)
+ 	c.Assert(linkInfo.Mode()&os.ModeSymlink, gc.Equals, os.ModeSymlink)
+ 
+-	location, err := os.Readlink(expectedLinkLocation)
++	location, err := utils.Readlink(expectedLinkLocation)
+ 	c.Assert(err, gc.IsNil)
+ 	c.Assert(location, gc.Equals, expectedTarget)
+ }
+
+=== modified file 'container/testing/common.go'
+--- container/testing/common.go	2014-04-01 16:27:22 +0000
++++ container/testing/common.go	2014-05-23 00:42:10 +0000
+@@ -20,7 +20,7 @@
+ func CreateContainer(c *gc.C, manager container.Manager, machineId string) instance.Instance {
+ 	stateInfo := jujutesting.FakeStateInfo(machineId)
+ 	apiInfo := jujutesting.FakeAPIInfo(machineId)
+-	machineConfig := environs.NewMachineConfig(machineId, "fake-nonce", nil, nil, stateInfo, apiInfo)
++	machineConfig := environs.NewMachineConfig(machineId, "fake-nonce", "", nil, nil, stateInfo, apiInfo)
+ 	machineConfig.Tools = &tools.Tools{
+ 		Version: version.MustParseBinary("2.3.4-foo-bar"),
+ 		URL:     "http://tools.testing.invalid/2.3.4-foo-bar.tgz",
+
+=== modified file 'environs/cloudinit.go'
+--- environs/cloudinit.go	2014-05-13 04:50:10 +0000
++++ environs/cloudinit.go	2014-05-23 01:27:25 +0000
+@@ -5,6 +5,7 @@
+ 
+ import (
+ 	"fmt"
++	"path"
+ 
+ 	"github.com/juju/errors"
+ 
+@@ -19,6 +20,8 @@
+ 	"launchpad.net/juju-core/state/api"
+ 	"launchpad.net/juju-core/state/api/params"
+ 	"launchpad.net/juju-core/utils"
++
++	"launchpad.net/juju-core/version"
+ )
+ 
+ // DataDir is the default data directory.
+@@ -27,17 +30,25 @@
+ var DataDir = agent.DefaultDataDir
+ 
+ // CloudInitOutputLog is the default cloud-init-output.log file path.
+-const CloudInitOutputLog = "/var/log/cloud-init-output.log"
++var CloudInitOutputLog = path.Join(osenv.LogDir, "cloud-init-output.log")
+ 
+ // NewMachineConfig sets up a basic machine configuration, for a non-bootstrap
+ // node.  You'll still need to supply more information, but this takes care of
+ // the fixed entries and the ones that are always needed.
+-func NewMachineConfig(machineID, machineNonce string, includeNetworks, excludeNetworks []string,
++func NewMachineConfig(machineID, machineNonce, machineSeries string, includeNetworks, excludeNetworks []string,
+ 	stateInfo *state.Info, apiInfo *api.Info) *cloudinit.MachineConfig {
++
++	localDataDir := DataDir
++	localLogDir := agent.DefaultLogDir
++	if len(machineSeries) > 3 && version.IsWindows(machineSeries){
++		localDataDir = osenv.WinDataDir
++		localLogDir = osenv.WinLogDir
++	}
++
+ 	mcfg := &cloudinit.MachineConfig{
+ 		// Fixed entries.
+-		DataDir:                 DataDir,
+-		LogDir:                  agent.DefaultLogDir,
++		DataDir:                 localDataDir,
++		LogDir:                  localLogDir,
+ 		Jobs:                    []params.MachineJob{params.JobHostUnits},
+ 		CloudInitOutputLog:      CloudInitOutputLog,
+ 		MachineAgentServiceName: "jujud-" + names.MachineTag(machineID),
+@@ -59,7 +70,7 @@
+ func NewBootstrapMachineConfig(privateSystemSSHKey string) *cloudinit.MachineConfig {
+ 	// For a bootstrap instance, FinishMachineConfig will provide the
+ 	// state.Info and the api.Info. The machine id must *always* be "0".
+-	mcfg := NewMachineConfig("0", state.BootstrapNonce, nil, nil, nil, nil)
++	mcfg := NewMachineConfig("0", state.BootstrapNonce, "", nil, nil, nil, nil)
+ 	mcfg.Bootstrap = true
+ 	mcfg.SystemPrivateSSHKey = privateSystemSSHKey
+ 	mcfg.Jobs = []params.MachineJob{params.JobManageEnviron, params.JobHostUnits}
+@@ -180,7 +191,14 @@
+ 	if err := configureCloudinit(mcfg, cloudcfg); err != nil {
+ 		return nil, err
+ 	}
+-	data, err := cloudcfg.Render()
++	var data []byte
++	var err error
++	if version.IsWindows(mcfg.Tools.Version.Series){
++		data, err = cloudcfg.RenderWin()
++	}else{
++		data, err = cloudcfg.Render()
++	}
++
+ 	logger.Tracef("Generated cloud init:\n%s", string(data))
+ 	if err != nil {
+ 		return nil, err
+
+=== modified file 'environs/cloudinit/cloudinit.go'
+--- environs/cloudinit/cloudinit.go	2014-05-13 04:50:10 +0000
++++ environs/cloudinit/cloudinit.go	2014-05-23 01:20:45 +0000
+@@ -171,6 +171,861 @@
+ // relative to the Juju data-dir.
+ const NonceFile = "nonce.txt"
+ 
++var winPowershellHelperFunctions = `
++
++$ErrorActionPreference = "Stop"
++
++function ExecRetry($command, $maxRetryCount = 10, $retryInterval=2)
++{
++    $currErrorActionPreference = $ErrorActionPreference
++    $ErrorActionPreference = "Continue"
++
++    $retryCount = 0
++    while ($true)
++    {
++        try
++        {
++            & $command
++            break
++        }
++        catch [System.Exception]
++        {
++            $retryCount++
++            if ($retryCount -ge $maxRetryCount)
++            {
++                $ErrorActionPreference = $currErrorActionPreference
++                throw
++            }
++            else
++            {
++                Write-Error $_.Exception
++                Start-Sleep $retryInterval
++            }
++        }
++    }
++
++    $ErrorActionPreference = $currErrorActionPreference
++}
++
++function create-account ([string]$accountName, [string]$accountDescription, [string]$password) {
++	$hostname = hostname
++	$comp = [adsi]"WinNT://$hostname"
++	$user = $comp.Create("User", $accountName)
++	$user.SetPassword($password)
++	$user.SetInfo()
++	$user.description = $accountDescription
++	$user.SetInfo()
++	$User.UserFlags[0] = $User.UserFlags[0] -bor 0x10000
++	$user.SetInfo()
++
++	$objOU = [ADSI]"WinNT://$hostname/Administrators,group"
++	$objOU.add("WinNT://$hostname/$accountName")
++}
++
++$Source = @"
++using System;
++using System.Text;
++using System.Runtime.InteropServices;
++
++namespace PSCloudbase
++{
++    public sealed class Win32CryptApi
++    {
++        public static long CRYPT_SILENT                     = 0x00000040;
++        public static long CRYPT_VERIFYCONTEXT              = 0xF0000000;
++        public static int PROV_RSA_FULL                     = 1;
++
++        [DllImport("advapi32.dll", CharSet=CharSet.Auto, SetLastError=true)]
++        [return : MarshalAs(UnmanagedType.Bool)]
++        public static extern bool CryptAcquireContext(ref IntPtr hProv,
++                                                      StringBuilder pszContainer, // Don't use string, as Powershell replaces $null with an empty string
++                                                      StringBuilder pszProvider, // Don't use string, as Powershell replaces $null with an empty string
++                                                      uint dwProvType,
++                                                      uint dwFlags);
++
++        [DllImport("Advapi32.dll", EntryPoint = "CryptReleaseContext", CharSet = CharSet.Unicode, SetLastError = true)]
++        public static extern bool CryptReleaseContext(IntPtr hProv, Int32 dwFlags);
++
++        [DllImport("advapi32.dll", SetLastError=true)]
++        public static extern bool CryptGenRandom(IntPtr hProv, uint dwLen, byte[] pbBuffer);
++
++        [DllImport("Kernel32.dll")]
++        public static extern uint GetLastError();
++    }
++}
++"@
++
++Add-Type -TypeDefinition $Source -Language CSharp
++
++function Get-RandomPassword
++{
++    [CmdletBinding()]
++    param
++    (
++        [parameter(Mandatory=$true)]
++        [int]$Length
++    )
++    process
++    {
++        $hProvider = 0
++        try
++        {
++            if(![PSCloudbase.Win32CryptApi]::CryptAcquireContext([ref]$hProvider, $null, $null,
++                                                                 [PSCloudbase.Win32CryptApi]::PROV_RSA_FULL,
++                                                                 ([PSCloudbase.Win32CryptApi]::CRYPT_VERIFYCONTEXT -bor
++                                                                  [PSCloudbase.Win32CryptApi]::CRYPT_SILENT)))
++            {
++                throw "CryptAcquireContext failed with error: 0x" + "{0:X0}" -f [PSCloudbase.Win32CryptApi]::GetLastError()
++            }
++
++            $buffer = New-Object byte[] $Length
++            if(![PSCloudbase.Win32CryptApi]::CryptGenRandom($hProvider, $Length, $buffer))
++            {
++                throw "CryptGenRandom failed with error: 0x" + "{0:X0}" -f [PSCloudbase.Win32CryptApi]::GetLastError()
++            }
++
++            $buffer | ForEach-Object { $password += "{0:X0}" -f $_ }
++            return $password
++        }
++        finally
++        {
++            if($hProvider)
++            {
++                $retVal = [PSCloudbase.Win32CryptApi]::CryptReleaseContext($hProvider, 0)
++            }
++        }
++    }
++}
++
++$SourcePolicy = @"
++/*
++Original sources available at: https://bitbucket.org/splatteredbits/carbon
++*/
++
++using System;
++using System.Collections.Generic;
++using System.ComponentModel;
++using System.Runtime.InteropServices;
++using System.Security.Principal;
++using System.Text;
++
++namespace PSCarbon
++{
++    public sealed class Lsa
++    {
++        // ReSharper disable InconsistentNaming
++        [StructLayout(LayoutKind.Sequential)]
++        internal struct LSA_UNICODE_STRING
++        {
++            internal LSA_UNICODE_STRING(string inputString)
++            {
++                if (inputString == null)
++                {
++                    Buffer = IntPtr.Zero;
++                    Length = 0;
++                    MaximumLength = 0;
++                }
++                else
++                {
++                    Buffer = Marshal.StringToHGlobalAuto(inputString);
++                    Length = (ushort)(inputString.Length * UnicodeEncoding.CharSize);
++                    MaximumLength = (ushort)((inputString.Length + 1) * UnicodeEncoding.CharSize);
++                }
++            }
++
++            internal ushort Length;
++            internal ushort MaximumLength;
++            internal IntPtr Buffer;
++        }
++
++        [StructLayout(LayoutKind.Sequential)]
++        internal struct LSA_OBJECT_ATTRIBUTES
++        {
++            internal uint Length;
++            internal IntPtr RootDirectory;
++            internal LSA_UNICODE_STRING ObjectName;
++            internal uint Attributes;
++            internal IntPtr SecurityDescriptor;
++            internal IntPtr SecurityQualityOfService;
++        }
++
++        [StructLayout(LayoutKind.Sequential)]
++        public struct LUID
++        {
++            public uint LowPart;
++            public int HighPart;
++        }
++
++        // ReSharper disable UnusedMember.Local
++        private const uint POLICY_VIEW_LOCAL_INFORMATION = 0x00000001;
++        private const uint POLICY_VIEW_AUDIT_INFORMATION = 0x00000002;
++        private const uint POLICY_GET_PRIVATE_INFORMATION = 0x00000004;
++        private const uint POLICY_TRUST_ADMIN = 0x00000008;
++        private const uint POLICY_CREATE_ACCOUNT = 0x00000010;
++        private const uint POLICY_CREATE_SECRET = 0x00000014;
++        private const uint POLICY_CREATE_PRIVILEGE = 0x00000040;
++        private const uint POLICY_SET_DEFAULT_QUOTA_LIMITS = 0x00000080;
++        private const uint POLICY_SET_AUDIT_REQUIREMENTS = 0x00000100;
++        private const uint POLICY_AUDIT_LOG_ADMIN = 0x00000200;
++        private const uint POLICY_SERVER_ADMIN = 0x00000400;
++        private const uint POLICY_LOOKUP_NAMES = 0x00000800;
++        private const uint POLICY_NOTIFICATION = 0x00001000;
++        // ReSharper restore UnusedMember.Local
++
++        [DllImport("advapi32.dll", CharSet = CharSet.Auto, SetLastError = true)]
++        public static extern bool LookupPrivilegeValue(
++            [MarshalAs(UnmanagedType.LPTStr)] string lpSystemName,
++            [MarshalAs(UnmanagedType.LPTStr)] string lpName,
++            out LUID lpLuid);
++
++        [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
++        private static extern uint LsaAddAccountRights(
++            IntPtr PolicyHandle,
++            IntPtr AccountSid,
++            LSA_UNICODE_STRING[] UserRights,
++            uint CountOfRights);
++
++        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
++        private static extern uint LsaClose(IntPtr ObjectHandle);
++
++        [DllImport("advapi32.dll", SetLastError = true)]
++        private static extern uint LsaEnumerateAccountRights(IntPtr PolicyHandle,
++            IntPtr AccountSid,
++            out IntPtr UserRights,
++            out uint CountOfRights
++            );
++
++        [DllImport("advapi32.dll", SetLastError = true)]
++        private static extern uint LsaFreeMemory(IntPtr pBuffer);
++
++        [DllImport("advapi32.dll")]
++        private static extern int LsaNtStatusToWinError(long status);
++
++        [DllImport("advapi32.dll", SetLastError = true, PreserveSig = true)]
++        private static extern uint LsaOpenPolicy(ref LSA_UNICODE_STRING SystemName, ref LSA_OBJECT_ATTRIBUTES ObjectAttributes, uint DesiredAccess, out IntPtr PolicyHandle );
++
++        [DllImport("advapi32.dll", SetLastError = true, PreserveSig = true)]
++        static extern uint LsaRemoveAccountRights(
++            IntPtr PolicyHandle,
++            IntPtr AccountSid,
++            [MarshalAs(UnmanagedType.U1)]
++            bool AllRights,
++            LSA_UNICODE_STRING[] UserRights,
++            uint CountOfRights);
++        // ReSharper restore InconsistentNaming
++
++        private static IntPtr GetIdentitySid(string identity)
++        {
++            var sid =
++                new NTAccount(identity).Translate(typeof (SecurityIdentifier)) as SecurityIdentifier;
++            if (sid == null)
++            {
++                throw new ArgumentException(string.Format("Account {0} not found.", identity));
++            }
++            var sidBytes = new byte[sid.BinaryLength];
++            sid.GetBinaryForm(sidBytes, 0);
++            var sidPtr = Marshal.AllocHGlobal(sidBytes.Length);
++            Marshal.Copy(sidBytes, 0, sidPtr, sidBytes.Length);
++            return sidPtr;
++        }
++
++        private static IntPtr GetLsaPolicyHandle()
++        {
++            var computerName = Environment.MachineName;
++            IntPtr hPolicy;
++            var objectAttributes = new LSA_OBJECT_ATTRIBUTES
++            {
++                Length = 0,
++                RootDirectory = IntPtr.Zero,
++                Attributes = 0,
++                SecurityDescriptor = IntPtr.Zero,
++                SecurityQualityOfService = IntPtr.Zero
++            };
++
++            const uint ACCESS_MASK = POLICY_CREATE_SECRET | POLICY_LOOKUP_NAMES | POLICY_VIEW_LOCAL_INFORMATION;
++            var machineNameLsa = new LSA_UNICODE_STRING(computerName);
++            var result = LsaOpenPolicy(ref machineNameLsa, ref objectAttributes, ACCESS_MASK, out hPolicy);
++            HandleLsaResult(result);
++            return hPolicy;
++        }
++
++        public static string[] GetPrivileges(string identity)
++        {
++            var sidPtr = GetIdentitySid(identity);
++            var hPolicy = GetLsaPolicyHandle();
++            var rightsPtr = IntPtr.Zero;
++
++            try
++            {
++
++                var privileges = new List<string>();
++
++                uint rightsCount;
++                var result = LsaEnumerateAccountRights(hPolicy, sidPtr, out rightsPtr, out rightsCount);
++                var win32ErrorCode = LsaNtStatusToWinError(result);
++                // the user has no privileges
++                if( win32ErrorCode == STATUS_OBJECT_NAME_NOT_FOUND )
++                {
++                    return new string[0];
++                }
++                HandleLsaResult(result);
++
++                var myLsaus = new LSA_UNICODE_STRING();
++                for (ulong i = 0; i < rightsCount; i++)
++                {
++                    var itemAddr = new IntPtr(rightsPtr.ToInt64() + (long) (i*(ulong) Marshal.SizeOf(myLsaus)));
++                    myLsaus = (LSA_UNICODE_STRING) Marshal.PtrToStructure(itemAddr, myLsaus.GetType());
++                    var cvt = new char[myLsaus.Length/UnicodeEncoding.CharSize];
++                    Marshal.Copy(myLsaus.Buffer, cvt, 0, myLsaus.Length/UnicodeEncoding.CharSize);
++                    var thisRight = new string(cvt);
++                    privileges.Add(thisRight);
++                }
++                return privileges.ToArray();
++            }
++            finally
++            {
++                Marshal.FreeHGlobal(sidPtr);
++                var result = LsaClose(hPolicy);
++                HandleLsaResult(result);
++                result = LsaFreeMemory(rightsPtr);
++                HandleLsaResult(result);
++            }
++        }
++
++        public static void GrantPrivileges(string identity, string[] privileges)
++        {
++            var sidPtr = GetIdentitySid(identity);
++            var hPolicy = GetLsaPolicyHandle();
++
++            try
++            {
++                var lsaPrivileges = StringsToLsaStrings(privileges);
++                var result = LsaAddAccountRights(hPolicy, sidPtr, lsaPrivileges, (uint)lsaPrivileges.Length);
++                HandleLsaResult(result);
++            }
++            finally
++            {
++                Marshal.FreeHGlobal(sidPtr);
++                var result = LsaClose(hPolicy);
++                HandleLsaResult(result);
++            }
++        }
++
++        const int STATUS_SUCCESS = 0x0;
++        const int STATUS_OBJECT_NAME_NOT_FOUND = 0x00000002;
++        const int STATUS_ACCESS_DENIED = 0x00000005;
++        const int STATUS_INVALID_HANDLE = 0x00000006;
++        const int STATUS_UNSUCCESSFUL = 0x0000001F;
++        const int STATUS_INVALID_PARAMETER = 0x00000057;
++        const int STATUS_NO_SUCH_PRIVILEGE = 0x00000521;
++        const int STATUS_INVALID_SERVER_STATE = 0x00000548;
++        const int STATUS_INTERNAL_DB_ERROR = 0x00000567;
++        const int STATUS_INSUFFICIENT_RESOURCES = 0x000005AA;
++
++        private static readonly Dictionary<int, string> ErrorMessages = new Dictionary<int, string>
++                                    {
++                                        {STATUS_OBJECT_NAME_NOT_FOUND, "Object name not found. An object in the LSA policy database was not found. The object may have been specified either by SID or by name, depending on its type."},
++                                        {STATUS_ACCESS_DENIED, "Access denied. Caller does not have the appropriate access to complete the operation."},
++                                        {STATUS_INVALID_HANDLE, "Invalid handle. Indicates an object or RPC handle is not valid in the context used."},
++                                        {STATUS_UNSUCCESSFUL, "Unsuccessful. Generic failure, such as RPC connection failure."},
++                                        {STATUS_INVALID_PARAMETER, "Invalid parameter. One of the parameters is not valid."},
++                                        {STATUS_NO_SUCH_PRIVILEGE, "No such privilege. Indicates a specified privilege does not exist."},
++                                        {STATUS_INVALID_SERVER_STATE, "Invalid server state. Indicates the LSA server is currently disabled."},
++                                        {STATUS_INTERNAL_DB_ERROR, "Internal database error. The LSA database contains an internal inconsistency."},
++                                        {STATUS_INSUFFICIENT_RESOURCES, "Insufficient resources. There are not enough system resources (such as memory to allocate buffers) to complete the call."}
++                                    };
++
++        private static void HandleLsaResult(uint returnCode)
++        {
++            var win32ErrorCode = LsaNtStatusToWinError(returnCode);
++
++            if( win32ErrorCode == STATUS_SUCCESS)
++                return;
++
++            if( ErrorMessages.ContainsKey(win32ErrorCode) )
++            {
++                throw new Win32Exception(win32ErrorCode, ErrorMessages[win32ErrorCode]);
++            }
++
++            throw new Win32Exception(win32ErrorCode);
++        }
++
++        public static void RevokePrivileges(string identity, string[] privileges)
++        {
++            var sidPtr = GetIdentitySid(identity);
++            var hPolicy = GetLsaPolicyHandle();
++
++            try
++            {
++                var currentPrivileges = GetPrivileges(identity);
++                if (currentPrivileges.Length == 0)
++                {
++                    return;
++                }
++                var lsaPrivileges = StringsToLsaStrings(privileges);
++                var result = LsaRemoveAccountRights(hPolicy, sidPtr, false, lsaPrivileges, (uint)lsaPrivileges.Length);
++                HandleLsaResult(result);
++            }
++            finally
++            {
++                Marshal.FreeHGlobal(sidPtr);
++                var result = LsaClose(hPolicy);
++                HandleLsaResult(result);
++            }
++
++        }
++
++        private static LSA_UNICODE_STRING[] StringsToLsaStrings(string[] privileges)
++        {
++            var lsaPrivileges = new LSA_UNICODE_STRING[privileges.Length];
++            for (var idx = 0; idx < privileges.Length; ++idx)
++            {
++                lsaPrivileges[idx] = new LSA_UNICODE_STRING(privileges[idx]);
++            }
++            return lsaPrivileges;
++        }
++    }
++}
++"@
++
++Add-Type -TypeDefinition $SourcePolicy -Language CSharp
++
++$ServiceChangeErrors = @{}
++$ServiceChangeErrors.Add(1, "Not Supported")
++$ServiceChangeErrors.Add(2, "Access Denied")
++$ServiceChangeErrors.Add(3, "Dependent Services Running")
++$ServiceChangeErrors.Add(4, "Invalid Service Control")
++$ServiceChangeErrors.Add(5, "Service Cannot Accept Control")
++$ServiceChangeErrors.Add(6, "Service Not Active")
++$ServiceChangeErrors.Add(7, "Service Request Timeout")
++$ServiceChangeErrors.Add(8, "Unknown Failure")
++$ServiceChangeErrors.Add(9, "Path Not Found")
++$ServiceChangeErrors.Add(10, "Service Already Running")
++$ServiceChangeErrors.Add(11, "Service Database Locked")
++$ServiceChangeErrors.Add(12, "Service Dependency Deleted")
++$ServiceChangeErrors.Add(13, "Service Dependency Failure")
++$ServiceChangeErrors.Add(14, "Service Disabled")
++$ServiceChangeErrors.Add(15, "Service Logon Failure")
++$ServiceChangeErrors.Add(16, "Service Marked For Deletion")
++$ServiceChangeErrors.Add(17, "Service No Thread")
++$ServiceChangeErrors.Add(18, "Status Circular Dependency")
++$ServiceChangeErrors.Add(19, "Status Duplicate Name")
++$ServiceChangeErrors.Add(20, "Status Invalid Name")
++$ServiceChangeErrors.Add(21, "Status Invalid Parameter")
++$ServiceChangeErrors.Add(22, "Status Invalid Service Account")
++$ServiceChangeErrors.Add(23, "Status Service Exists")
++$ServiceChangeErrors.Add(24, "Service Already Paused")
++
++
++function SetAssignPrimaryTokenPrivilege($UserName)
++{
++    $privilege = "SeAssignPrimaryTokenPrivilege"
++    if (![PSCarbon.Lsa]::GetPrivileges($UserName).Contains($privilege))
++    {
++        [PSCarbon.Lsa]::GrantPrivileges($UserName, $privilege)
++    }
++}
++
++function SetUserLogonAsServiceRights($UserName)
++{
++    $privilege = "SeServiceLogonRight"
++    if (![PSCarbon.Lsa]::GetPrivileges($UserName).Contains($privilege))
++    {
++        [PSCarbon.Lsa]::GrantPrivileges($UserName, $privilege)
++    }
++}
++
++$Source = @"
++using System;
++using System.Text;
++using System.Runtime.InteropServices;
++using System.Security.Principal;
++using System.ComponentModel;
++
++namespace PSCloudbase
++{
++    public class ProcessManager
++    {
++        const int LOGON32_LOGON_SERVICE = 5;
++        const int LOGON32_PROVIDER_DEFAULT = 0;
++        const int TOKEN_ALL_ACCESS = 0x000f01ff;
++        const uint GENERIC_ALL_ACCESS = 0x10000000;
++        const uint INFINITE = 0xFFFFFFFF;
++        const uint PI_NOUI = 0x00000001;
++        const uint WAIT_FAILED = 0xFFFFFFFF;
++
++        enum SECURITY_IMPERSONATION_LEVEL
++        {
++            SecurityAnonymous,
++            SecurityIdentification,
++            SecurityImpersonation,
++            SecurityDelegation
++        }
++
++        enum TOKEN_TYPE
++        {
++            TokenPrimary = 1,
++            TokenImpersonation
++        }
++
++        [StructLayout(LayoutKind.Sequential)]
++        struct SECURITY_ATTRIBUTES
++        {
++            public int nLength;
++            public IntPtr lpSecurityDescriptor;
++            public int bInheritHandle;
++        }
++
++        [StructLayout(LayoutKind.Sequential)]
++        struct PROCESS_INFORMATION
++        {
++            public IntPtr hProcess;
++            public IntPtr hThread;
++            public int dwProcessId;
++            public int dwThreadId;
++        }
++
++        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
++        struct STARTUPINFO
++        {
++            public Int32 cb;
++            public string lpReserved;
++            public string lpDesktop;
++            public string lpTitle;
++            public Int32 dwX;
++            public Int32 dwY;
++            public Int32 dwXSize;
++            public Int32 dwYSize;
++            public Int32 dwXCountChars;
++            public Int32 dwYCountChars;
++            public Int32 dwFillAttribute;
++            public Int32 dwFlags;
++            public Int16 wShowWindow;
++            public Int16 cbReserved2;
++            public IntPtr lpReserved2;
++            public IntPtr hStdInput;
++            public IntPtr hStdOutput;
++            public IntPtr hStdError;
++        }
++
++        [StructLayout(LayoutKind.Sequential)]
++        struct PROFILEINFO {
++            public int dwSize;
++            public uint dwFlags;
++            [MarshalAs(UnmanagedType.LPTStr)]
++            public String lpUserName;
++            [MarshalAs(UnmanagedType.LPTStr)]
++            public String lpProfilePath;
++            [MarshalAs(UnmanagedType.LPTStr)]
++            public String lpDefaultPath;
++            [MarshalAs(UnmanagedType.LPTStr)]
++            public String lpServerName;
++            [MarshalAs(UnmanagedType.LPTStr)]
++            public String lpPolicyPath;
++            public IntPtr hProfile;
++        }
++
++        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
++        public struct USER_INFO_4
++        {
++            public string name;
++            public string password;
++            public int password_age;
++            public uint priv;
++            public string home_dir;
++            public string comment;
++            public uint flags;
++            public string script_path;
++            public uint auth_flags;
++            public string full_name;
++            public string usr_comment;
++            public string parms;
++            public string workstations;
++            public int last_logon;
++            public int last_logoff;
++            public int acct_expires;
++            public int max_storage;
++            public int units_per_week;
++            public IntPtr logon_hours;    // This is a PBYTE
++            public int bad_pw_count;
++            public int num_logons;
++            public string logon_server;
++            public int country_code;
++            public int code_page;
++            public IntPtr user_sid;     // This is a PSID
++            public int primary_group_id;
++            public string profile;
++            public string home_dir_drive;
++            public int password_expired;
++        }
++
++        [DllImport("advapi32.dll", CharSet=CharSet.Auto, SetLastError=true)]
++        extern static bool DuplicateTokenEx(
++            IntPtr hExistingToken,
++            uint dwDesiredAccess,
++            ref SECURITY_ATTRIBUTES lpTokenAttributes,
++            SECURITY_IMPERSONATION_LEVEL ImpersonationLevel,
++            TOKEN_TYPE TokenType,
++            out IntPtr phNewToken);
++
++        [DllImport("advapi32.dll", SetLastError=true)]
++        static extern bool LogonUser(
++            string lpszUsername,
++            string lpszDomain,
++            string lpszPassword,
++            int dwLogonType,
++            int dwLogonProvider,
++            out IntPtr phToken);
++
++        [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Auto)]
++        static extern bool CreateProcessAsUser(
++            IntPtr hToken,
++            string lpApplicationName,
++            string lpCommandLine,
++            ref SECURITY_ATTRIBUTES lpProcessAttributes,
++            ref SECURITY_ATTRIBUTES lpThreadAttributes,
++            bool bInheritHandles,
++            uint dwCreationFlags,
++            IntPtr lpEnvironment,
++            string lpCurrentDirectory,
++            ref STARTUPINFO lpStartupInfo,
++            out PROCESS_INFORMATION lpProcessInformation);
++
++        [DllImport("kernel32.dll", SetLastError=true)]
++        static extern UInt32 WaitForSingleObject(IntPtr hHandle,
++                                                 UInt32 dwMilliseconds);
++
++        [DllImport("Kernel32.dll")]
++        static extern int GetLastError();
++
++        [DllImport("Kernel32.dll")]
++        extern static int CloseHandle(IntPtr handle);
++
++        [DllImport("kernel32.dll", SetLastError = true)]
++        [return: MarshalAs(UnmanagedType.Bool)]
++        static extern bool GetExitCodeProcess(IntPtr hProcess,
++                                              out uint lpExitCode);
++
++        [DllImport("userenv.dll", SetLastError=true, CharSet=CharSet.Auto)]
++        [return: MarshalAs(UnmanagedType.Bool)]
++        static extern bool LoadUserProfile(IntPtr hToken,
++                                           ref PROFILEINFO lpProfileInfo);
++
++        [DllImport("userenv.dll", SetLastError=true, CharSet=CharSet.Auto)]
++        [return: MarshalAs(UnmanagedType.Bool)]
++        static extern bool UnloadUserProfile(IntPtr hToken, IntPtr hProfile);
++
++         [DllImport("Netapi32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
++        extern static int NetUserGetInfo(
++            [MarshalAs(UnmanagedType.LPWStr)] string ServerName,
++            [MarshalAs(UnmanagedType.LPWStr)] string UserName,
++            int level, out IntPtr BufPtr);
++
++        public static uint RunProcess(string userName, string password,
++                                      string domain, string cmd,
++                                      string arguments,
++                                      bool loadUserProfile = true)
++        {
++            bool retValue;
++            IntPtr phToken = IntPtr.Zero;
++            IntPtr phTokenDup = IntPtr.Zero;
++            PROCESS_INFORMATION pInfo = new PROCESS_INFORMATION();
++            PROFILEINFO pi = new PROFILEINFO();
++
++            try
++            {
++                retValue = LogonUser(userName, domain, password,
++                                     LOGON32_LOGON_SERVICE,
++                                     LOGON32_PROVIDER_DEFAULT,
++                                     out phToken);
++                if(!retValue)
++                    throw new Win32Exception(GetLastError());
++
++                var sa = new SECURITY_ATTRIBUTES();
++                sa.nLength = Marshal.SizeOf(sa);
++
++                retValue = DuplicateTokenEx(
++                    phToken, GENERIC_ALL_ACCESS, ref sa,
++                    SECURITY_IMPERSONATION_LEVEL.SecurityImpersonation,
++                    TOKEN_TYPE.TokenPrimary, out phTokenDup);
++                if(!retValue)
++                    throw new Win32Exception(GetLastError());
++
++                STARTUPINFO sInfo = new STARTUPINFO();
++                sInfo.lpDesktop = "";
++
++                if(loadUserProfile)
++                {
++                    IntPtr userInfoPtr = IntPtr.Zero;
++                    int retValueNetUser = NetUserGetInfo(null, userName, 4,
++                                                         out userInfoPtr);
++                    if(retValueNetUser != 0)
++                        throw new Win32Exception(retValueNetUser);
++
++                    USER_INFO_4 userInfo = (USER_INFO_4)Marshal.PtrToStructure(
++                        userInfoPtr, typeof(USER_INFO_4));
++
++                    pi.dwSize = Marshal.SizeOf(pi);
++                    pi.dwFlags = PI_NOUI;
++                    pi.lpUserName = userName;
++                    pi.lpProfilePath = userInfo.profile;
++
++                    retValue = LoadUserProfile(phTokenDup, ref pi);
++                    if(!retValue)
++                        throw new Win32Exception(GetLastError());
++                }
++
++                retValue = CreateProcessAsUser(phTokenDup, cmd, arguments,
++                                               ref sa, ref sa, false, 0,
++                                               IntPtr.Zero, null,
++                                               ref sInfo, out pInfo);
++                if(!retValue)
++                    throw new Win32Exception(GetLastError());
++
++                if(WaitForSingleObject(pInfo.hProcess, INFINITE) == WAIT_FAILED)
++                    throw new Win32Exception(GetLastError());
++
++                uint exitCode;
++                retValue = GetExitCodeProcess(pInfo.hProcess, out exitCode);
++                if(!retValue)
++                    throw new Win32Exception(GetLastError());
++
++                return exitCode;
++            }
++            finally
++            {
++                if(pi.hProfile != IntPtr.Zero)
++                    UnloadUserProfile(phTokenDup, pi.hProfile);
++                if(phToken != IntPtr.Zero)
++                    CloseHandle(phToken);
++                if(phTokenDup != IntPtr.Zero)
++                    CloseHandle(phTokenDup);
++                if(pInfo.hProcess != IntPtr.Zero)
++                    CloseHandle(pInfo.hProcess);
++            }
++        }
++    }
++}
++"@
++
++Add-Type -TypeDefinition $Source -Language CSharp
++
++function Start-ProcessAsUser
++{
++    [CmdletBinding()]
++    param
++    (
++        [parameter(Mandatory=$true, ValueFromPipeline=$true)]
++        [string]$Command,
++
++        [parameter()]
++        [string]$Arguments,
++
++        [parameter(Mandatory=$true)]
++        [PSCredential]$Credential,
++
++        [parameter()]
++        [bool]$LoadUserProfile = $true
++    )
++    process
++    {
++        $nc = $Credential.GetNetworkCredential()
++
++        $domain = "."
++        if($nc.Domain)
++        {
++            $domain = $nc.Domain
++        }
++
++        [PSCloudbase.ProcessManager]::RunProcess($nc.UserName, $nc.Password,
++                                                 $domain, $Command,
++                                                 $Arguments, $LoadUserProfile)
++    }
++}
++
++$powershell = "$ENV:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
++$cmdExe = "$ENV:SystemRoot\System32\cmd.exe"
++
++$juju_passwd = Get-RandomPassword 20
++$juju_passwd += "^"
++create-account jujud "Juju Admin user" $juju_passwd
++$hostname = hostname
++$juju_user = "$hostname\jujud"
++
++SetUserLogonAsServiceRights $juju_user
++SetAssignPrimaryTokenPrivilege $juju_user
++
++New-ItemProperty "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" -Name "jujud" -Value 0 -PropertyType "DWord" 
++
++$secpasswd = ConvertTo-SecureString $juju_passwd -AsPlainText -Force
++$jujuCreds = New-Object System.Management.Automation.PSCredential ($juju_user, $secpasswd)
++
++`
++
++var winSetPasswdScript = `
++
++Set-Content "C:\juju\bin\save_pass.ps1" @"
++Param (
++	[Parameter(Mandatory=` + "`$true" + `)]
++	[string]` + "`$pass" + `
++)
++
++` + "`$secpasswd" + ` = ConvertTo-SecureString ` + "`$pass" + ` -AsPlainText -Force
++` + "`$secpasswd" + ` | convertfrom-securestring | Add-Content C:\Juju\Jujud.pass 
++"@
++
++`
++func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
++	zipUrl := "https://www.cloudbase.it/downloads/7z920-x64.msi"
++	gitUrl := "https://www.cloudbase.it/downloads/Git-1.8.5.2-preview20131230.exe"
++	var zipDst = path.Join(osenv.WinTempDir, "7z920-x64.msi")
++	var gitDst = path.Join(osenv.WinTempDir, "Git-1.8.5.2-preview20131230.exe")
++
++	c.AddPSScripts(
++		fmt.Sprintf(`%s`, winPowershellHelperFunctions),
++		fmt.Sprintf(`icacls "%s" /grant "jujud:(OI)(CI)(F)" /T`, utils.PathToWindows(osenv.WinBaseDir)),
++        fmt.Sprintf(`mkdir %s`, utils.PathToWindows(osenv.WinTempDir)),
++        fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`, 
++        	zipUrl, utils.PathToWindows(zipDst)),
++		fmt.Sprintf(`cmd.exe /C call msiexec.exe /i "%s" /qb`, utils.PathToWindows(zipDst)),
++		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install 7zip" }`),
++		fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`, 
++        	gitUrl, utils.PathToWindows(gitDst)),
++		fmt.Sprintf(`cmd.exe /C call "%s" /SILENT`, utils.PathToWindows(gitDst)),
++		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
++		fmt.Sprintf(`mkdir "%s"`, utils.PathToWindows(osenv.WinBinDir)),
++		fmt.Sprintf(`%s`, winSetPasswdScript),
++		// fmt.Sprintf(`Start-Process -FilePath powershell.exe -LoadUserProfile -WorkingDirectory '/' -Wait -Credential $jujuCreds -ArgumentList "C:\juju\bin\save_pass.ps1 -pass $juju_passwd"`),
++        fmt.Sprintf(`Start-ProcessAsUser -Command $powershell -Arguments "-File C:\juju\bin\save_pass.ps1 $juju_passwd" -Credential $jujuCreds`),
++		fmt.Sprintf(`mkdir "%s\locks"`, utils.PathToWindows(osenv.WinLibDir)),
++        fmt.Sprintf(`Start-ProcessAsUser -Command $cmdExe -Arguments '/C setx PATH "%%PATH%%;%%PROGRAMFILES(x86)%%\Git\cmd;C:\Juju\bin"' -Credential $jujuCreds`),
++		// fmt.Sprintf(`Start-Process -FilePath cmd.exe -LoadUserProfile -WorkingDirectory '/' -Wait -Credential $jujuCreds -ArgumentList '/C call setx PATH "%%PATH%%;%%PROGRAMFILES(x86)%%\Git\cmd;C:\Juju\bin"'`),
++	)
++	noncefile := path.Join(cfg.DataDir, NonceFile)
++	c.AddPSScripts(
++		fmt.Sprintf(`Set-Content "%s" "%s"`, utils.PathToWindows(noncefile), shquote(cfg.MachineNonce)),
++	)
++	return nil
++}
++
++func NixConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
++	c.AddScripts(
++		"set -xe", // ensure we run all the scripts or abort.
++	)
++	c.AddSSHAuthorizedKeys(cfg.AuthorizedKeys)
++	c.SetOutput(cloudinit.OutAll, "| tee -a "+cfg.CloudInitOutputLog, "")
++	// Create a file in a well-defined location containing the machine's
++	// nonce. The presence and contents of this file will be verified
++	// during bootstrap.
++	//
++	// Note: this must be the last runcmd we do in ConfigureBasic, as
++	// the presence of the nonce file is used to gate the remainder
++	// of synchronous bootstrap.
++	noncefile := path.Join(cfg.DataDir, NonceFile)
++	c.AddFile(noncefile, cfg.MachineNonce, 0644)
++	return nil
++}
++
+ // ConfigureBasic updates the provided cloudinit.Config with
+ // basic configuration to initialise an OS image, such that it can
+ // be connected to via SSH, and log to a standard location.
+@@ -184,21 +1039,10 @@
+ // but adds to the running time of initialisation due to lack of activity
+ // between image bringup and start of agent installation.
+ func ConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
+-	c.AddScripts(
+-		"set -xe", // ensure we run all the scripts or abort.
+-	)
+-	c.AddSSHAuthorizedKeys(cfg.AuthorizedKeys)
+-	c.SetOutput(cloudinit.OutAll, "| tee -a "+cfg.CloudInitOutputLog, "")
+-	// Create a file in a well-defined location containing the machine's
+-	// nonce. The presence and contents of this file will be verified
+-	// during bootstrap.
+-	//
+-	// Note: this must be the last runcmd we do in ConfigureBasic, as
+-	// the presence of the nonce file is used to gate the remainder
+-	// of synchronous bootstrap.
+-	noncefile := path.Join(cfg.DataDir, NonceFile)
+-	c.AddFile(noncefile, cfg.MachineNonce, 0644)
+-	return nil
++	if version.IsWindows(cfg.Tools.Version.Series){
++		return WinConfigureBasic(cfg, c)
++	}
++	return NixConfigureBasic(cfg, c)
+ }
+ 
+ // AddAptCommands update the cloudinit.Config instance with the necessary
+@@ -227,9 +1071,51 @@
+ 	}
+ }
+ 
++func ConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
++	if version.IsWindows(cfg.Tools.Version.Series){
++		return WinConfigureJuju(cfg, c)
++	}
++	return NixConfigureJuju(cfg, c)
++}
++
++func WinConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
++	if err := verifyConfig(cfg); err != nil {
++		return err
++	}
++	toolsJson, err := json.Marshal(cfg.Tools)
++	if err != nil {
++		return err
++	}
++	var zipBin string = `C:\Program Files\7-Zip\7z.exe`
++	c.AddPSScripts(
++		fmt.Sprintf(`$binDir="%s"`, utils.PathToWindows(cfg.jujuTools())),
++		fmt.Sprintf(`mkdir '%s\juju'`, utils.PathToWindows(cfg.LogDir)),
++		fmt.Sprintf(`mkdir $binDir`),
++		fmt.Sprintf(`$WebClient = New-Object System.Net.WebClient`),
++		fmt.Sprintf(`[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}`),
++		fmt.Sprintf(`ExecRetry { $WebClient.DownloadFile('%s', "$binDir\tools.tar.gz") }`, cfg.Tools.URL),
++		fmt.Sprintf(`$dToolsHash = (Get-FileHash -Algorithm SHA256 "$binDir\tools.tar.gz").hash`),
++		fmt.Sprintf(`$dToolsHash > "$binDir\juju%s.sha256"`,
++			cfg.Tools.Version),
++		fmt.Sprintf(`if ($dToolsHash.ToLower() -ne "%s"){ Throw "Tools checksum mismatch"}`,
++			cfg.Tools.SHA256),
++		fmt.Sprintf(`& "%s" x "$binDir\tools.tar.gz" -o"$binDir\"`, zipBin),
++		fmt.Sprintf(`& "%s" x "$binDir\tools.tar" -o"$binDir\"`, zipBin),
++		fmt.Sprintf(`rm "$binDir\tools.tar*"`),
++		fmt.Sprintf(`Set-Content $binDir\downloaded-tools.txt '%s'`, string(toolsJson)),
++	)
++
++	machineTag := names.MachineTag(cfg.MachineId)
++	_, err = cfg.addAgentInfo(c, machineTag)
++	if err != nil {
++		return err
++	}
++	return cfg.winAddMachineAgentToBoot(c, machineTag, cfg.MachineId)
++}
++
+ // ConfigureJuju updates the provided cloudinit.Config with configuration
+ // to initialise a Juju machine agent.
+-func ConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
++func NixConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
+ 	if err := verifyConfig(cfg); err != nil {
+ 		return err
+ 	}
+@@ -398,18 +1284,56 @@
+ // and returns the agent directory name.
+ func (cfg *MachineConfig) addAgentInfo(c *cloudinit.Config, tag string) (agent.Config, error) {
+ 	acfg, err := cfg.agentConfig(tag)
++	series := cfg.Tools.Version.Series
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 	acfg.SetValue(agent.AgentServiceName, cfg.MachineAgentServiceName)
+-	cmds, err := acfg.WriteCommands()
++	cmds, err := acfg.WriteCommands(series)
+ 	if err != nil {
+ 		return nil, errors.Annotate(err, "failed to write commands")
+ 	}
+-	c.AddScripts(cmds...)
++	if version.IsWindows(series){
++		c.AddPSScripts(cmds...)
++	}else{
++		c.AddScripts(cmds...)
++	}
+ 	return acfg, nil
+ }
+ 
++// MachineAgentWindowsService returns the powershell command for a machine agent service
++// based on the tag and machineId passed in.
++// TODO: gsamfira: find a better place for this
++func MachineAgentWindowsService(name, toolsDir, dataDir, logDir, tag, machineId string) []string {
++    jujuServiceWrapper := path.Join(toolsDir, "JujuService.exe")
++    logFile := path.Join(logDir, tag+".log")
++    jujud := path.Join(toolsDir, "jujud.exe")
++
++    serviceString := fmt.Sprintf(`"%s" "%s" "%s" machine --data-dir "%s" --machine-id "%s" --debug --log-file "%s"`,
++        utils.PathToWindows(jujuServiceWrapper), name, utils.PathToWindows(jujud), utils.PathToWindows(dataDir), machineId, utils.PathToWindows(logFile))
++
++    cmd := []string{
++    	fmt.Sprintf(`New-Service -Credential $jujuCreds -Name '%s' -DisplayName 'Jujud machine agent' '%s'`, name, serviceString),
++        // fmt.Sprintf(`cmd.exe /C sc config %s start=delayed-auto`, name),
++    	fmt.Sprintf(`Start-Service %s`, name),
++    }
++    return cmd
++}
++
++//TODO: gsamfira: add agent to startup
++func (cfg *MachineConfig) winAddMachineAgentToBoot(c *cloudinit.Config, tag, machineId string) error {
++	// Make the agent run via a symbolic link to the actual tools
++	// directory, so it can upgrade itself without needing to change
++	// the upstart script.
++	toolsDir := agenttools.ToolsDir(cfg.DataDir, tag)
++	// TODO(dfc) ln -nfs, so it doesn't fail if for some reason that the target already exists
++	c.AddPSScripts(fmt.Sprintf(`cmd.exe /C mklink %s %v`, utils.PathToWindows(toolsDir), cfg.Tools.Version))
++	name := cfg.MachineAgentServiceName
++	cmds := MachineAgentWindowsService(name, toolsDir, cfg.DataDir, cfg.LogDir, tag, machineId)
++	c.AddPSScripts(cmds...)
++	return nil
++}
++
+ func (cfg *MachineConfig) addMachineAgentToBoot(c *cloudinit.Config, tag, machineId string) error {
+ 	// Make the agent run via a symbolic link to the actual tools
+ 	// directory, so it can upgrade itself without needing to change
+
+=== modified file 'environs/cloudinit/cloudinit_test.go'
+--- environs/cloudinit/cloudinit_test.go	2014-05-20 04:27:02 +0000
++++ environs/cloudinit/cloudinit_test.go	2014-05-23 01:27:18 +0000
+@@ -780,7 +780,7 @@
+ 	machineNonce := "fake-nonce"
+ 	stateInfo := jujutesting.FakeStateInfo(machineId)
+ 	apiInfo := jujutesting.FakeAPIInfo(machineId)
+-	machineConfig := environs.NewMachineConfig(machineId, machineNonce, nil, nil, stateInfo, apiInfo)
++	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "", nil, nil, stateInfo, apiInfo)
+ 	machineConfig.Tools = &tools.Tools{
+ 		Version: version.MustParseBinary("2.3.4-foo-bar"),
+ 		URL:     "http://tools.testing.invalid/2.3.4-foo-bar.tgz",
+
+=== modified file 'environs/jujutest/livetests.go'
+--- environs/jujutest/livetests.go	2014-05-20 00:11:22 +0000
++++ environs/jujutest/livetests.go	2014-05-23 01:28:04 +0000
+@@ -842,7 +842,7 @@
+ 	machineId := "4"
+ 	stateInfo := testing.FakeStateInfo(machineId)
+ 	apiInfo := testing.FakeAPIInfo(machineId)
+-	machineConfig := environs.NewMachineConfig(machineId, "", nil, nil, stateInfo, apiInfo)
++	machineConfig := environs.NewMachineConfig(machineId, "", "", nil, nil, stateInfo, apiInfo)
+ 
+ 	t.PrepareOnce(c)
+ 	possibleTools := envtesting.AssertUploadFakeToolsVersions(c, t.Env.Storage(), version.MustParseBinary("5.4.5-precise-amd64"))
+
+=== modified file 'instance/address.go'
+--- instance/address.go	2014-05-01 00:54:26 +0000
++++ instance/address.go	2014-05-23 01:40:07 +0000
+@@ -130,6 +130,8 @@
+ }
+ 
+ func isIPv4PrivateNetworkAddress(ip net.IP) bool {
++	// gsamfira: For testing
++	return false
+ 	return classAPrivate.Contains(ip) ||
+ 		classBPrivate.Contains(ip) ||
+ 		classCPrivate.Contains(ip)
+
+=== modified file 'juju/osenv/vars.go'
+--- juju/osenv/vars.go	2014-01-22 22:48:54 +0000
++++ juju/osenv/vars.go	2014-05-23 01:40:02 +0000
+@@ -3,6 +3,10 @@
+ 
+ package osenv
+ 
++import (
++	"path"
++)
++
+ const (
+ 	JujuEnvEnvKey           = "JUJU_ENV"
+ 	JujuHomeEnvKey          = "JUJU_HOME"
+@@ -14,3 +18,12 @@
+ 	// everything at once.
+ 	JujuContainerTypeEnvKey = "JUJU_CONTAINER_TYPE"
+ )
++
++var (
++    WinBaseDir = "C:/Juju"
++    WinTempDir = path.Join(WinBaseDir, "tmp")
++    WinLibDir  = path.Join(WinBaseDir, "lib")
++    WinLogDir  = path.Join(WinBaseDir, "log")
++    WinDataDir = path.Join(WinLibDir, "juju")
++    WinBinDir  = path.Join(WinBaseDir, "bin")
++)
+\ No newline at end of file
+
+=== modified file 'juju/osenv/vars_nix.go'
+--- juju/osenv/vars_nix.go	2013-10-07 15:46:42 +0000
++++ juju/osenv/vars_nix.go	2014-05-23 01:41:16 +0000
+@@ -6,6 +6,7 @@
+ 
+ import (
+ 	"os"
++	"path"
+ )
+ 
+ // Home returns the os-specific home path as specified in the environment
+@@ -17,3 +18,13 @@
+ func SetHome(s string) error {
+ 	return os.Setenv("HOME", s)
+ }
++
++var (
++    TempDir    = "/tmp"
++    LibDir     = "/var/lib"
++    LogDir     = "/var/log"
++    DataDir    = path.Join(LibDir, "juju")
++    JujuRun    = "/usr/local/bin/juju-run"
++    SocketType = "unix"
++    MustReboot = 101
++)
+\ No newline at end of file
+
+=== modified file 'juju/osenv/vars_windows.go'
+--- juju/osenv/vars_windows.go	2013-08-30 19:36:39 +0000
++++ juju/osenv/vars_windows.go	2014-05-23 01:41:43 +0000
+@@ -24,3 +24,13 @@
+ 	}
+ 	return os.Setenv("HOMEPATH", s[len(v):])
+ }
++
++var (
++	TempDir    = WinTempDir
++    LibDir     = WinLibDir
++    LogDir     = WinLogDir
++    DataDir    = WinDataDir
++    JujuRun    = path.Join(WinBinDir, "juju-run.exe")
++    SocketType = "tcp"
++    MustReboot = 1001
++)
+\ No newline at end of file
+
+=== modified file 'juju/testing/instance.go'
+--- juju/testing/instance.go	2014-04-30 23:18:40 +0000
++++ juju/testing/instance.go	2014-05-23 01:43:18 +0000
+@@ -127,7 +127,7 @@
+ 	stateInfo := FakeStateInfo(machineId)
+ 	apiInfo := FakeAPIInfo(machineId)
+ 	machineConfig := environs.NewMachineConfig(
+-		machineId, machineNonce,
++		machineId, machineNonce, "",
+ 		includeNetworks, excludeNetworks,
+ 		stateInfo, apiInfo)
+ 	return env.StartInstance(environs.StartInstanceParams{
+
+=== modified file 'provider/azure/environ_test.go'
+--- provider/azure/environ_test.go	2014-05-22 06:31:28 +0000
++++ provider/azure/environ_test.go	2014-05-23 01:43:53 +0000
+@@ -1464,7 +1464,7 @@
+ 			c, s.env.storage, envtesting.V120p...,
+ 		),
+ 		MachineConfig: environs.NewMachineConfig(
+-			"1", "yanonce", nil, nil, stateInfo, apiInfo,
++			"1", "yanonce", "", nil, nil, stateInfo, apiInfo,
+ 		),
+ 	}
+ }
+
+=== modified file 'provider/maas/environ.go'
+--- provider/maas/environ.go	2014-05-14 21:13:17 +0000
++++ provider/maas/environ.go	2014-05-23 01:49:23 +0000
+@@ -34,6 +34,8 @@
+ 	"launchpad.net/juju-core/tools"
+ 	"launchpad.net/juju-core/utils"
+ 	"launchpad.net/juju-core/utils/set"
++
++	"launchpad.net/juju-core/version"
+ )
+ 
+ const (
+@@ -458,7 +460,10 @@
+ 	// The machine envronment config values are being moved to the agent config.
+ 	// Explicitly specify that the lxc containers use the network bridge defined above.
+ 	args.MachineConfig.AgentEnvironment[agent.LxcBridge] = "br0"
+-	cloudcfg, err := newCloudinitConfig(hostname, networkInfo)
++	
++	series := args.Tools.OneSeries()
++	cloudcfg, err := newCloudinitConfig(hostname, networkInfo, series, inst)
++
+ 	if err != nil {
+ 		return nil, nil, nil, err
+ 	}
+@@ -469,7 +474,6 @@
+ 	}
+ 	logger.Debugf("maas user data; %d bytes", len(userdata))
+ 
+-	series := args.Tools.OneSeries()
+ 	if err := environ.startNode(*inst.maasObject, series, userdata); err != nil {
+ 		return nil, nil, nil, err
+ 	}
+@@ -478,9 +482,19 @@
+ 	return inst, nil, networkInfo, nil
+ }
+ 
++func newCloudinitConfig(hostname string, networkInfo []network.Info, serie string, inst *maasInstance) (*cloudinit.Config, error) {
++	logger.Infof("Making cloudinit cfg for %s", serie)
++	if version.IsWindows(serie){
++		logger.Infof("validated as WINDOWS")
++		return newWinCloudinitConfig(hostname, networkInfo, inst)
++	}
++	logger.Infof("validated as UBUNTU")
++	return newNixCloudinitConfig(hostname, networkInfo, inst)
++}
++
+ // newCloudinitConfig creates a cloudinit.Config structure
+ // suitable as a base for initialising a MAAS node.
+-func newCloudinitConfig(hostname string, networkInfo []network.Info) (*cloudinit.Config, error) {
++func newNixCloudinitConfig(hostname string, networkInfo []network.Info, inst *maasInstance) (*cloudinit.Config, error) {
+ 	info := machineInfo{hostname}
+ 	runCmd, err := info.cloudinitRunCmd()
+ 	if err != nil {
+@@ -501,6 +515,38 @@
+ 	return cloudcfg, nil
+ }
+ 
++func newWinCloudinitConfig(hostname string, networkInfo []network.Info, inst *maasInstance) (*cloudinit.Config, error) {
++	renameInterface := `
++	$count = 0
++	foreach ($i in $ipAddrs.Split(",")){
++		$int = Get-NetIPAddress -IPAddress $i
++		if($int) {
++			Rename-NetAdapter -Name $int.InterfaceAlias -NewName "Management$count"
++			$count += 1
++			continue
++		}
++	}
++	`
++	ips, _ := inst.ipAddresses()
++	info := machineInfo{hostname}
++	runCmd, err := info.winCloudinitRunCmd()
++	if err != nil {
++		return nil, err
++	}
++	cloudcfg := cloudinit.New()
++	logger.Infof("Adding script for WINDOWS: %v", runCmd)
++	cloudcfg.AddPSScripts(
++		runCmd,
++	)
++	if ips != nil{
++		cloudcfg.AddPSScripts(
++			fmt.Sprintf(`$ipAddrs = "%s"`, strings.Join(ips, ",")),
++			renameInterface,
++		)
++	}
++	return cloudcfg, nil
++}
++
+ // setupNetworksOnBoot prepares a script to enable and start all given
+ // networks on boot.
+ func setupNetworksOnBoot(cloudcfg *cloudinit.Config, networkInfo []network.Info) {
+
+=== modified file 'provider/maas/util.go'
+--- provider/maas/util.go	2014-05-13 11:37:40 +0000
++++ provider/maas/util.go	2014-05-23 01:52:56 +0000
+@@ -7,12 +7,14 @@
+ 	"fmt"
+ 	"net/url"
+ 	"strings"
++	"path"
+ 
+ 	"launchpad.net/goyaml"
+ 
+ 	"launchpad.net/juju-core/environs"
+ 	"launchpad.net/juju-core/instance"
+ 	"launchpad.net/juju-core/utils"
++	"launchpad.net/juju-core/juju/osenv"
+ )
+ 
+ // extractSystemId extracts the 'system_id' part from an InstanceId.
+@@ -45,7 +47,7 @@
+ 	Hostname string `yaml:,omitempty`
+ }
+ 
+-var _MAASInstanceFilename = environs.DataDir + "/MAASmachine.txt"
++var _MAASInstanceFilename = path.Join(environs.DataDir, "MAASmachine.txt")
+ 
+ // cloudinitRunCmd returns the shell command that, when run, will create the
+ // "machine info" file containing the hostname of a machine.
+@@ -64,3 +66,16 @@
+ func (info *machineInfo) load() error {
+ 	return utils.ReadYaml(_MAASInstanceFilename, info)
+ }
++
++// winCloudinitRunCmd returns the shell command that, when run, will create the
++// "machine info" file containing the hostname of a machine on a winows system.
++// That command is destined to be used by cloudinit.
++func (info *machineInfo) winCloudinitRunCmd() (string, error) {
++	_MAASInstanceFilenameWin := path.Join(osenv.WinDataDir, "MAASmachine.txt")
++	yaml, err := goyaml.Marshal(info)
++	if err != nil {
++		return "", err
++	}
++	script := fmt.Sprintf("mkdir \"%s\"\r\n Set-Content \"%s\" @\"\n%s\n\"@", utils.PathToWindows(osenv.WinDataDir), utils.PathToWindows(_MAASInstanceFilenameWin), string(yaml))
++	return script, nil
++}
+
+=== modified file 'provider/openstack/storage.go'
+--- provider/openstack/storage.go	2014-05-16 09:59:32 +0000
++++ provider/openstack/storage.go	2014-05-22 20:52:23 +0000
+@@ -56,7 +56,7 @@
+ }
+ 
+ func (s *openstackstorage) Get(file string) (io.ReadCloser, error) {
+-	r, _, err := s.swift.GetReader(s.containerName, file)
++	r, err := s.swift.GetReader(s.containerName, file)
+ 	if err, _ := maybeNotFound(err); err != nil {
+ 		return nil, err
+ 	}
+
+=== modified file 'state/apiserver/client/machineconfig.go'
+--- state/apiserver/client/machineconfig.go	2014-04-16 10:08:55 +0000
++++ state/apiserver/client/machineconfig.go	2014-05-23 01:54:53 +0000
+@@ -78,7 +78,7 @@
+ 		return nil, err
+ 	}
+ 
+-	mcfg := environs.NewMachineConfig(machineId, nonce, includeNetworks, excludeNetworks, stateInfo, apiInfo)
++	mcfg := environs.NewMachineConfig(machineId, nonce, machine.Series(), includeNetworks, excludeNetworks, stateInfo, apiInfo)
+ 	if dataDir != "" {
+ 		mcfg.DataDir = dataDir
+ 	}
+
+=== modified file 'testing/filetesting/filetesting.go'
+--- testing/filetesting/filetesting.go	2014-05-22 17:03:14 +0000
++++ testing/filetesting/filetesting.go	2014-05-23 12:10:44 +0000
+@@ -10,6 +10,7 @@
+ 
+ 	jc "github.com/juju/testing/checkers"
+ 	gc "launchpad.net/gocheck"
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ // Entry represents a filesystem entity that can be created; and whose
+@@ -163,7 +164,7 @@
+ }
+ 
+ func (s Symlink) Check(c *gc.C, basePath string) Entry {
+-	link, err := os.Readlink(join(basePath, s.Path))
++	link, err := utils.Readlink(join(basePath, s.Path))
+ 	c.Check(err, gc.IsNil)
+ 	c.Check(link, gc.Equals, s.Link)
+ 	return s
+
+=== modified file 'testing/filetesting/filetesting_test.go'
+--- testing/filetesting/filetesting_test.go	2014-05-22 13:13:49 +0000
++++ testing/filetesting/filetesting_test.go	2014-05-23 01:56:13 +0000
+@@ -12,6 +12,7 @@
+ 	gc "launchpad.net/gocheck"
+ 
+ 	ft "launchpad.net/juju-core/testing/filetesting"
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ type EntrySuite struct {
+@@ -138,7 +139,7 @@
+ 
+ func (s *EntrySuite) TestSymlinkCreate(c *gc.C) {
+ 	ft.Symlink{"link", "target"}.Create(c, s.basePath)
+-	target, err := os.Readlink(s.join("link"))
++	target, err := utils.Readlink(s.join("link"))
+ 	c.Assert(err, gc.IsNil)
+ 	c.Assert(target, gc.Equals, "target")
+ }
+
+=== modified file 'utils/exec/exec.go'
+--- utils/exec/exec.go	2014-03-05 19:41:34 +0000
++++ utils/exec/exec.go	2014-05-23 02:08:11 +0000
+@@ -4,9 +4,9 @@
+ package exec
+ 
+ import (
+-	"bytes"
++	// "bytes"
+ 	"os/exec"
+-	"syscall"
++	// "syscall"
+ 
+ 	"github.com/juju/loggo"
+ )
+@@ -31,43 +31,10 @@
+ 	Stderr []byte
+ }
+ 
+-// RunCommands executes the Commands specified in the RunParams using
+-// '/bin/bash -s', passing the commands through as stdin, and collecting
+-// stdout and stderr.  If a non-zero return code is returned, this is
+-// collected as the code for the response and this does not classify as an
+-// error.
+-func RunCommands(run RunParams) (*ExecResponse, error) {
+-	ps := exec.Command("/bin/bash", "-s")
+-	if run.Environment != nil {
+-		ps.Env = run.Environment
+-	}
+-	if run.WorkingDir != "" {
+-		ps.Dir = run.WorkingDir
+-	}
+-	ps.Stdin = bytes.NewBufferString(run.Commands)
+-
+-	stdout := &bytes.Buffer{}
+-	stderr := &bytes.Buffer{}
+-
+-	ps.Stdout = stdout
+-	ps.Stderr = stderr
+-
+-	err := ps.Start()
+-	if err == nil {
+-		err = ps.Wait()
+-	}
+-	result := &ExecResponse{
+-		Stdout: stdout.Bytes(),
+-		Stderr: stderr.Bytes(),
+-	}
+-	if ee, ok := err.(*exec.ExitError); ok && err != nil {
+-		status := ee.ProcessState.Sys().(syscall.WaitStatus)
+-		if status.Exited() {
+-			// A non-zero return code isn't considered an error here.
+-			result.Code = status.ExitStatus()
+-			err = nil
+-		}
+-		logger.Infof("run result: %v", ee)
+-	}
+-	return result, err
+-}
++func RunCommand(args []string) (string, error) {
++    out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
++    if err != nil {
++        return string(out), err
++    }
++    return string(out), nil
++ }
+\ No newline at end of file
+
+=== added file 'utils/exec/exec_linux.go'
+--- utils/exec/exec_linux.go	1970-01-01 00:00:00 +0000
++++ utils/exec/exec_linux.go	2014-05-23 02:07:42 +0000
+@@ -0,0 +1,48 @@
++package exec
++
++import (
++    "bytes"
++    "os/exec"
++    "syscall"
++)
++
++// RunCommands executes the Commands specified in the RunParams using
++// '/bin/bash -s', passing the commands through as stdin, and collecting
++// stdout and stderr.  If a non-zero return code is returned, this is
++// collected as the code for the response and this does not classify as an
++// error.
++func RunCommands(run RunParams) (*ExecResponse, error) {
++	ps := exec.Command("/bin/bash", "-s")
++	if run.Environment != nil {
++		ps.Env = run.Environment
++	}
++	if run.WorkingDir != "" {
++		ps.Dir = run.WorkingDir
++	}
++	ps.Stdin = bytes.NewBufferString(run.Commands)
++
++	stdout := &bytes.Buffer{}
++	stderr := &bytes.Buffer{}
++
++	ps.Stdout = stdout
++	ps.Stderr = stderr
++
++	err := ps.Start()
++	if err == nil {
++		err = ps.Wait()
++	}
++	result := &ExecResponse{
++		Stdout: stdout.Bytes(),
++		Stderr: stderr.Bytes(),
++	}
++	if ee, ok := err.(*exec.ExitError); ok && err != nil {
++		status := ee.ProcessState.Sys().(syscall.WaitStatus)
++		if status.Exited() {
++			// A non-zero return code isn't considered an error here.
++			result.Code = status.ExitStatus()
++			err = nil
++		}
++		logger.Infof("run result: %v", ee)
++	}
++	return result, err
++}
+
+=== added file 'utils/exec/exec_windows.go'
+--- utils/exec/exec_windows.go	1970-01-01 00:00:00 +0000
++++ utils/exec/exec_windows.go	2014-05-23 02:08:52 +0000
+@@ -0,0 +1,58 @@
++package exec
++
++import (
++    "os/exec"
++    "bytes"
++    "syscall"
++)
++
++var CheckError = ";if($? -eq $false){ exit 11 };"
++
++
++func RunPSCommand(script string) (string, error){
++    cmd := []string{
++        "powershell",
++        "-Command",
++        `"`,
++        `$ErrorActionPreference = 'Stop';`,
++        script,
++        `"`,
++    }
++    return RunCommand(cmd)
++}
++
++func RunCommands(run RunParams) (*ExecResponse, error) {
++    ps := exec.Command("powershell.exe", "-noprofile", "-noninteractive", "-command", "$input|iex")
++    if run.Environment != nil {
++        ps.Env = run.Environment
++    }
++    if run.WorkingDir != "" {
++        ps.Dir = run.WorkingDir
++    }
++    ps.Stdin = bytes.NewBufferString(run.Commands)
++
++    stdout := &bytes.Buffer{}
++    stderr := &bytes.Buffer{}
++
++    ps.Stdout = stdout
++    ps.Stderr = stderr
++
++    err := ps.Start()
++    if err == nil {
++        err = ps.Wait()
++    }
++    result := &ExecResponse{
++        Stdout: stdout.Bytes(),
++        Stderr: stderr.Bytes(),
++    }
++    if ee, ok := err.(*exec.ExitError); ok && err != nil {
++        status := ee.ProcessState.Sys().(syscall.WaitStatus)
++        if status.Exited() {
++            // A non-zero return code isn't considered an error here.
++            result.Code = status.ExitStatus()
++            err = nil
++        }
++        logger.Infof("run result: %v", ee)
++    }
++    return result, err
++}
+
+=== modified file 'utils/file.go'
+--- utils/file.go	2014-03-05 16:30:01 +0000
++++ utils/file.go	2014-05-23 02:11:33 +0000
+@@ -100,6 +100,10 @@
+ 	return err
+ }
+ 
++func WriteFile(filename string, contents []byte, perms os.FileMode) (err error) {
++	return ioutil.WriteFile(filename, contents, perms)
++}
++
+ // AtomicWriteFileAndChange atomically writes the filename with the
+ // given contents and calls the given function after the contents were
+ // written, but before the file is renamed.
+
+=== added file 'utils/path.go'
+--- utils/path.go	1970-01-01 00:00:00 +0000
++++ utils/path.go	2014-05-23 02:20:30 +0000
+@@ -0,0 +1,23 @@
++package utils
++
++import (
++    "os"
++    "path/filepath"
++)
++
++func RChmod(path string, mode os.FileMode) error {
++    walker := func(p string, fi os.FileInfo, err error) error {
++        if err != nil {
++            return err
++        }
++        errPerm := os.Chmod(p, mode)
++        if errPerm != nil {
++            return errPerm
++        }
++        return nil
++    }
++    if err := filepath.Walk(path, walker); err != nil {
++        return err
++    }
++    return nil
++}
+
+=== added file 'utils/path_linux.go'
+--- utils/path_linux.go	1970-01-01 00:00:00 +0000
++++ utils/path_linux.go	2014-05-23 02:20:55 +0000
+@@ -0,0 +1,14 @@
++package utils
++
++import (
++    "os"
++)
++
++
++func Symlink(oldname, newname string) error {
++    return os.Symlink(oldname, newname)
++}
++
++func Readlink(link string) (string, error){
++	return os.Readlink(link)
++}
+
+=== added file 'utils/path_windows.go'
+--- utils/path_windows.go	1970-01-01 00:00:00 +0000
++++ utils/path_windows.go	2014-05-23 02:21:50 +0000
+@@ -0,0 +1,90 @@
++/*
++Go does not have Symlink support, hence, this module
++*/
++package utils
++
++import (
++    "fmt"
++    "os"
++    "syscall"
++    "unsafe"
++    "errors"
++)
++
++func fileOrFolder(target string) (dwFlag int, err error){
++	f, err := os.Open(target)
++    if err != nil {
++        return
++    }
++    defer f.Close()
++    fi, err := f.Stat()
++    if err != nil {
++        return
++    }
++    switch mode := fi.Mode(); {
++    case mode.IsDir():
++    	dwFlag = 1
++    case mode.IsRegular():
++    	dwFlag = 0
++    }
++    return dwFlag, err
++}
++
++func CreateSymLink(link, target string) error{
++	dwFlag, err := fileOrFolder(target)
++	if err != nil {
++        return err
++    }
++	var (
++        kernel32, _ = syscall.LoadLibrary("kernel32.dll")
++        CreateSymbolicLinkW, _ = syscall.GetProcAddress(kernel32, "CreateSymbolicLinkW")
++	)
++	var nargs uintptr = 3
++	_, _, callErr := syscall.Syscall(uintptr(CreateSymbolicLinkW), nargs, 
++		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(link))), uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(target))), uintptr(dwFlag))
++	if callErr != 0 {
++            return errors.New(fmt.Sprintf("CreateSymbolicLinkW Error: %v", callErr))
++        }
++	defer syscall.FreeLibrary(kernel32)
++    return nil
++}
++
++func Readlink(link string) (string, error){
++    var (kernel32 = syscall.NewLazyDLL("kernel32.dll")
++         GetFinalPathNameByHandleW = kernel32.NewProc("GetFinalPathNameByHandleW")
++
++         nargs uint32 = 4
++         buf_size int = 512
++         buf [512]byte
++         target string
++         )
++
++    handle, Err := syscall.Open(link, 0, 2)
++    if Err != nil {
++        return "", errors.New(fmt.Sprintf("CreateFileW Error: %v", Err))
++    }
++
++    _, _, callErr := syscall.Syscall6(GetFinalPathNameByHandleW.Addr(),
++                                        uintptr(unsafe.Pointer(&nargs)),
++                                        uintptr(unsafe.Pointer(handle)),
++                                        uintptr(unsafe.Pointer(&buf)),
++                                        uintptr(buf_size), 0, 0, 0)
++    if callErr != 0 {
++        return "", errors.New(fmt.Sprintf("GetFinalPathNameByHandleW Error: %v", callErr))
++    }
++
++    defer syscall.CloseHandle(handle)
++    for i, _ := range buf {
++        if buf[i] != 0{
++            target += string(buf[i])
++       }
++    }
++    if target[:4] == `\\?\` {
++        target = target[4:]
++    }
++    return target, nil
++}
++
++func Symlink(oldname, newname string) error {
++    return CreateSymLink(newname, oldname)
++}
+
+=== added file 'utils/ports.go'
+--- utils/ports.go	1970-01-01 00:00:00 +0000
++++ utils/ports.go	2014-05-23 02:23:20 +0000
+@@ -0,0 +1,93 @@
++package utils
++
++import (
++    "net"
++    "os"
++    "fmt"
++    "errors"
++    "strconv"
++    "io/ioutil"
++)
++
++// TODO: gsamfira: Create a lock for allocated ports to prevent race conditions
++
++func TestPort(port int) error {
++    p := fmt.Sprintf("127.0.0.1:%s", strconv.Itoa(port))
++    conn, err := net.Dial("tcp", p)
++    if err != nil {
++        return err
++    }
++    defer conn.Close()
++    return nil
++}
++
++func GetPort() (string, error) {
++    port := 65000
++    // test TCP connect on that port. If an error is returned
++    // the port is free and can be used
++    err := TestPort(port)
++    if err == nil {
++        for i:=65001; i<65535; i++ {
++            port = i
++            err = TestPort(port)
++            if err != nil {
++                port = i
++                break
++            }
++        }
++    }
++    if err == nil {
++        return "", errors.New("Failed to get free port")
++    }
++    return strconv.Itoa(port), nil
++}
++
++//TODO: get rid of this once named pipes are in
++//This actually writes a text file on disk with the port nr
++//assigned to the unit agent. 
++func WriteSocketFile(socketPath string) (string, error){
++    port, perr := GetPort()
++    if perr != nil {
++        return "", perr
++    }
++
++    if _, err := os.Stat(socketPath); err == nil {
++        _ = os.Remove(socketPath)
++    }
++
++    fd, err := os.Create(socketPath)
++    if err != nil {
++        return "", err
++    }
++    defer fd.Close()
++
++    addr := fmt.Sprintf("127.0.0.1:%v", port)
++    data := []byte(addr)
++
++    _, ferr := fd.Write(data)
++    if ferr != nil {
++        return "", ferr
++    }
++    return addr, nil
++}
++
++func ReadSocketFile(socketPath string) (string, error){
++    if _, err := os.Stat(socketPath); err != nil {
++        return "", err
++    }
++    buf, readErr := ioutil.ReadFile(socketPath)
++    if readErr != nil {
++        return "", readErr
++    }
++    sock := string(buf)
++    return sock, nil
++}
++
++func GetSocket() (string, error) {
++    port, perr := GetPort()
++    if perr != nil {
++        return "", perr
++    }
++    addr := fmt.Sprintf("127.0.0.1:%v", port)
++    return addr, nil
++}
+
+=== modified file 'utils/trivial.go'
+--- utils/trivial.go	2014-04-14 12:36:13 +0000
++++ utils/trivial.go	2014-05-23 02:25:49 +0000
+@@ -13,8 +13,11 @@
+ 	"os"
+ 	"strings"
+ 	"unicode"
++	"runtime"
++	"strconv"	
+ 
+ 	"launchpad.net/goyaml"
++	"launchpad.net/juju-core/utils/exec"
+ )
+ 
+ // WriteYaml marshals obj as yaml and then writes it to a file, atomically,
+@@ -30,10 +33,15 @@
+ 	if err != nil {
+ 		return err
+ 	}
+-	defer f.Close()
++	if runtime.GOOS != "windows"{
++		defer f.Close()
++	}
+ 	if _, err = f.Write(data); err != nil {
+ 		return err
+ 	}
++	if runtime.GOOS == "windows"{
++		f.Close()
++	}
+ 	return ReplaceFile(prep, path)
+ }
+ 
+@@ -133,3 +141,27 @@
+ 	defer f.Close()
+ 	return ReadSHA256(f)
+ }
++
++//gsamfira: The PathToWindows is a parlous one.
++//Quick and dirty hack to Get around the separator issue when
++//generation windows paths on linux
++func PathToWindows(filepath string) string {
++	return strings.Replace(filepath, "/", "\\", -1)
++}
++
++func Reboot(when int) error {
++    cmd := []string{
++        "shutdown",
++        "-r",
++    }
++
++    if runtime.GOOS == "windows" {
++    	cmd = append(cmd, "-t")
++    }
++    cmd = append(cmd, strconv.Itoa(when))
++    _, err := exec.RunCommand(cmd)
++    if err != nil {
++        return err
++    }
++    return nil
++}
+\ No newline at end of file
+
+=== modified file 'version/osversion_unknown.go'
+--- version/osversion_unknown.go	2014-05-06 06:29:19 +0000
++++ version/osversion_unknown.go	2014-05-23 19:11:11 +0000
+@@ -1,7 +1,7 @@
+ // Copyright 2014 Canonical Ltd.
+ // Licensed under the AGPLv3, see LICENCE file for details.
+ 
+-// +build !darwin,!linux
++// +build !darwin,!linux,!windows
+ 
+ package version
+ 
+
+=== added file 'version/osversion_windows.go'
+--- version/osversion_windows.go	1970-01-01 00:00:00 +0000
++++ version/osversion_windows.go	2014-05-23 13:05:49 +0000
+@@ -0,0 +1,42 @@
++package version
++
++import (
++    // "runtime"
++    "fmt"
++    "strings"
++    "regexp"
++    "launchpad.net/juju-core/utils/exec"
++)
++
++
++func getWinVersion() string {
++    cmd := []string{
++        "powershell",
++        "Invoke-Command {",
++        `$x = gwmi Win32_OperatingSystem`,
++        exec.CheckError,
++        `$x.Name.Split('|')[0]`,
++        exec.CheckError,
++        "}",
++    }
++    out, err := exec.RunCommand(cmd)
++    if err != nil {
++        return "unknown"
++    }
++    serie := strings.TrimSpace(out)
++    if val,ok := WindowsVersions[serie]; ok {
++        return val
++    }
++    for key, value := range WindowsVersions {
++        reg := regexp.MustCompile(fmt.Sprintf("^%s", key))
++        match := reg.MatchString(serie)
++        if(match){
++            return value
++        }
++    }
++    return "unknown"
++}
++
++func osVersion() string {
++	return getWinVersion()
++}
+\ No newline at end of file
+
+=== modified file 'version/ubuntu/supportedseries.go'
+--- version/ubuntu/supportedseries.go	2014-05-13 23:18:30 +0000
++++ version/ubuntu/supportedseries.go	2014-05-23 18:54:32 +0000
+@@ -28,6 +28,10 @@
+ 	"saucy":   "13.10",
+ 	"trusty":  "14.04",
+ 	"utopic":  "14.10",
++	"win2012hv": "win2012hv",
++	"win2012hvr2": "win2012hvr2",
++	"win2012": "win2012",
++	"win2012r2": "win2012r2",
+ }
+ 
+ var (
+
+=== modified file 'version/version.go'
+--- version/version.go	2014-05-21 00:00:13 +0000
++++ version/version.go	2014-05-23 03:58:47 +0000
+@@ -30,6 +30,19 @@
+ // the release version of ubuntu.
+ var lsbReleaseFile = "/etc/lsb-release"
+ 
++// Windows versions come in various flavors:
++// Standard, Datacenter, etc. We use regex to match them to one
++// of the following. Specify the longest name in a particular serie first
++// For example, if we have "Win 2012" and "Win 2012 R2". we specify "Win 2012 R2" first
++var WindowsVersions = map[string]string{
++    "Microsoft Hyper-V Server 2012 R2": "win2012hvr2",
++    "Microsoft Hyper-V Server 2012": "win2012hv",
++    "Microsoft Windows Server 2012 R2": "win2012r2",
++    "Microsoft Windows Server 2012": "win2012",
++    "Windows Storage Server 2012 R2": "win2012r2",
++    "Windows Storage Server 2012": "win2012",
++}
++
+ // Current gives the current version of the system.  If the file
+ // "FORCE-VERSION" is present in the same directory as the running
+ // binary, it will override this.
+@@ -348,3 +361,12 @@
+ 	}
+ 	return major, minor, nil
+ }
++
++func IsWindows(serie string) bool{
++	for _, val := range WindowsVersions {
++		if serie == val {
++			return true
++		}
++	}
++	return false
++}
+
+=== added directory 'version/windows'
+=== added file 'version/windows/supportedseries.go'
+--- version/windows/supportedseries.go	1970-01-01 00:00:00 +0000
++++ version/windows/supportedseries.go	2014-05-23 18:54:54 +0000
+@@ -0,0 +1,55 @@
++package windows
++
++import (
++	// "bufio"
++	"fmt"
++	// "io"
++	// "os"
++	// "strings"
++	"sync"
++
++	"github.com/juju/loggo"
++)
++
++var logger = loggo.GetLogger("juju.ubuntu")
++
++var (
++	seriesVersionsMutex   sync.Mutex
++	// updatedseriesVersions bool
++)
++
++// seriesVersions provides a mapping between Ubuntu series names and version numbers.
++// The values here are current as of the time of writing. On Ubuntu systems, we update
++// these values from /usr/share/distro-info/ubuntu.csv to ensure we have the latest values.
++// On non-Ubuntu systems, these values provide a nice fallback option.
++// Exported so tests can change the values to ensure the distro-info lookup works.
++var seriesVersions = map[string]string{
++	"win2012hv": "win2012hv",
++	"win2012hvr2": "win2012hvr2",
++	"win2012": "win2012",
++	"win2012r2": "win2012r2",
++}
++
++// SeriesVersion returns the version number for the specified Ubuntu series.
++func SeriesVersion(series string) (string, error) {
++	if series == "" {
++		panic("cannot pass empty series to SeriesVersion()")
++	}
++	seriesVersionsMutex.Lock()
++	defer seriesVersionsMutex.Unlock()
++	if vers, ok := seriesVersions[series]; ok {
++		return vers, nil
++	}
++	return "", fmt.Errorf("invalid series %q", series)
++}
++
++// SupportedSeries returns the Ubuntu series on which we can run Juju workloads.
++func SupportedSeries() []string {
++	seriesVersionsMutex.Lock()
++	defer seriesVersionsMutex.Unlock()
++	var series []string
++	for s := range seriesVersions {
++		series = append(series, s)
++	}
++	return series
++}
+\ No newline at end of file
+
+=== added directory 'windows'
+=== added directory 'windows/service'
+=== added file 'windows/service/service_windows.go'
+--- windows/service/service_windows.go	1970-01-01 00:00:00 +0000
++++ windows/service/service_windows.go	2014-05-23 22:06:50 +0000
+@@ -0,0 +1,202 @@
++package service
++
++import (
++    "errors"
++    "fmt"
++    "strings"
++
++    "github.com/juju/loggo"
++    "launchpad.net/juju-core/utils/exec"
++)
++
++var logger = loggo.GetLogger("juju.worker.deployer.service_windows")
++
++type Cmd struct {
++    Service
++    Description string
++    ServiceBin  string
++    Cmd         string
++}
++
++type Service struct {
++    Name        string
++}
++
++// gets the service status
++func (s *Service) Status() (string, error){
++    logger.Infof("checking unit %q", s.Name)
++    cmd := []string{
++        "powershell",
++        "Invoke-Command {",
++        fmt.Sprintf(`$x = Get-Service "%s"`, s.Name),
++        exec.CheckError,
++        "$x.Status",
++        "}",
++    }
++    out, err := exec.RunCommand(cmd)
++    logger.Infof("checking unit %v --> %v", out, err)
++    if err != nil {
++        return "", err
++    }
++    return out, nil
++}
++
++func (s *Service) Running() bool{
++    status, err := s.Status()
++    logger.Infof("Service %q Status %q", s.Name, status)
++    if err != nil {
++        return false
++    }
++    if strings.TrimSpace(status) == "Stopped" {
++        return false
++    }
++    return true
++}
++
++func (s *Service) Installed() bool {
++    _, err := s.Status()
++    if err == nil {
++        return true
++    }
++    return false
++}
++
++func (s *Service) Start() error {
++    logger.Infof("Starting service %q", s.Name)
++    if s.Running() {
++        logger.Infof("Service %q ALREADY RUNNING", s.Name)
++        return nil
++    }
++    cmd := []string{
++        "powershell",
++        "Invoke-Command {",
++        fmt.Sprintf(`Start-Service "%s"`, s.Name),
++        exec.CheckError,
++        "}",
++    }
++    _, err := exec.RunCommand(cmd)
++    logger.Infof("--> Starting service %q", err)
++    if err != nil {
++        return err
++    }
++    return nil
++}
++
++func (s *Service) Stop() error {
++    if !s.Running() {
++        return nil
++    }
++    cmd := []string{
++        "powershell",
++        "Invoke-Command {",
++        fmt.Sprintf(`Stop-Service "%s"`, s.Name),
++        exec.CheckError,
++        "}",
++    }
++    _, err := exec.RunCommand(cmd)
++    if err != nil {
++        return err
++    }
++    return nil
++}
++
++func (s *Service) Remove() error {
++    _, err := s.Status()
++    if err != nil {
++        return err
++    }
++    cmd := []string{
++        "powershell",
++        "Invoke-Command {",
++        fmt.Sprintf(`$x = gwmi win32_service -filter 'name="%s"'`, s.Name),
++        exec.CheckError,
++        "$x.Delete()",
++        exec.CheckError,
++        "}",
++    }
++    _, errCmd := exec.RunCommand(cmd)
++    if errCmd != nil {
++        return errCmd
++    }
++    return nil
++}
++
++func (c *Cmd) validate() error {
++    if c.ServiceBin == "" {
++        return errors.New("missing Service")
++    }
++    if c.Cmd == "" {
++        return errors.New("missing Cmd")
++    }
++    if c.Description == "" {
++        return errors.New("missing Description")
++    }
++    if c.Name == "" {
++        return errors.New("missing Name")
++    }
++    return nil
++}
++
++func (c *Cmd) Install() error{
++    err := c.validate()
++    if err != nil {
++        return err
++    }
++    if c.Service.Installed(){
++        return errors.New(fmt.Sprintf("Service %s already installed", c.Service.Name))
++    }
++    logger.Infof("Installing Service %v", c.Service.Name)
++    serviceString := fmt.Sprintf(`"%s" "%s" %s`, c.ServiceBin, c.Service.Name, c.Cmd)
++    cmd := []string{
++        "powershell",
++        "Invoke-Command {",
++        fmt.Sprintf(`$data = Get-Content C:\Juju\Jujud.pass`),
++        exec.CheckError,
++        fmt.Sprintf(`$secpasswd = $data | convertto-securestring`),
++        exec.CheckError,
++        fmt.Sprintf(`$juju_user = whoami`),
++        exec.CheckError,
++        fmt.Sprintf(`$jujuCreds = New-Object System.Management.Automation.PSCredential($juju_user, $secpasswd)`),
++        exec.CheckError,
++        fmt.Sprintf(`New-Service -Credential $jujuCreds -Name '%s' -DisplayName '%s' '%s'`, c.Service.Name, c.Description, serviceString),
++        exec.CheckError,
++        "}",
++    }
++    outCmd, errCmd := exec.RunCommand(cmd)
++    
++    if errCmd != nil {
++        logger.Infof("ERROR installing service %v --> %v", outCmd, errCmd)
++        return errCmd
++    }
++
++    // delayedCmd := []string{
++    //     "powershell",
++    //     "Invoke-Command {",
++    //     fmt.Sprintf(`cmd.exe /C call sc config %s start=delayed-auto`, c.Service.Name),
++    //     exec.CheckError,
++    //     "}",
++    // }
++    // logger.Infof("INFO Running: sc config %s start=delayed-auto", c.Service.Name)
++    // delayedOutCmd, errDelayed := exec.RunCommand(delayedCmd)
++    // logger.Infof("INFO SC command result: %v --> %v", delayedOutCmd, errDelayed)
++    // if errCmd != nil {
++    //     logger.Infof("ERROR setting %s to delay start: %v --> %v", c.Service.Name, delayedOutCmd, errDelayed)
++    //     return errCmd
++    // }
++
++    return c.Service.Start()
++}
++
++func (s *Service) StopAndRemove() error {
++    err := s.Stop()
++    if err != nil {
++        return err
++    }
++    return s.Remove()
++}
++
++func NewService(name string) *Service{
++    return &Service{
++        Name: name,
++    }
++}
+
+=== added file 'windows/util_windows.go'
+--- windows/util_windows.go	1970-01-01 00:00:00 +0000
++++ windows/util_windows.go	2014-04-23 11:49:11 +0000
+@@ -0,0 +1,21 @@
++package windows
++
++import (
++    "strconv"
++
++    "launchpad.net/juju-core/utils/exec"
++)
++
++func Reboot(when int) error {
++    cmd := []string{
++        "shutdown.exe",
++        "-r",
++        "-t",
++        strconv.Itoa(when),
++    }
++    _, err := exec.RunCommand(cmd)
++    if err != nil {
++        return err
++    }
++    return nil
++}
+\ No newline at end of file
+
+=== added file 'windows/vars_windows.go'
+--- windows/vars_windows.go	1970-01-01 00:00:00 +0000
++++ windows/vars_windows.go	2014-04-23 11:49:11 +0000
+@@ -0,0 +1,5 @@
++package windows
++
++var (
++    MUST_REBOOT = 1001
++)
+\ No newline at end of file
+
+=== removed file 'worker/deployer/simple.go'
+--- worker/deployer/simple.go	2014-02-28 13:47:01 +0000
++++ worker/deployer/simple.go	1970-01-01 00:00:00 +0000
+@@ -1,222 +0,0 @@
+-// Copyright 2012, 2013 Canonical Ltd.
+-// Licensed under the AGPLv3, see LICENCE file for details.
+-
+-package deployer
+-
+-import (
+-	"fmt"
+-	"io/ioutil"
+-	"os"
+-	"path"
+-	"regexp"
+-	"strings"
+-
+-	"launchpad.net/juju-core/agent"
+-	"launchpad.net/juju-core/agent/tools"
+-	"launchpad.net/juju-core/juju/osenv"
+-	"launchpad.net/juju-core/names"
+-	"launchpad.net/juju-core/state/api/params"
+-	"launchpad.net/juju-core/upstart"
+-	"launchpad.net/juju-core/version"
+-)
+-
+-// InitDir is the default upstart init directory.
+-// This is a var so it can be overridden by tests.
+-var InitDir = "/etc/init"
+-
+-// APICalls defines the interface to the API that the simple context needs.
+-type APICalls interface {
+-	ConnectionInfo() (params.DeployerConnectionValues, error)
+-}
+-
+-// SimpleContext is a Context that manages unit deployments via upstart
+-// jobs on the local system.
+-type SimpleContext struct {
+-
+-	// api is used to get the current state server addresses at the time the
+-	// given unit is deployed.
+-	api APICalls
+-
+-	// agentConfig returns the agent config for the machine agent that is
+-	// running the deployer.
+-	agentConfig agent.Config
+-
+-	// initDir specifies the directory used by upstart on the local system.
+-	// It is typically set to "/etc/init".
+-	initDir string
+-}
+-
+-var _ Context = (*SimpleContext)(nil)
+-
+-// NewSimpleContext returns a new SimpleContext, acting on behalf of
+-// the specified deployer, that deploys unit agents as upstart jobs in
+-// "/etc/init". Paths to which agents and tools are installed are
+-// relative to dataDir.
+-func NewSimpleContext(agentConfig agent.Config, api APICalls) *SimpleContext {
+-	return &SimpleContext{
+-		api:         api,
+-		agentConfig: agentConfig,
+-		initDir:     InitDir,
+-	}
+-}
+-
+-func (ctx *SimpleContext) AgentConfig() agent.Config {
+-	return ctx.agentConfig
+-}
+-
+-func (ctx *SimpleContext) DeployUnit(unitName, initialPassword string) (err error) {
+-	// Check sanity.
+-	svc := ctx.upstartService(unitName)
+-	if svc.Installed() {
+-		return fmt.Errorf("unit %q is already deployed", unitName)
+-	}
+-
+-	// Link the current tools for use by the new agent.
+-	tag := names.UnitTag(unitName)
+-	dataDir := ctx.agentConfig.DataDir()
+-	logDir := ctx.agentConfig.LogDir()
+-	_, err = tools.ChangeAgentTools(dataDir, tag, version.Current)
+-	toolsDir := tools.ToolsDir(dataDir, tag)
+-	defer removeOnErr(&err, toolsDir)
+-
+-	result, err := ctx.api.ConnectionInfo()
+-	if err != nil {
+-		return err
+-	}
+-	logger.Debugf("state addresses: %q", result.StateAddresses)
+-	logger.Debugf("API addresses: %q", result.APIAddresses)
+-	containerType := ctx.agentConfig.Value(agent.ContainerType)
+-	namespace := ctx.agentConfig.Value(agent.Namespace)
+-	conf, err := agent.NewAgentConfig(
+-		agent.AgentConfigParams{
+-			DataDir:           dataDir,
+-			LogDir:            logDir,
+-			UpgradedToVersion: version.Current.Number,
+-			Tag:               tag,
+-			Password:          initialPassword,
+-			Nonce:             "unused",
+-			// TODO: remove the state addresses here and test when api only.
+-			StateAddresses: result.StateAddresses,
+-			APIAddresses:   result.APIAddresses,
+-			CACert:         ctx.agentConfig.CACert(),
+-			Values: map[string]string{
+-				agent.ContainerType: containerType,
+-				agent.Namespace:     namespace,
+-			},
+-		})
+-	if err != nil {
+-		return err
+-	}
+-	if err := conf.Write(); err != nil {
+-		return err
+-	}
+-	defer removeOnErr(&err, conf.Dir())
+-
+-	// Install an upstart job that runs the unit agent.
+-	logPath := path.Join(logDir, tag+".log")
+-	cmd := strings.Join([]string{
+-		path.Join(toolsDir, "jujud"), "unit",
+-		"--data-dir", dataDir,
+-		"--unit-name", unitName,
+-		"--debug", // TODO: propagate debug state sensibly
+-	}, " ")
+-	// TODO(thumper): 2013-09-02 bug 1219630
+-	// As much as I'd like to remove JujuContainerType now, it is still
+-	// needed as MAAS still needs it at this stage, and we can't fix
+-	// everything at once.
+-	uconf := &upstart.Conf{
+-		Service: *svc,
+-		Desc:    "juju unit agent for " + unitName,
+-		Cmd:     cmd,
+-		Out:     logPath,
+-		Env: map[string]string{
+-			osenv.JujuContainerTypeEnvKey: containerType,
+-		},
+-	}
+-	return uconf.Install()
+-}
+-
+-// findUpstartJob tries to find an upstart job matching the
+-// given unit name in one of these formats:
+-//   jujud-<deployer-tag>:<unit-tag>.conf (for compatibility)
+-//   jujud-<unit-tag>.conf (default)
+-func (ctx *SimpleContext) findUpstartJob(unitName string) *upstart.Service {
+-	unitsAndJobs, err := ctx.deployedUnitsUpstartJobs()
+-	if err != nil {
+-		return nil
+-	}
+-	if job, ok := unitsAndJobs[unitName]; ok {
+-		svc := upstart.NewService(job)
+-		svc.InitDir = ctx.initDir
+-		return svc
+-	}
+-	return nil
+-}
+-
+-func (ctx *SimpleContext) RecallUnit(unitName string) error {
+-	svc := ctx.findUpstartJob(unitName)
+-	if svc == nil || !svc.Installed() {
+-		return fmt.Errorf("unit %q is not deployed", unitName)
+-	}
+-	if err := svc.StopAndRemove(); err != nil {
+-		return err
+-	}
+-	tag := names.UnitTag(unitName)
+-	dataDir := ctx.agentConfig.DataDir()
+-	agentDir := agent.Dir(dataDir, tag)
+-	if err := os.RemoveAll(agentDir); err != nil {
+-		return err
+-	}
+-	toolsDir := tools.ToolsDir(dataDir, tag)
+-	return os.Remove(toolsDir)
+-}
+-
+-var deployedRe = regexp.MustCompile("^(jujud-.*unit-([a-z0-9-]+)-([0-9]+))\\.conf$")
+-
+-func (ctx *SimpleContext) deployedUnitsUpstartJobs() (map[string]string, error) {
+-	fis, err := ioutil.ReadDir(ctx.initDir)
+-	if err != nil {
+-		return nil, err
+-	}
+-	installed := make(map[string]string)
+-	for _, fi := range fis {
+-		if groups := deployedRe.FindStringSubmatch(fi.Name()); len(groups) == 4 {
+-			unitName := groups[2] + "/" + groups[3]
+-			if !names.IsUnit(unitName) {
+-				continue
+-			}
+-			installed[unitName] = groups[1]
+-		}
+-	}
+-	return installed, nil
+-}
+-
+-func (ctx *SimpleContext) DeployedUnits() ([]string, error) {
+-	unitsAndJobs, err := ctx.deployedUnitsUpstartJobs()
+-	if err != nil {
+-		return nil, err
+-	}
+-	var installed []string
+-	for unitName := range unitsAndJobs {
+-		installed = append(installed, unitName)
+-	}
+-	return installed, nil
+-}
+-
+-// upstartService returns an upstart.Service corresponding to the specified
+-// unit.
+-func (ctx *SimpleContext) upstartService(unitName string) *upstart.Service {
+-	tag := names.UnitTag(unitName)
+-	svcName := "jujud-" + tag
+-	svc := upstart.NewService(svcName)
+-	svc.InitDir = ctx.initDir
+-	return svc
+-}
+-
+-func removeOnErr(err *error, path string) {
+-	if *err != nil {
+-		if err := os.Remove(path); err != nil {
+-			logger.Warningf("installer: cannot remove %q: %v", path, err)
+-		}
+-	}
+-}
+
+=== added file 'worker/deployer/simple_linux.go'
+--- worker/deployer/simple_linux.go	1970-01-01 00:00:00 +0000
++++ worker/deployer/simple_linux.go	2014-05-22 20:50:02 +0000
+@@ -0,0 +1,222 @@
++// Copyright 2012, 2013 Canonical Ltd.
++// Licensed under the AGPLv3, see LICENCE file for details.
++
++package deployer
++
++import (
++	"fmt"
++	"io/ioutil"
++	"os"
++	"path"
++	"regexp"
++	"strings"
++
++	"launchpad.net/juju-core/agent"
++	"launchpad.net/juju-core/agent/tools"
++	"launchpad.net/juju-core/juju/osenv"
++	"launchpad.net/juju-core/names"
++	"launchpad.net/juju-core/state/api/params"
++	"launchpad.net/juju-core/upstart"
++	"launchpad.net/juju-core/version"
++)
++
++// InitDir is the default upstart init directory.
++// This is a var so it can be overridden by tests.
++var InitDir = "/etc/init"
++
++// APICalls defines the interface to the API that the simple context needs.
++type APICalls interface {
++	ConnectionInfo() (params.DeployerConnectionValues, error)
++}
++
++// SimpleContext is a Context that manages unit deployments via upstart
++// jobs on the local system.
++type SimpleContext struct {
++
++	// api is used to get the current state server addresses at the time the
++	// given unit is deployed.
++	api APICalls
++
++	// agentConfig returns the agent config for the machine agent that is
++	// running the deployer.
++	agentConfig agent.Config
++
++	// initDir specifies the directory used by upstart on the local system.
++	// It is typically set to "/etc/init".
++	initDir string
++}
++
++var _ Context = (*SimpleContext)(nil)
++
++// NewSimpleContext returns a new SimpleContext, acting on behalf of
++// the specified deployer, that deploys unit agents as upstart jobs in
++// "/etc/init". Paths to which agents and tools are installed are
++// relative to dataDir.
++func NewSimpleContext(agentConfig agent.Config, api APICalls) *SimpleContext {
++	return &SimpleContext{
++		api:         api,
++		agentConfig: agentConfig,
++		initDir:     InitDir,
++	}
++}
++
++func (ctx *SimpleContext) AgentConfig() agent.Config {
++	return ctx.agentConfig
++}
++
++func (ctx *SimpleContext) DeployUnit(unitName, initialPassword string) (err error) {
++	// Check sanity.
++	svc := ctx.upstartService(unitName)
++	if svc.Installed() {
++		return fmt.Errorf("unit %q is already deployed", unitName)
++	}
++
++	// Link the current tools for use by the new agent.
++	tag := names.UnitTag(unitName)
++	dataDir := ctx.agentConfig.DataDir()
++	logDir := ctx.agentConfig.LogDir()
++	_, err = tools.ChangeAgentTools(dataDir, tag, version.Current)
++	toolsDir := tools.ToolsDir(dataDir, tag)
++	defer removeOnErr(&err, toolsDir)
++
++	result, err := ctx.api.ConnectionInfo()
++	if err != nil {
++		return err
++	}
++	logger.Debugf("state addresses: %q", result.StateAddresses)
++	logger.Debugf("API addresses: %q", result.APIAddresses)
++	containerType := ctx.agentConfig.Value(agent.ContainerType)
++	namespace := ctx.agentConfig.Value(agent.Namespace)
++	conf, err := agent.NewAgentConfig(
++		agent.AgentConfigParams{
++			DataDir:           dataDir,
++			LogDir:            logDir,
++			UpgradedToVersion: version.Current.Number,
++			Tag:               tag,
++			Password:          initialPassword,
++			Nonce:             "unused",
++			// TODO: remove the state addresses here and test when api only.
++			StateAddresses: result.StateAddresses,
++			APIAddresses:   result.APIAddresses,
++			CACert:         ctx.agentConfig.CACert(),
++			Values: map[string]string{
++				agent.ContainerType: containerType,
++				agent.Namespace:     namespace,
++			},
++		})
++	if err != nil {
++		return err
++	}
++	if err := conf.Write(); err != nil {
++		return err
++	}
++	defer removeOnErr(&err, conf.Dir())
++
++	// Install an upstart job that runs the unit agent.
++	logPath := path.Join(logDir, tag+".log")
++	cmd := strings.Join([]string{
++		path.Join(toolsDir, "jujud"), "unit",
++		"--data-dir", dataDir,
++		"--unit-name", unitName,
++		"--debug", // TODO: propagate debug state sensibly
++	}, " ")
++	// TODO(thumper): 2013-09-02 bug 1219630
++	// As much as I'd like to remove JujuContainerType now, it is still
++	// needed as MAAS still needs it at this stage, and we can't fix
++	// everything at once.
++	uconf := &upstart.Conf{
++		Service: *svc,
++		Desc:    "juju unit agent for " + unitName,
++		Cmd:     cmd,
++		Out:     logPath,
++		Env: map[string]string{
++			osenv.JujuContainerTypeEnvKey: containerType,
++		},
++	}
++	return uconf.Install()
++}
++
++// findUpstartJob tries to find an upstart job matching the
++// given unit name in one of these formats:
++//   jujud-<deployer-tag>:<unit-tag>.conf (for compatibility)
++//   jujud-<unit-tag>.conf (default)
++func (ctx *SimpleContext) findUpstartJob(unitName string) *upstart.Service {
++	unitsAndJobs, err := ctx.deployedUnitsUpstartJobs()
++	if err != nil {
++		return nil
++	}
++	if job, ok := unitsAndJobs[unitName]; ok {
++		svc := upstart.NewService(job)
++		svc.InitDir = ctx.initDir
++		return svc
++	}
++	return nil
++}
++
++func (ctx *SimpleContext) RecallUnit(unitName string) error {
++	svc := ctx.findUpstartJob(unitName)
++	if svc == nil || !svc.Installed() {
++		return fmt.Errorf("unit %q is not deployed", unitName)
++	}
++	if err := svc.StopAndRemove(); err != nil {
++		return err
++	}
++	tag := names.UnitTag(unitName)
++	dataDir := ctx.agentConfig.DataDir()
++	agentDir := agent.Dir(dataDir, tag)
++	if err := os.RemoveAll(agentDir); err != nil {
++		return err
++	}
++	toolsDir := tools.ToolsDir(dataDir, tag)
++	return os.Remove(toolsDir)
++}
++
++var deployedRe = regexp.MustCompile("^(jujud-.*unit-([a-z0-9-]+)-([0-9]+))\\.conf$")
++
++func (ctx *SimpleContext) deployedUnitsUpstartJobs() (map[string]string, error) {
++	fis, err := ioutil.ReadDir(ctx.initDir)
++	if err != nil {
++		return nil, err
++	}
++	installed := make(map[string]string)
++	for _, fi := range fis {
++		if groups := deployedRe.FindStringSubmatch(fi.Name()); len(groups) == 4 {
++			unitName := groups[2] + "/" + groups[3]
++			if !names.IsUnit(unitName) {
++				continue
++			}
++			installed[unitName] = groups[1]
++		}
++	}
++	return installed, nil
++}
++
++func (ctx *SimpleContext) DeployedUnits() ([]string, error) {
++	unitsAndJobs, err := ctx.deployedUnitsUpstartJobs()
++	if err != nil {
++		return nil, err
++	}
++	var installed []string
++	for unitName := range unitsAndJobs {
++		installed = append(installed, unitName)
++	}
++	return installed, nil
++}
++
++// upstartService returns an upstart.Service corresponding to the specified
++// unit.
++func (ctx *SimpleContext) upstartService(unitName string) *upstart.Service {
++	tag := names.UnitTag(unitName)
++	svcName := "jujud-" + tag
++	svc := upstart.NewService(svcName)
++	svc.InitDir = ctx.initDir
++	return svc
++}
++
++func removeOnErr(err *error, path string) {
++	if *err != nil {
++		if err := os.Remove(path); err != nil {
++			logger.Warningf("installer: cannot remove %q: %v", path, err)
++		}
++	}
++}
+
+=== added file 'worker/deployer/simple_windows.go'
+--- worker/deployer/simple_windows.go	1970-01-01 00:00:00 +0000
++++ worker/deployer/simple_windows.go	2014-05-23 02:36:01 +0000
+@@ -0,0 +1,232 @@
++package deployer
++
++import (
++    "fmt"
++    // "io/ioutil"
++    "os"
++    "path"
++    "regexp"
++    "strings"
++
++    "launchpad.net/juju-core/agent"
++    "launchpad.net/juju-core/agent/tools"
++    // "launchpad.net/juju-core/juju/osenv"
++    "launchpad.net/juju-core/names"
++    "launchpad.net/juju-core/utils"
++    "launchpad.net/juju-core/utils/exec"
++    "launchpad.net/juju-core/state/api/params"
++    // "launchpad.net/juju-core/upstart"
++    "launchpad.net/juju-core/version"
++    "launchpad.net/juju-core/windows/service"
++)
++
++// APICalls defines the interface to the API that the simple context needs.
++type APICalls interface {
++    ConnectionInfo() (params.DeployerConnectionValues, error)
++}
++
++// SimpleContext is a Context that manages unit deployments via upstart
++// jobs on the local system.
++type SimpleContext struct {
++
++    // api is used to get the current state server addresses at the time the
++    // given unit is deployed.
++    api APICalls
++
++    // agentConfig returns the agent config for the machine agent that is
++    // running the deployer.
++    agentConfig agent.Config
++}
++
++var _ Context = (*SimpleContext)(nil)
++
++// NewSimpleContext returns a new SimpleContext, acting on behalf of
++// the specified deployer, that deploys unit agents as upstart jobs in
++// "/etc/init". Paths to which agents and tools are installed are
++// relative to dataDir.
++func NewSimpleContext(agentConfig agent.Config, api APICalls) *SimpleContext {
++    return &SimpleContext{
++        api:         api,
++        agentConfig: agentConfig,
++    }
++}
++
++func (ctx *SimpleContext) AgentConfig() agent.Config {
++    return ctx.agentConfig
++}
++
++
++func (ctx *SimpleContext) DeployUnit(unitName, initialPassword string) (err error) {
++    // Check sanity.
++    svc := ctx.winService(unitName)
++    if svc.Installed() {
++        return fmt.Errorf("unit %q is already deployed", unitName)
++    }
++
++    // Link the current tools for use by the new agent.
++    tag := names.UnitTag(unitName)
++    dataDir := ctx.agentConfig.DataDir()
++    logDir := ctx.agentConfig.LogDir()
++    _, err = tools.ChangeAgentTools(dataDir, tag, version.Current)
++    toolsDir := tools.ToolsDir(dataDir, tag)
++    defer removeOnErr(&err, toolsDir)
++
++    result, err := ctx.api.ConnectionInfo()
++    if err != nil {
++        return err
++    }
++    logger.Debugf("state addresses: %q", result.StateAddresses)
++    logger.Debugf("API addresses: %q", result.APIAddresses)
++    containerType := ctx.agentConfig.Value(agent.ContainerType)
++    namespace := ctx.agentConfig.Value(agent.Namespace)
++    conf, err := agent.NewAgentConfig(
++        agent.AgentConfigParams{
++            DataDir:           dataDir,
++            LogDir:            logDir,
++            UpgradedToVersion: version.Current.Number,
++            Tag:               tag,
++            Password:          initialPassword,
++            Nonce:             "unused",
++            // TODO: remove the state addresses here and test when api only.
++            StateAddresses: result.StateAddresses,
++            APIAddresses:   result.APIAddresses,
++            CACert:         ctx.agentConfig.CACert(),
++            Values: map[string]string{
++                agent.ContainerType: containerType,
++                agent.Namespace:     namespace,
++            },
++        })
++    if err != nil {
++        return err
++    }
++    if err := conf.Write(); err != nil {
++        return err
++    }
++    defer removeOnErr(&err, conf.Dir())
++
++    // Install a windows service that runs the unit agent.
++    logPath := path.Join(logDir, tag+".log")
++    jujuServiceWrapper := path.Join(toolsDir, "JujuService.exe")
++    cmd := strings.Join([]string{
++        path.Join(toolsDir, "jujud.exe"), "unit",
++        "--data-dir", dataDir,
++        "--unit-name", unitName,
++        "--debug", // TODO: propagate debug state sensibly
++        "--log-file", logPath,
++    }, " ")
++
++    winCmd := &service.Cmd{
++        Service:        *svc,
++        Description:    "juju unit agent for " + unitName,
++        Cmd:            cmd,
++        ServiceBin:     jujuServiceWrapper,
++    }
++    return winCmd.Install()
++}
++
++// findUpstartJob tries to find an upstart job matching the
++// given unit name in one of these formats:
++//   jujud-<deployer-tag>:<unit-tag>.conf (for compatibility)
++//   jujud-<unit-tag>.conf (default)
++func (ctx *SimpleContext) findJob(unitName string) *service.Service {
++    unitsAndJobs, err := ctx.deployedUnitsJobs()
++    if err != nil {
++        return nil
++    }
++    if _, ok := unitsAndJobs[unitName]; ok {
++        svc := ctx.winService(unitName)
++        return svc
++    }
++    return nil
++}
++
++func (ctx *SimpleContext) RecallUnit(unitName string) error {
++    logger.Debugf("recallinf unit: %q", unitName)
++    svc := ctx.findJob(unitName)
++    if svc == nil || !svc.Installed() {
++        return fmt.Errorf("unit %q is not deployed", unitName)
++    }
++    if err := svc.StopAndRemove(); err != nil {
++        return err
++    }
++    logger.Debugf("getting tag for: %q", unitName)
++    tag := names.UnitTag(unitName)
++    dataDir := ctx.agentConfig.DataDir()
++    agentDir := agent.Dir(dataDir, tag)
++    // Recursivley change mode to 777 on windows to avoid
++    // Operation not permitted
++    err := utils.RChmod(agentDir, os.FileMode(0777))
++    if err != nil {
++        return err
++    }
++    if err := os.RemoveAll(agentDir); err != nil {
++        return err
++    }
++    toolsDir := tools.ToolsDir(dataDir, tag)
++    return os.Remove(toolsDir)
++}
++
++var deployedRe = regexp.MustCompile("^(jujud-.*unit-([a-z0-9-]+)-([0-9]+))$")
++
++func (ctx *SimpleContext) deployedUnitsJobs() (map[string]string, error) {
++    cmd := []string{
++        "powershell",
++        "Invoke-Command {",
++        `$x = Get-Service "jujud-*"`,
++        exec.CheckError,
++        "$x.Name",
++        "}",
++    }
++    services, err := exec.RunCommand(cmd)
++    if err != nil {
++        return nil, err
++    }
++    units := strings.Split(services, "\r\n")
++
++    installed := make(map[string]string)
++    for i := range units {
++        if groups := deployedRe.FindStringSubmatch(units[i]); len(groups) == 4 {
++            unitName := groups[2] + "/" + groups[3]
++            if !names.IsUnit(unitName) {
++                continue
++            }
++            installed[unitName] = groups[1]
++        }
++    }
++    return installed, nil
++}
++
++func (ctx *SimpleContext) DeployedUnits() ([]string, error) {
++    unitsAndJobs, err := ctx.deployedUnitsJobs()
++    if err != nil {
++        return nil, err
++    }
++    var installed []string
++    for unitName := range unitsAndJobs {
++        installed = append(installed, unitName)
++    }
++    return installed, nil
++}
++
++func (ctx *SimpleContext) getSvcName(unitName string) string {
++    logger.Debugf("get svc name: %q", unitName)
++    tag := names.UnitTag(unitName)
++    svcName := "jujud-" + tag
++    return svcName
++}
++
++// upstartService returns an upstart.Service corresponding to the specified
++// unit.
++func (ctx *SimpleContext) winService(unitName string) *service.Service {
++    svcName := ctx.getSvcName(unitName)
++    svc := service.NewService(svcName)
++    return svc
++}
++
++func removeOnErr(err *error, path string) {
++    if *err != nil {
++        if err := os.Remove(path); err != nil {
++            logger.Warningf("installer: cannot remove %q: %v", path, err)
++        }
++    }
++}
+
+=== modified file 'worker/provisioner/kvm-broker_test.go'
+--- worker/provisioner/kvm-broker_test.go	2014-05-14 21:13:17 +0000
++++ worker/provisioner/kvm-broker_test.go	2014-05-23 02:40:19 +0000
+@@ -85,7 +85,7 @@
+ 	machineNonce := "fake-nonce"
+ 	stateInfo := jujutesting.FakeStateInfo(machineId)
+ 	apiInfo := jujutesting.FakeAPIInfo(machineId)
+-	machineConfig := environs.NewMachineConfig(machineId, machineNonce, nil, nil, stateInfo, apiInfo)
++	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "", nil, nil, stateInfo, apiInfo)
+ 	cons := constraints.Value{}
+ 	possibleTools := s.broker.(coretools.HasTools).Tools("precise")
+ 	kvm, _, _, err := s.broker.StartInstance(environs.StartInstanceParams{
+
+=== modified file 'worker/provisioner/lxc-broker_test.go'
+--- worker/provisioner/lxc-broker_test.go	2014-05-16 03:25:36 +0000
++++ worker/provisioner/lxc-broker_test.go	2014-05-23 02:40:47 +0000
+@@ -87,7 +87,7 @@
+ 	machineNonce := "fake-nonce"
+ 	stateInfo := jujutesting.FakeStateInfo(machineId)
+ 	apiInfo := jujutesting.FakeAPIInfo(machineId)
+-	machineConfig := environs.NewMachineConfig(machineId, machineNonce, nil, nil, stateInfo, apiInfo)
++	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "", nil, nil, stateInfo, apiInfo)
+ 	cons := constraints.Value{}
+ 	possibleTools := s.broker.(coretools.HasTools).Tools("precise")
+ 	lxc, _, _, err := s.broker.StartInstance(environs.StartInstanceParams{
+
+=== modified file 'worker/provisioner/provisioner_task.go'
+--- worker/provisioner/provisioner_task.go	2014-05-14 02:59:53 +0000
++++ worker/provisioner/provisioner_task.go	2014-05-23 02:41:59 +0000
+@@ -551,7 +551,12 @@
+ 	includeNetworks := pInfo.IncludeNetworks
+ 	excludeNetworks := pInfo.ExcludeNetworks
+ 	nonce := fmt.Sprintf("%s:%s", task.machineTag, uuid.String())
+-	machineConfig := environs.NewMachineConfig(machine.Id(), nonce, includeNetworks, excludeNetworks, stateInfo, apiInfo)
++
++	serie, err := machine.Series()
++	if err != nil {
++		return nil, err
++	}
++	machineConfig := environs.NewMachineConfig(machine.Id(), nonce, serie, includeNetworks, excludeNetworks, stateInfo, apiInfo)
+ 	return &provisioningInfo{
+ 		Constraints:   pInfo.Constraints,
+ 		Series:        pInfo.Series,
+
+=== modified file 'worker/uniter/charm/bundles.go'
+--- worker/uniter/charm/bundles.go	2014-05-13 04:30:48 +0000
++++ worker/uniter/charm/bundles.go	2014-05-23 02:45:33 +0000
+@@ -7,6 +7,7 @@
+ 	"fmt"
+ 	"os"
+ 	"path"
++	"runtime"
+ 
+ 	"github.com/juju/errors"
+ 
+@@ -71,8 +72,13 @@
+ 				return st.Err
+ 			}
+ 			logger.Infof("download complete")
+-			defer st.File.Close()
+ 			actualSha256, _, err := utils.ReadSHA256(st.File)
++			// Renaming an open file is not possible on windows
++			if runtime.GOOS == "windows" {
++				st.File.Close()
++			}else{
++				defer st.File.Close()
++			}
+ 			if err != nil {
+ 				return err
+ 			}
+
+=== modified file 'worker/uniter/charm/git_deployer.go'
+--- worker/uniter/charm/git_deployer.go	2014-03-27 15:47:22 +0000
++++ worker/uniter/charm/git_deployer.go	2014-05-23 02:47:10 +0000
+@@ -9,6 +9,9 @@
+ 	"os"
+ 	"path/filepath"
+ 	"time"
++	"runtime"
++
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ const (
+@@ -94,9 +97,15 @@
+ 
+ 	// Atomically rename fresh repository to current.
+ 	tmplink := filepath.Join(updatePath, "tmplink")
+-	if err = os.Symlink(updatePath, tmplink); err != nil {
++	if err = utils.Symlink(updatePath, tmplink); err != nil {
+ 		return err
+ 	}
++	// You cannot rename a symlink if destination exists
++	if runtime.GOOS == "windows" {
++		if _, err := os.Stat(d.current.Path()); err == nil {
++			_ = os.RemoveAll(d.current.Path())
++		}
++	}
+ 	return os.Rename(tmplink, d.current.Path())
+ }
+ 
+@@ -195,7 +204,7 @@
+ // repos are orphans, and all will be deleted; this should only be the case when
+ // converting a gitDeployer to a manifestDeployer.
+ func collectGitOrphans(dataPath string) {
+-	current, err := os.Readlink(filepath.Join(dataPath, gitCurrentPath))
++	current, err := utils.Readlink(filepath.Join(dataPath, gitCurrentPath))
+ 	if os.IsNotExist(err) {
+ 		logger.Warningf("no current staging repo")
+ 	} else if err != nil {
+
+=== modified file 'worker/uniter/charm/git_deployer_test.go'
+--- worker/uniter/charm/git_deployer_test.go	2014-03-27 15:47:22 +0000
++++ worker/uniter/charm/git_deployer_test.go	2014-05-23 02:48:54 +0000
+@@ -13,6 +13,7 @@
+ 	corecharm "launchpad.net/juju-core/charm"
+ 	"launchpad.net/juju-core/testing"
+ 	"launchpad.net/juju-core/worker/uniter/charm"
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ type GitDeployerSuite struct {
+@@ -73,7 +74,7 @@
+ 	info1 := s.bundles.AddCustomBundle(c, corecharm.MustParseURL("cs:s/c-1"), func(path string) {
+ 		err := ioutil.WriteFile(filepath.Join(path, "some-file"), []byte("hello"), 0644)
+ 		c.Assert(err, gc.IsNil)
+-		err = os.Symlink("./some-file", filepath.Join(path, "a-symlink"))
++		err = utils.Symlink("./some-file", filepath.Join(path, "a-symlink"))
+ 		c.Assert(err, gc.IsNil)
+ 	})
+ 	err := s.deployer.Stage(info1, nil)
+@@ -206,7 +207,7 @@
+ 	c.Assert(err, gc.IsNil)
+ 	c.Assert(updateDirs, gc.HasLen, 1)
+ 	deployerCurrent := charm.GitDeployerCurrent(d)
+-	current, err := os.Readlink(deployerCurrent.Path())
++	current, err := utils.Readlink(deployerCurrent.Path())
+ 	c.Assert(err, gc.IsNil)
+ 	c.Assert(updateDirs[0], gc.Equals, current)
+ 
+
+=== modified file 'worker/uniter/context.go'
+--- worker/uniter/context.go	2014-03-17 05:49:29 +0000
++++ worker/uniter/context.go	2014-05-23 02:55:54 +0000
+@@ -7,13 +7,14 @@
+ 	"bufio"
+ 	"fmt"
+ 	"io"
+-	"os"
++	// "os"
+ 	"os/exec"
+-	"path/filepath"
++	// "path/filepath"
+ 	"sort"
+-	"strings"
++	// "strings"
+ 	"sync"
+ 	"time"
++	"syscall"
+ 
+ 	"github.com/juju/loggo"
+ 
+@@ -30,6 +31,22 @@
+ 	hookName string
+ }
+ 
++func RebootRequiredError(err error) bool {
++	if err == nil {
++		return false
++	}
++	msg, _ := err.(*exec.ExitError)
++	if msg == nil {
++		return false
++	}
++	code := msg.Sys().(syscall.WaitStatus).ExitStatus()
++	if code == osenv.MustReboot {
++		return true
++	}
++
++	return false
++}
++
+ func (e *missingHookError) Error() string {
+ 	return e.hookName + " does not exist"
+ }
+@@ -175,33 +192,15 @@
+ 	return ids
+ }
+ 
+-// hookVars returns an os.Environ-style list of strings necessary to run a hook
+-// such that it can know what environment it's operating in, and can call back
+-// into ctx.
+-func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
+-	vars := []string{
+-		"APT_LISTCHANGES_FRONTEND=none",
+-		"DEBIAN_FRONTEND=noninteractive",
+-		"PATH=" + toolsDir + ":" + os.Getenv("PATH"),
+-		"CHARM_DIR=" + charmDir,
+-		"JUJU_CONTEXT_ID=" + ctx.id,
+-		"JUJU_AGENT_SOCKET=" + socketPath,
+-		"JUJU_UNIT_NAME=" + ctx.unit.Name(),
+-		"JUJU_ENV_UUID=" + ctx.uuid,
+-		"JUJU_ENV_NAME=" + ctx.envName,
+-		"JUJU_API_ADDRESSES=" + strings.Join(ctx.apiAddrs, " "),
+-	}
+-	if r, found := ctx.HookRelation(); found {
+-		vars = append(vars, "JUJU_RELATION="+r.Name())
+-		vars = append(vars, "JUJU_RELATION_ID="+r.FakeId())
+-		name, _ := ctx.RemoteUnitName()
+-		vars = append(vars, "JUJU_REMOTE_UNIT="+name)
+-	}
+-	vars = append(vars, ctx.proxySettings.AsEnvironmentValues()...)
+-	return vars
+-}
+-
+ func (ctx *HookContext) finalizeContext(process string, err error) error {
++	if err != nil{
++		// gsamfira: We need this later to requeue the hook
++		logger.Infof("Checking if reboot is needed")
++		if RebootRequiredError(err){
++			logger.Infof("Error code is reboot code")
++			return err
++		}
++	}
+ 	writeChanges := err == nil
+ 	for id, rctx := range ctx.relations {
+ 		if writeChanges {
+@@ -252,40 +251,6 @@
+ 	return ctx.finalizeContext(hookName, err)
+ }
+ 
+-func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
+-	hook, err := exec.LookPath(filepath.Join(charmDir, "hooks", hookName))
+-	if err != nil {
+-		if ee, ok := err.(*exec.Error); ok && os.IsNotExist(ee.Err) {
+-			// Missing hook is perfectly valid, but worth mentioning.
+-			logger.Infof("skipped %q hook (not implemented)", hookName)
+-			return &missingHookError{hookName}
+-		}
+-		return err
+-	}
+-	ps := exec.Command(hook)
+-	ps.Env = env
+-	ps.Dir = charmDir
+-	outReader, outWriter, err := os.Pipe()
+-	if err != nil {
+-		return fmt.Errorf("cannot make logging pipe: %v", err)
+-	}
+-	ps.Stdout = outWriter
+-	ps.Stderr = outWriter
+-	hookLogger := &hookLogger{
+-		r:      outReader,
+-		done:   make(chan struct{}),
+-		logger: ctx.GetLogger(hookName),
+-	}
+-	go hookLogger.run()
+-	err = ps.Start()
+-	outWriter.Close()
+-	if err == nil {
+-		err = ps.Wait()
+-	}
+-	hookLogger.stop()
+-	return err
+-}
+-
+ type hookLogger struct {
+ 	r       io.ReadCloser
+ 	done    chan struct{}
+
+=== added file 'worker/uniter/context_linux.go'
+--- worker/uniter/context_linux.go	1970-01-01 00:00:00 +0000
++++ worker/uniter/context_linux.go	2014-05-23 02:59:30 +0000
+@@ -0,0 +1,73 @@
++package uniter
++
++import (
++    "fmt"
++    "os"
++    "os/exec"
++    "path/filepath"
++    "strings"
++    "strconv"
++
++    "launchpad.net/juju-core/juju/osenv"
++)
++
++// hookVars returns an os.Environ-style list of strings necessary to run a hook
++// such that it can know what environment it's operating in, and can call back
++// into ctx.
++func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
++	vars := []string{
++		"APT_LISTCHANGES_FRONTEND=none",
++		"DEBIAN_FRONTEND=noninteractive",
++		"PATH=" + toolsDir + ":" + os.Getenv("PATH"),
++		"CHARM_DIR=" + charmDir,
++		"JUJU_CONTEXT_ID=" + ctx.id,
++		"JUJU_AGENT_SOCKET=" + socketPath,
++		"JUJU_UNIT_NAME=" + ctx.unit.Name(),
++		"JUJU_ENV_UUID=" + ctx.uuid,
++		"JUJU_ENV_NAME=" + ctx.envName,
++		"JUJU_API_ADDRESSES=" + strings.Join(ctx.apiAddrs, " "),
++		"JUJU_MUST_REBOOT=" + strconv.Itoa(osenv.MustReboot),
++	}
++	if r, found := ctx.HookRelation(); found {
++		vars = append(vars, "JUJU_RELATION="+r.Name())
++		vars = append(vars, "JUJU_RELATION_ID="+r.FakeId())
++		name, _ := ctx.RemoteUnitName()
++		vars = append(vars, "JUJU_REMOTE_UNIT="+name)
++	}
++	vars = append(vars, ctx.proxySettings.AsEnvironmentValues()...)
++	return vars
++}
++
++func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
++	hook, err := exec.LookPath(filepath.Join(charmDir, "hooks", hookName))
++	if err != nil {
++		if ee, ok := err.(*exec.Error); ok && os.IsNotExist(ee.Err) {
++			// Missing hook is perfectly valid, but worth mentioning.
++			logger.Infof("skipped %q hook (not implemented)", hookName)
++			return &missingHookError{hookName}
++		}
++		return err
++	}
++	ps := exec.Command(hook)
++	ps.Env = env
++	ps.Dir = charmDir
++	outReader, outWriter, err := os.Pipe()
++	if err != nil {
++		return fmt.Errorf("cannot make logging pipe: %v", err)
++	}
++	ps.Stdout = outWriter
++	ps.Stderr = outWriter
++	hookLogger := &hookLogger{
++		r:      outReader,
++		done:   make(chan struct{}),
++		logger: ctx.GetLogger(hookName),
++	}
++	go hookLogger.run()
++	err = ps.Start()
++	outWriter.Close()
++	if err == nil {
++		err = ps.Wait()
++	}
++	hookLogger.stop()
++	return err
++}
+\ No newline at end of file
+
+=== added file 'worker/uniter/context_windows.go'
+--- worker/uniter/context_windows.go	1970-01-01 00:00:00 +0000
++++ worker/uniter/context_windows.go	2014-05-23 02:57:18 +0000
+@@ -0,0 +1,118 @@
++package uniter
++
++import (
++    "fmt"
++    "os"
++    "os/exec"
++    "path/filepath"
++    "strings"
++    "strconv"
++
++    "launchpad.net/juju-core/juju/osenv"
++)
++
++
++var suffixOrder = []string{
++    "ps1",
++    "cmd",
++    "bat",
++}
++
++func (ctx *HookContext) getScript (hookFile string) (string, string) {
++    for i := range suffixOrder {
++        file := hookFile + fmt.Sprintf(".%s", suffixOrder[i])
++        if _, err := os.Stat(file); err == nil {
++            return file, suffixOrder[i]
++        }
++    }
++    return hookFile, ""
++}
++
++func (ctx *HookContext) getCommand (hookFile, suffix string) []string {
++    var command []string
++    if suffix == "ps1"{
++        command = append(command, "powershell")
++        command = append(command, "-NonInteractive")
++        command = append(command, "-ExecutionPolicy")
++        command = append(command, "RemoteSigned")
++        command = append(command, "-File")
++        command = append(command, hookFile)
++        return command
++    }
++    command = append(command, hookFile)
++    return command
++}
++
++// hookVars returns an os.Environ-style list of strings necessary to run a hook
++// such that it can know what environment it's operating in, and can call back
++// into ctx.
++func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
++	environ := os.Environ()
++    for i:=0; i<len(environ); i++ {
++        if strings.ToUpper(environ[i][:5]) == "PATH=" {
++            environ[i] = fmt.Sprintf("Path=%s", filepath.FromSlash(toolsDir) + ";" + os.Getenv("PATH"))
++        }
++        if strings.ToUpper(environ[i][:13]) == "PSMODULEPATH=" {
++            charmModules := filepath.Join(charmDir, "Modules")
++            hookModules := filepath.Join(charmDir, "hooks", "Modules")
++            psModulePath := os.Getenv("PSMODULEPATH") + ";" + charmModules + ";" + hookModules
++            environ[i] = fmt.Sprintf("PSModulePath=%s", psModulePath)
++        }
++    }
++
++    environ = append(environ, "CHARM_DIR=" + filepath.FromSlash(charmDir))
++    environ = append(environ, "JUJU_CONTEXT_ID=" + ctx.id)
++    environ = append(environ, "JUJU_AGENT_SOCKET=" + socketPath)
++    environ = append(environ, "JUJU_UNIT_NAME=" + ctx.unit.Name())
++    environ = append(environ, "JUJU_ENV_UUID=" + ctx.uuid)
++    environ = append(environ, "JUJU_ENV_NAME=" + ctx.envName)
++    environ = append(environ, "JUJU_API_ADDRESSES=" + strings.Join(ctx.apiAddrs, " "))
++    environ = append(environ, "JUJU_MUST_REBOOT=" + strconv.Itoa(osenv.MustReboot))
++
++    if r, found := ctx.HookRelation(); found {
++        environ = append(environ, "JUJU_RELATION="+r.Name())
++        environ = append(environ, "JUJU_RELATION_ID="+r.FakeId())
++        name, _ := ctx.RemoteUnitName()
++        environ = append(environ, "JUJU_REMOTE_UNIT="+name)
++    }
++    return environ
++}
++
++func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
++	hookFile := filepath.Join(charmDir, "hooks", hookName)
++	suffixedHook, suffix := ctx.getScript(hookFile)
++	hook, err := exec.LookPath(suffixedHook)
++	if err != nil {
++		if ee, ok := err.(*exec.Error); ok && os.IsNotExist(ee.Err) {
++			// Missing hook is perfectly valid, but worth mentioning.
++			logger.Infof("skipped %q hook (not implemented)", hookName)
++			return &missingHookError{hookName}
++		}
++		return err
++	}
++	com := ctx.getCommand(hook, suffix)
++	logger.Infof("Running hook file: %q", hook)
++	
++	ps := exec.Command(com[0], com[1:]...)
++	ps.Env = env
++	ps.Dir = charmDir
++	outReader, outWriter, err := os.Pipe()
++	if err != nil {
++		return fmt.Errorf("cannot make logging pipe: %v", err)
++	}
++	ps.Stdout = outWriter
++	ps.Stderr = outWriter
++	hookLogger := &hookLogger{
++		r:      outReader,
++		done:   make(chan struct{}),
++		logger: ctx.GetLogger(hookName),
++	}
++	go hookLogger.run()
++	err = ps.Start()
++	outWriter.Close()
++	if err == nil {
++		err = ps.Wait()
++	}
++	hookLogger.stop()
++	return err
++}
+
+=== modified file 'worker/uniter/jujuc/server.go'
+--- worker/uniter/jujuc/server.go	2014-03-05 19:41:34 +0000
++++ worker/uniter/jujuc/server.go	2014-05-23 03:04:18 +0000
+@@ -19,24 +19,11 @@
+ 
+ 	"launchpad.net/juju-core/cmd"
+ 	"launchpad.net/juju-core/utils/exec"
++	"launchpad.net/juju-core/juju/osenv"
+ )
+ 
+ var logger = loggo.GetLogger("worker.uniter.jujuc")
+ 
+-// newCommands maps Command names to initializers.
+-var newCommands = map[string]func(Context) cmd.Command{
+-	"close-port":    NewClosePortCommand,
+-	"config-get":    NewConfigGetCommand,
+-	"juju-log":      NewJujuLogCommand,
+-	"open-port":     NewOpenPortCommand,
+-	"relation-get":  NewRelationGetCommand,
+-	"relation-ids":  NewRelationIdsCommand,
+-	"relation-list": NewRelationListCommand,
+-	"relation-set":  NewRelationSetCommand,
+-	"unit-get":      NewUnitGetCommand,
+-	"owner-get":     NewOwnerGetCommand,
+-}
+-
+ // CommandNames returns the names of all jujuc commands.
+ func CommandNames() (names []string) {
+ 	for name := range newCommands {
+@@ -127,7 +114,7 @@
+ 	if err := server.Register(&Jujuc{getCmd: getCmd}); err != nil {
+ 		return nil, err
+ 	}
+-	listener, err := net.Listen("unix", socketPath)
++	listener, err := net.Listen(osenv.SocketType, socketPath)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+
+=== added file 'worker/uniter/jujuc/server_linux.go'
+--- worker/uniter/jujuc/server_linux.go	1970-01-01 00:00:00 +0000
++++ worker/uniter/jujuc/server_linux.go	2014-05-23 03:03:35 +0000
+@@ -0,0 +1,19 @@
++package jujuc
++
++import (
++    "launchpad.net/juju-core/cmd"
++)
++
++// newCommands maps Command names to initializers.
++var newCommands = map[string]func(Context) cmd.Command{
++	"close-port":    NewClosePortCommand,
++	"config-get":    NewConfigGetCommand,
++	"juju-log":      NewJujuLogCommand,
++	"open-port":     NewOpenPortCommand,
++	"relation-get":  NewRelationGetCommand,
++	"relation-ids":  NewRelationIdsCommand,
++	"relation-list": NewRelationListCommand,
++	"relation-set":  NewRelationSetCommand,
++	"unit-get":      NewUnitGetCommand,
++	"owner-get":     NewOwnerGetCommand,
++}
+
+=== added file 'worker/uniter/jujuc/server_windows.go'
+--- worker/uniter/jujuc/server_windows.go	1970-01-01 00:00:00 +0000
++++ worker/uniter/jujuc/server_windows.go	2014-05-23 03:04:49 +0000
+@@ -0,0 +1,19 @@
++package jujuc
++
++import (
++    "launchpad.net/juju-core/cmd"
++)
++
++// newCommands maps Command names to initializers.
++var newCommands = map[string]func(Context) cmd.Command{
++	"close-port.exe":    NewClosePortCommand,
++	"config-get.exe":    NewConfigGetCommand,
++	"juju-log.exe":      NewJujuLogCommand,
++	"open-port.exe":     NewOpenPortCommand,
++	"relation-get.exe":  NewRelationGetCommand,
++	"relation-ids.exe":  NewRelationIdsCommand,
++	"relation-list.exe": NewRelationListCommand,
++	"relation-set.exe":  NewRelationSetCommand,
++	"unit-get.exe":      NewUnitGetCommand,
++	"owner-get.exe":     NewOwnerGetCommand,
++}
+
+=== modified file 'worker/uniter/runlistener.go'
+--- worker/uniter/runlistener.go	2014-03-07 18:13:56 +0000
++++ worker/uniter/runlistener.go	2014-05-23 12:13:17 +0000
+@@ -11,8 +11,10 @@
+ 	"net/rpc"
+ 	"os"
+ 	"sync"
++	"runtime"
+ 
+ 	"launchpad.net/juju-core/utils/exec"
++	"launchpad.net/juju-core/juju/osenv"
+ )
+ 
+ const JujuRunEndpoint = "JujuRunServer.RunCommands"
+@@ -59,11 +61,13 @@
+ 	if err := server.Register(&JujuRunServer{runner}); err != nil {
+ 		return nil, err
+ 	}
+-	// In case the unix socket is present, delete it.
+-	if err := os.Remove(socketPath); err != nil {
+-		logger.Tracef("ignoring error on removing %q: %v", socketPath, err)
++	if runtime.GOOS != "windows" {
++		// In case the unix socket is present, delete it.
++		if err := os.Remove(socketPath); err != nil {
++			logger.Tracef("ignoring error on removing %q: %v", socketPath, err)
++		}
+ 	}
+-	listener, err := net.Listen("unix", socketPath)
++	listener, err := net.Listen(osenv.SocketType, socketPath)
+ 	if err != nil {
+ 		logger.Errorf("failed to listen on unix:%s: %v", socketPath, err)
+ 		return nil, err
+
+=== removed file 'worker/uniter/tools.go'
+--- worker/uniter/tools.go	2013-09-12 16:29:52 +0000
++++ worker/uniter/tools.go	1970-01-01 00:00:00 +0000
+@@ -1,31 +0,0 @@
+-// Copyright 2012, 2013 Canonical Ltd.
+-// Licensed under the AGPLv3, see LICENCE file for details.
+-
+-package uniter
+-
+-import (
+-	"fmt"
+-	"os"
+-	"path/filepath"
+-
+-	"launchpad.net/juju-core/worker/uniter/jujuc"
+-)
+-
+-// EnsureJujucSymlinks creates a symbolic link to jujuc within dir for each
+-// hook command. If the commands already exist, this operation does nothing.
+-func EnsureJujucSymlinks(dir string) (err error) {
+-	for _, name := range jujuc.CommandNames() {
+-		// The link operation fails when the target already exists,
+-		// so this is a no-op when the command names already
+-		// exist.
+-		err := os.Symlink("./jujud", filepath.Join(dir, name))
+-		if err == nil {
+-			continue
+-		}
+-		// TODO(rog) drop LinkError check when fix is released (see http://codereview.appspot.com/6442080/)
+-		if e, ok := err.(*os.LinkError); !ok || !os.IsExist(e.Err) {
+-			return fmt.Errorf("cannot initialize hook commands in %q: %v", dir, err)
+-		}
+-	}
+-	return nil
+-}
+
+=== added file 'worker/uniter/tools_linux.go'
+--- worker/uniter/tools_linux.go	1970-01-01 00:00:00 +0000
++++ worker/uniter/tools_linux.go	2014-05-22 20:50:02 +0000
+@@ -0,0 +1,31 @@
++// Copyright 2012, 2013 Canonical Ltd.
++// Licensed under the AGPLv3, see LICENCE file for details.
++
++package uniter
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++
++	"launchpad.net/juju-core/worker/uniter/jujuc"
++)
++
++// EnsureJujucSymlinks creates a symbolic link to jujuc within dir for each
++// hook command. If the commands already exist, this operation does nothing.
++func EnsureJujucSymlinks(dir string) (err error) {
++	for _, name := range jujuc.CommandNames() {
++		// The link operation fails when the target already exists,
++		// so this is a no-op when the command names already
++		// exist.
++		err := os.Symlink("./jujud", filepath.Join(dir, name))
++		if err == nil {
++			continue
++		}
++		// TODO(rog) drop LinkError check when fix is released (see http://codereview.appspot.com/6442080/)
++		if e, ok := err.(*os.LinkError); !ok || !os.IsExist(e.Err) {
++			return fmt.Errorf("cannot initialize hook commands in %q: %v", dir, err)
++		}
++	}
++	return nil
++}
+
+=== modified file 'worker/uniter/tools_test.go'
+--- worker/uniter/tools_test.go	2013-08-19 11:20:02 +0000
++++ worker/uniter/tools_test.go	2014-05-23 03:15:44 +0000
+@@ -15,6 +15,8 @@
+ 	"launchpad.net/juju-core/version"
+ 	"launchpad.net/juju-core/worker/uniter"
+ 	"launchpad.net/juju-core/worker/uniter/jujuc"
++
++	"launchpad.net/juju-core/utils"
+ )
+ 
+ type ToolsSuite struct {
+@@ -28,7 +30,7 @@
+ 	s.toolsDir = tools.SharedToolsDir(s.dataDir, version.Current)
+ 	err := os.MkdirAll(s.toolsDir, 0755)
+ 	c.Assert(err, gc.IsNil)
+-	err = os.Symlink(s.toolsDir, tools.ToolsDir(s.dataDir, "unit-u-123"))
++	err = utils.Symlink(s.toolsDir, tools.ToolsDir(s.dataDir, "unit-u-123"))
+ 	c.Assert(err, gc.IsNil)
+ }
+ 
+@@ -38,7 +40,7 @@
+ 	c.Assert(err, gc.IsNil)
+ 
+ 	assertLink := func(path string) time.Time {
+-		target, err := os.Readlink(path)
++		target, err := utils.Readlink(path)
+ 		c.Assert(err, gc.IsNil)
+ 		c.Assert(target, gc.Equals, "./jujud")
+ 		fi, err := os.Lstat(path)
+
+=== added file 'worker/uniter/tools_windows.go'
+--- worker/uniter/tools_windows.go	1970-01-01 00:00:00 +0000
++++ worker/uniter/tools_windows.go	2014-05-23 03:18:05 +0000
+@@ -0,0 +1,27 @@
++package uniter
++
++import (
++    "os"
++    "path/filepath"
++
++    "launchpad.net/juju-core/worker/uniter/jujuc"
++    "launchpad.net/juju-core/utils"
++)
++
++// EnsureJujucSymlinks creates a symbolic link to jujuc within dir for each
++// hook command. If the commands already exist, this operation does nothing.
++func EnsureJujucSymlinks(dir string) (err error) {
++    for _, name := range jujuc.CommandNames() {
++        file := filepath.Join(dir, name)
++        if _, err := os.Stat(file); err == nil {
++            continue
++        }
++        jujudExe := filepath.Join(dir, "jujud.exe")
++        err := utils.Symlink(jujudExe, filepath.FromSlash(file))
++        if err == nil {
++            continue
++        }
++        return err
++    }
++    return nil
++}
+
+=== modified file 'worker/uniter/uniter.go'
+--- worker/uniter/uniter.go	2014-05-13 23:18:30 +0000
++++ worker/uniter/uniter.go	2014-05-23 12:14:31 +0000
+@@ -13,25 +13,29 @@
+ 	"sync"
+ 	"time"
+ 
++	"runtime"
++	osExec "os/exec"
++
+ 	"github.com/juju/loggo"
+ 	"launchpad.net/tomb"
+ 
+ 	"launchpad.net/juju-core/agent/tools"
+ 	corecharm "launchpad.net/juju-core/charm"
+ 	"launchpad.net/juju-core/charm/hooks"
+-	"launchpad.net/juju-core/cmd"
++	// "launchpad.net/juju-core/cmd"
+ 	"launchpad.net/juju-core/environs/config"
+ 	"launchpad.net/juju-core/juju/osenv"
+ 	"launchpad.net/juju-core/state/api/params"
+ 	"launchpad.net/juju-core/state/api/uniter"
+ 	apiwatcher "launchpad.net/juju-core/state/api/watcher"
+ 	"launchpad.net/juju-core/state/watcher"
++	"launchpad.net/juju-core/utils"
+ 	"launchpad.net/juju-core/utils/exec"
+ 	"launchpad.net/juju-core/utils/fslock"
+ 	"launchpad.net/juju-core/worker"
+ 	"launchpad.net/juju-core/worker/uniter/charm"
+ 	"launchpad.net/juju-core/worker/uniter/hook"
+-	"launchpad.net/juju-core/worker/uniter/jujuc"
++	// "launchpad.net/juju-core/worker/uniter/jujuc"
+ 	"launchpad.net/juju-core/worker/uniter/relation"
+ )
+ 
+@@ -41,6 +45,8 @@
+ 	// These work fine for linux, but should we need to work with windows
+ 	// workloads in the future, we'll need to move these into a file that is
+ 	// compiled conditionally for different targets and use tcp (most likely).
++	// gsamfira: On Windows this file will be a text file we will use it to store
++	// the TCP port nr until we implement RPC over named pipes
+ 	RunListenerFile = "run.socket"
+ )
+ 
+@@ -214,13 +220,25 @@
+ 		return err
+ 	}
+ 	runListenerSocketPath := filepath.Join(u.baseDir, RunListenerFile)
+-	logger.Debugf("starting juju-run listener on unix:%s", runListenerSocketPath)
++	if runtime.GOOS == "windows" {
++		//TODO: gsamfira: This is a bit hacky. Would prefer implementing
++		//named pipes on windows
++		tmpPath, err := utils.WriteSocketFile(runListenerSocketPath)
++		if err != nil {
++			return err
++		}
++		runListenerSocketPath = tmpPath
++	}
++	logger.Debugf("starting juju-run listener on :%s", runListenerSocketPath)
+ 	u.runListener, err = NewRunListener(u, runListenerSocketPath)
+ 	if err != nil {
+ 		return err
+ 	}
+-	// The socket needs to have permissions 777 in order for other users to use it.
+-	return os.Chmod(runListenerSocketPath, 0777)
++	if runtime.GOOS != "windows" {
++		// The socket needs to have permissions 777 in order for other users to use it.
++		return os.Chmod(runListenerSocketPath, 0777)
++	}
++	return nil
+ }
+ 
+ func (u *Uniter) Kill() {
+@@ -368,27 +386,6 @@
+ 	return nil
+ }
+ 
+-func (u *Uniter) startJujucServer(context *HookContext) (*jujuc.Server, string, error) {
+-	// Prepare server.
+-	getCmd := func(ctxId, cmdName string) (cmd.Command, error) {
+-		// TODO: switch to long-running server with single context;
+-		// use nonce in place of context id.
+-		if ctxId != context.id {
+-			return nil, fmt.Errorf("expected context id %q, got %q", context.id, ctxId)
+-		}
+-		return jujuc.NewCommand(context, cmdName)
+-	}
+-	socketPath := filepath.Join(u.baseDir, "agent.socket")
+-	// Use abstract namespace so we don't get stale socket files.
+-	socketPath = "@" + socketPath
+-	srv, err := jujuc.NewServer(getCmd, socketPath)
+-	if err != nil {
+-		return nil, "", err
+-	}
+-	go srv.Run()
+-	return srv, socketPath, nil
+-}
+-
+ // RunCommands executes the supplied commands in a hook context.
+ func (u *Uniter) RunCommands(commands string) (results *exec.ExecResponse, err error) {
+ 	logger.Tracef("run commands: %s", commands)
+@@ -480,6 +477,20 @@
+ 	logger.Infof("running %q hook", hookName)
+ 	ranHook := true
+ 	err = hctx.RunHook(hookName, u.charmPath, u.toolsDir, socketPath)
++	if RebootRequiredError(err){
++		logger.Infof("hook %q requested a reboot", hookName)
++		if err := u.writeState(RunHook, Queued, &hi, nil); err != nil {
++			return err
++		}
++		time := 5
++		logger.Infof("rebooting system in %q seconds", time)
++		errReboot := utils.Reboot(time)
++		if eeReboot, ok := errReboot.(*osExec.Error); ok && eeReboot != nil {
++			logger.Infof("Reboot returned error: %q", eeReboot.Err)
++		}
++		logger.Infof("Stopping uniter due to reboot")
++		u.Stop()
++	}
+ 	if IsMissingHookError(err) {
+ 		ranHook = false
+ 	} else if err != nil {
+
+=== added file 'worker/uniter/uniter_linux.go'
+--- worker/uniter/uniter_linux.go	1970-01-01 00:00:00 +0000
++++ worker/uniter/uniter_linux.go	2014-05-23 03:27:09 +0000
+@@ -0,0 +1,33 @@
++package uniter
++
++import (
++    //"math/rand"
++    //"os"
++    "path/filepath"
++    //"time"
++    "fmt"
++
++    "launchpad.net/juju-core/cmd"
++    "launchpad.net/juju-core/worker/uniter/jujuc"
++)
++
++func (u *Uniter) startJujucServer(context *HookContext) (*jujuc.Server, string, error) {
++	// Prepare server.
++	getCmd := func(ctxId, cmdName string) (cmd.Command, error) {
++		// TODO: switch to long-running server with single context;
++		// use nonce in place of context id.
++		if ctxId != context.id {
++			return nil, fmt.Errorf("expected context id %q, got %q", context.id, ctxId)
++		}
++		return jujuc.NewCommand(context, cmdName)
++	}
++	socketPath := filepath.Join(u.baseDir, "agent.socket")
++	// Use abstract namespace so we don't get stale socket files.
++	socketPath = "@" + socketPath
++	srv, err := jujuc.NewServer(getCmd, socketPath)
++	if err != nil {
++		return nil, "", err
++	}
++	go srv.Run()
++	return srv, socketPath, nil
++}
+
+=== added file 'worker/uniter/uniter_windows.go'
+--- worker/uniter/uniter_windows.go	1970-01-01 00:00:00 +0000
++++ worker/uniter/uniter_windows.go	2014-05-23 03:27:49 +0000
+@@ -0,0 +1,33 @@
++package uniter
++
++import (
++    "fmt"
++
++    "launchpad.net/juju-core/utils"
++    "launchpad.net/juju-core/cmd"
++    "launchpad.net/juju-core/worker/uniter/jujuc"
++)
++
++func (u *Uniter) startJujucServer(context *HookContext) (*jujuc.Server, string, error) {
++    // Prepare server.
++    getCmd := func(ctxId, cmdName string) (cmd.Command, error) {
++        // TODO: switch to long-running server with single context;
++        // use nonce in place of context id.
++        if ctxId != context.id {
++            return nil, fmt.Errorf("expected context id %q, got %q", context.id, ctxId)
++        }
++        return jujuc.NewCommand(context, cmdName)
++    }
++    // gsamfira: This function simply returns a free TCP socket.
++    // TODO: Must see if this socket is used by any other process then charms
++    socketPath, errSock := utils.GetSocket()
++    if errSock != nil {
++        return nil, "", errSock
++    }
++    srv, err := jujuc.NewServer(getCmd, socketPath)
++    if err != nil {
++        return nil, "", err
++    }
++    go srv.Run()
++    return srv, socketPath, nil
++}
+
+=== modified file 'worker/upgrader/upgrader_test.go'
+--- worker/upgrader/upgrader_test.go	2014-05-13 04:30:48 +0000
++++ worker/upgrader/upgrader_test.go	2014-05-23 03:38:22 +0000
+@@ -219,7 +219,7 @@
+ 	}
+ 	err = ugErr.ChangeAgentTools()
+ 	c.Assert(err, gc.IsNil)
+-	link, err := os.Readlink(agenttools.ToolsDir(s.DataDir(), "anAgent"))
++	link, err := utils.Readlink(agenttools.ToolsDir(s.DataDir(), "anAgent"))
+ 	c.Assert(err, gc.IsNil)
+ 	c.Assert(link, gc.Equals, newTools.Version.String())
+ }
+

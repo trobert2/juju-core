@@ -6,33 +6,30 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
-	"strings"
+	"net"
 
 	"launchpad.net/gnuflag"
 	"launchpad.net/goyaml"
 
 	"launchpad.net/juju-core/agent"
+	"launchpad.net/juju-core/agent/mongo"
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
-	"launchpad.net/juju-core/environs/bootstrap"
-	"launchpad.net/juju-core/environs/cloudinit"
 	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
+	"launchpad.net/juju-core/worker/peergrouper"
 )
-
-// Cloud-init write the URL to be used to load the bootstrap state into this file.
-// A variable is used here to allow tests to override.
-var providerStateURLFile = cloudinit.BootstrapStateURLFile
 
 type BootstrapCommand struct {
 	cmd.CommandBase
-	Conf        AgentConf
+	AgentConf
 	EnvConfig   map[string]interface{}
 	Constraints constraints.Value
+	Hardware    instance.HardwareCharacteristics
+	InstanceId  string
 }
 
 // Info returns a decription of the command.
@@ -44,9 +41,11 @@ func (c *BootstrapCommand) Info() *cmd.Info {
 }
 
 func (c *BootstrapCommand) SetFlags(f *gnuflag.FlagSet) {
-	c.Conf.addFlags(f)
+	c.AgentConf.AddFlags(f)
 	yamlBase64Var(f, &c.EnvConfig, "env-config", "", "initial environment configuration (yaml, base64 encoded)")
-	f.Var(constraints.ConstraintsValue{&c.Constraints}, "constraints", "initial environment constraints (space-separated strings)")
+	f.Var(constraints.ConstraintsValue{Target: &c.Constraints}, "constraints", "initial environment constraints (space-separated strings)")
+	f.Var(&c.Hardware, "hardware", "hardware characteristics (space-separated strings)")
+	f.StringVar(&c.InstanceId, "instance-id", "", "unique instance-id for bootstrap machine")
 }
 
 // Init initializes the command for running.
@@ -54,53 +53,158 @@ func (c *BootstrapCommand) Init(args []string) error {
 	if len(c.EnvConfig) == 0 {
 		return requiredError("env-config")
 	}
-	return c.Conf.checkArgs(args)
+	if c.InstanceId == "" {
+		return requiredError("instance-id")
+	}
+	return c.AgentConf.CheckArgs(args)
 }
 
 // Run initializes state for an environment.
 func (c *BootstrapCommand) Run(_ *cmd.Context) error {
-	data, err := ioutil.ReadFile(providerStateURLFile)
-	if err != nil {
-		return fmt.Errorf("cannot read provider-state-url file: %v", err)
-	}
 	envCfg, err := config.New(config.NoDefaults, c.EnvConfig)
 	if err != nil {
 		return err
 	}
-	stateInfoURL := strings.Split(string(data), "\n")[0]
-	bsState, err := bootstrap.LoadStateFromURL(stateInfoURL, !envCfg.SSLHostnameVerification())
-	if err != nil {
-		return fmt.Errorf("cannot load state from URL %q (read from %q): %v", stateInfoURL, providerStateURLFile, err)
-	}
-	err = c.Conf.read("machine-0")
+	err = c.ReadConfig("machine-0")
 	if err != nil {
 		return err
 	}
+	agentConfig := c.CurrentConfig()
+
 	// agent.Jobs is an optional field in the agent config, and was
 	// introduced after 1.17.2. We default to allowing units on
 	// machine-0 if missing.
-	jobs := c.Conf.config.Jobs()
+	jobs := agentConfig.Jobs()
 	if len(jobs) == 0 {
 		jobs = []params.MachineJob{
 			params.JobManageEnviron,
 			params.JobHostUnits,
 		}
 	}
-	var characteristics instance.HardwareCharacteristics
-	if len(bsState.Characteristics) > 0 {
-		characteristics = bsState.Characteristics[0]
-	}
-	st, _, err := c.Conf.config.InitializeState(envCfg, agent.BootstrapMachineConfig{
-		Constraints:     c.Constraints,
-		Jobs:            jobs,
-		InstanceId:      bsState.StateInstances[0],
-		Characteristics: characteristics,
-	}, state.DefaultDialOpts(), environs.NewStatePolicy())
+
+	// Get the bootstrap machine's addresses from the provider.
+	env, err := environs.New(envCfg)
 	if err != nil {
 		return err
 	}
-	st.Close()
-	return nil
+	instanceId := instance.Id(c.InstanceId)
+	instances, err := env.Instances([]instance.Id{instanceId})
+	if err != nil {
+		return err
+	}
+	addrs, err := instances[0].Addresses()
+	if err != nil {
+		return err
+	}
+
+	// Create system-identity file
+	if err := agent.WriteSystemIdentityFile(agentConfig); err != nil {
+		return err
+	}
+
+	// Generate a shared secret for the Mongo replica set, and write it out.
+	sharedSecret, err := mongo.GenerateSharedSecret()
+	if err != nil {
+		return err
+	}
+	info, ok := agentConfig.StateServingInfo()
+	if !ok {
+		return fmt.Errorf("bootstrap machine config has no state serving info")
+	}
+	info.SharedSecret = sharedSecret
+	err = c.ChangeConfig(func(agentConfig agent.ConfigSetter) {
+		agentConfig.SetStateServingInfo(info)
+	})
+	if err != nil {
+		return fmt.Errorf("cannot write agent config: %v", err)
+	}
+	agentConfig = c.CurrentConfig()
+
+	if err := c.startMongo(addrs, agentConfig); err != nil {
+		return err
+	}
+
+	logger.Infof("started mongo")
+	// Initialise state, and store any agent config (e.g. password) changes.
+	var st *state.State
+	var m *state.Machine
+	err = nil
+	writeErr := c.ChangeConfig(func(agentConfig agent.ConfigSetter) {
+		st, m, err = agent.InitializeState(
+			agentConfig,
+			envCfg,
+			agent.BootstrapMachineConfig{
+				Addresses:       addrs,
+				Constraints:     c.Constraints,
+				Jobs:            jobs,
+				InstanceId:      instanceId,
+				Characteristics: c.Hardware,
+				SharedSecret:    sharedSecret,
+			},
+			state.DefaultDialOpts(),
+			environs.NewStatePolicy(),
+		)
+	})
+	if writeErr != nil {
+		return fmt.Errorf("cannot write initial configuration: %v", err)
+	}
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	// bootstrap machine always gets the vote
+	return m.SetHasVote(true)
+}
+
+func (c *BootstrapCommand) startMongo(addrs []instance.Address, agentConfig agent.Config) error {
+	logger.Debugf("starting mongo")
+
+	info, ok := agentConfig.StateInfo()
+	if !ok {
+		return fmt.Errorf("no state info available")
+	}
+	dialInfo, err := state.DialInfo(info, state.DefaultDialOpts())
+	if err != nil {
+		return err
+	}
+	servingInfo, ok := agentConfig.StateServingInfo()
+	if !ok {
+		return fmt.Errorf("agent config has no state serving info")
+	}
+	// Use localhost to dial the mongo server, because it's running in
+	// auth mode and will refuse to perform any operations unless
+	// we dial that address.
+	dialInfo.Addrs = []string{
+		net.JoinHostPort("127.0.0.1", fmt.Sprint(servingInfo.StatePort)),
+	}
+
+	logger.Debugf("calling ensureMongoServer")
+	withHA := shouldEnableHA(agentConfig)
+	err = ensureMongoServer(
+		agentConfig.DataDir(),
+		agentConfig.Value(agent.Namespace),
+		servingInfo,
+		withHA,
+	)
+	if err != nil {
+		return err
+	}
+	// If we are not doing HA, there is no need to set up replica set.
+	if !withHA {
+		return nil
+	}
+
+	peerAddr := mongo.SelectPeerAddress(addrs)
+	if peerAddr == "" {
+		return fmt.Errorf("no appropriate peer address found in %q", addrs)
+	}
+	peerHostPort := net.JoinHostPort(peerAddr, fmt.Sprint(servingInfo.StatePort))
+
+	return maybeInitiateMongoServer(peergrouper.InitiateMongoParams{
+		DialInfo:       dialInfo,
+		MemberHostPort: peerHostPort,
+	})
 }
 
 // yamlBase64Value implements gnuflag.Value on a map[string]interface{}.

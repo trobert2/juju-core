@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 
-	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/state/api/params"
@@ -55,15 +54,33 @@ func (m *Machine) Refresh() error {
 	return nil
 }
 
+// ProvisioningInfo returns the information required to provisiong a machine.
+func (m *Machine) ProvisioningInfo() (*params.ProvisioningInfo, error) {
+	var results params.ProvisioningInfoResults
+	args := params.Entities{Entities: []params.Entity{{m.tag}}}
+	err := m.st.call("ProvisioningInfo", args, &results)
+	if err != nil {
+		return nil, err
+	}
+	if len(results.Results) != 1 {
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
+	}
+	result := results.Results[0]
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return result.Result, nil
+}
+
 // SetStatus sets the status of the machine.
-func (m *Machine) SetStatus(status params.Status, info string) error {
+func (m *Machine) SetStatus(status params.Status, info string, data params.StatusData) error {
 	var result params.ErrorResults
 	args := params.SetStatus{
-		Entities: []params.SetEntityStatus{
-			{Tag: m.tag, Status: status, Info: info},
+		Entities: []params.EntityStatus{
+			{Tag: m.tag, Status: status, Info: info, Data: data},
 		},
 	}
-	err := m.st.caller.Call("Provisioner", "", "SetStatus", args, &result)
+	err := m.st.call("SetStatus", args, &result)
 	if err != nil {
 		return err
 	}
@@ -76,40 +93,18 @@ func (m *Machine) Status() (params.Status, string, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: m.tag}},
 	}
-	err := m.st.caller.Call("Provisioner", "", "Status", args, &results)
+	err := m.st.call("Status", args, &results)
 	if err != nil {
 		return "", "", err
 	}
 	if len(results.Results) != 1 {
-		return "", "", fmt.Errorf("expected one result, got %d", len(results.Results))
+		return "", "", fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
 		return "", "", result.Error
 	}
 	return result.Status, result.Info, nil
-}
-
-// Constraints returns the exact constraints that should apply when provisioning
-// an instance for the machine.
-func (m *Machine) Constraints() (constraints.Value, error) {
-	nothing := constraints.Value{}
-	var results params.ConstraintsResults
-	args := params.Entities{
-		Entities: []params.Entity{{Tag: m.tag}},
-	}
-	err := m.st.caller.Call("Provisioner", "", "Constraints", args, &results)
-	if err != nil {
-		return nothing, err
-	}
-	if len(results.Results) != 1 {
-		return nothing, fmt.Errorf("expected one result, got %d", len(results.Results))
-	}
-	result := results.Results[0]
-	if result.Error != nil {
-		return nothing, result.Error
-	}
-	return result.Constraints, nil
 }
 
 // EnsureDead sets the machine lifecycle to Dead if it is Alive or
@@ -119,7 +114,7 @@ func (m *Machine) EnsureDead() error {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: m.tag}},
 	}
-	err := m.st.caller.Call("Provisioner", "", "EnsureDead", args, &result)
+	err := m.st.call("EnsureDead", args, &result)
 	if err != nil {
 		return err
 	}
@@ -133,7 +128,7 @@ func (m *Machine) Remove() error {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: m.tag}},
 	}
-	err := m.st.caller.Call("Provisioner", "", "Remove", args, &result)
+	err := m.st.call("Remove", args, &result)
 	if err != nil {
 		return err
 	}
@@ -149,12 +144,12 @@ func (m *Machine) Series() (string, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: m.tag}},
 	}
-	err := m.st.caller.Call("Provisioner", "", "Series", args, &results)
+	err := m.st.call("Series", args, &results)
 	if err != nil {
 		return "", err
 	}
 	if len(results.Results) != 1 {
-		return "", fmt.Errorf("expected one result, got %d", len(results.Results))
+		return "", fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -163,19 +158,48 @@ func (m *Machine) Series() (string, error) {
 	return result.Result, nil
 }
 
-// SetProvisioned sets the provider specific machine id, nonce and also metadata for
-// this machine. Once set, the instance id cannot be changed.
-func (m *Machine) SetProvisioned(id instance.Id, nonce string, characteristics *instance.HardwareCharacteristics) error {
+// DistributionGroup returns a slice of instance.Ids
+// that belong to the same distribution group as this
+// Machine. The provisioner may use this information
+// to distribute instances for high availability.
+func (m *Machine) DistributionGroup() ([]instance.Id, error) {
+	var results params.DistributionGroupResults
+	args := params.Entities{
+		Entities: []params.Entity{{Tag: m.tag}},
+	}
+	err := m.st.caller.Call("Provisioner", "", "DistributionGroup", args, &results)
+	if err != nil {
+		return nil, err
+	}
+	if len(results.Results) != 1 {
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
+	}
+	result := results.Results[0]
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return result.Result, nil
+}
+
+// SetInstanceInfo sets the provider specific instance id, nonce,
+// metadata, networks and interfaces for this machine. Once set, the
+// instance id cannot be changed.
+func (m *Machine) SetInstanceInfo(
+	id instance.Id, nonce string, characteristics *instance.HardwareCharacteristics,
+	networks []params.Network, interfaces []params.NetworkInterface,
+) error {
 	var result params.ErrorResults
-	args := params.SetProvisioned{
-		Machines: []params.MachineSetProvisioned{{
+	args := params.InstancesInfo{
+		Machines: []params.InstanceInfo{{
 			Tag:             m.tag,
 			InstanceId:      id,
 			Nonce:           nonce,
 			Characteristics: characteristics,
+			Networks:        networks,
+			Interfaces:      interfaces,
 		}},
 	}
-	err := m.st.caller.Call("Provisioner", "", "SetProvisioned", args, &result)
+	err := m.st.call("SetInstanceInfo", args, &result)
 	if err != nil {
 		return err
 	}
@@ -189,12 +213,12 @@ func (m *Machine) InstanceId() (instance.Id, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: m.tag}},
 	}
-	err := m.st.caller.Call("Provisioner", "", "InstanceId", args, &results)
+	err := m.st.call("InstanceId", args, &results)
 	if err != nil {
 		return "", err
 	}
 	if len(results.Results) != 1 {
-		return "", fmt.Errorf("expected one result, got %d", len(results.Results))
+		return "", fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -206,12 +230,12 @@ func (m *Machine) InstanceId() (instance.Id, error) {
 // SetPassword sets the machine's password.
 func (m *Machine) SetPassword(password string) error {
 	var result params.ErrorResults
-	args := params.PasswordChanges{
-		Changes: []params.PasswordChange{
+	args := params.EntityPasswords{
+		Changes: []params.EntityPassword{
 			{Tag: m.tag, Password: password},
 		},
 	}
-	err := m.st.caller.Call("Provisioner", "", "SetPasswords", args, &result)
+	err := m.st.call("SetPasswords", args, &result)
 	if err != nil {
 		return err
 	}
@@ -240,12 +264,12 @@ func (m *Machine) WatchContainers(ctype instance.ContainerType) (watcher.Strings
 			{MachineTag: m.tag, ContainerType: string(ctype)},
 		},
 	}
-	err := m.st.caller.Call("Provisioner", "", "WatchContainers", args, &results)
+	err := m.st.call("WatchContainers", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -264,12 +288,12 @@ func (m *Machine) WatchAllContainers() (watcher.StringsWatcher, error) {
 			{MachineTag: m.tag},
 		},
 	}
-	err := m.st.caller.Call("Provisioner", "", "WatchContainers", args, &results)
+	err := m.st.call("WatchContainers", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -287,12 +311,12 @@ func (m *Machine) SetSupportedContainers(containerTypes ...instance.ContainerTyp
 			{MachineTag: m.tag, ContainerTypes: containerTypes},
 		},
 	}
-	err := m.st.caller.Call("Provisioner", "", "SetSupportedContainers", args, &results)
+	err := m.st.call("SetSupportedContainers", args, &results)
 	if err != nil {
 		return err
 	}
 	if len(results.Results) != 1 {
-		return fmt.Errorf("expected one result, got %d", len(results.Results))
+		return fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	apiError := results.Results[0].Error
 	if apiError != nil {

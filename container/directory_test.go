@@ -7,15 +7,15 @@ import (
 	"os"
 	"path/filepath"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/container"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
 type DirectorySuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 	containerDir string
 	removedDir   string
 }
@@ -23,7 +23,7 @@ type DirectorySuite struct {
 var _ = gc.Suite(&DirectorySuite{})
 
 func (s *DirectorySuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	s.containerDir = c.MkDir()
 	s.PatchValue(&container.ContainerDir, s.containerDir)
 	s.removedDir = c.MkDir()

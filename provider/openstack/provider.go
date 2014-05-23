@@ -6,7 +6,6 @@
 package openstack
 
 import (
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	jujuerrors "github.com/juju/errors"
 	"github.com/juju/loggo"
 	"launchpad.net/goose/client"
 	gooseerrors "launchpad.net/goose/errors"
@@ -24,14 +24,15 @@ import (
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
-	"launchpad.net/juju-core/environs/cloudinit"
 	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/environs/imagemetadata"
 	"launchpad.net/juju-core/environs/instances"
+	"launchpad.net/juju-core/environs/network"
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/storage"
 	envtools "launchpad.net/juju-core/environs/tools"
 	"launchpad.net/juju-core/instance"
+	"launchpad.net/juju-core/juju/arch"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/provider/common"
 	"launchpad.net/juju-core/state"
@@ -67,59 +68,75 @@ func (p environProvider) BoilerplateConfig() string {
 # https://juju.ubuntu.com/docs/config-openstack.html
 openstack:
     type: openstack
-    # use-floating-ip specifies whether a floating IP address is required
-    # to give the nodes a public IP address. Some installations assign public IP
-    # addresses by default without requiring a floating IP address.
+
+    # use-floating-ip specifies whether a floating IP address is
+    # required to give the nodes a public IP address. Some
+    # installations assign public IP addresses by default without
+    # requiring a floating IP address.
+    #
     # use-floating-ip: false
 
-    # use-default-secgroup specifies whether new machine instances should have the "default"
-    # Openstack security group assigned.
+    # use-default-secgroup specifies whether new machine instances
+    # should have the "default" Openstack security group assigned.
+    #
     # use-default-secgroup: false
 
-    # network specifies the network label or uuid to bring machines up on, in
-    # the case where multiple networks exist. It may be omitted otherwise.
+    # network specifies the network label or uuid to bring machines up
+    # on, in the case where multiple networks exist. It may be omitted
+    # otherwise.
+    #
     # network: <your network label or uuid>
 
-    # tools-metadata-url specifies the location of the Juju tools and metadata. It defaults to the
-    # global public tools metadata location https://streams.canonical.com/tools.
-    # tools-metadata-url:  https://you-tools-metadata-url
+    # tools-metadata-url specifies the location of the Juju tools and
+    # metadata. It defaults to the global public tools metadata
+    # location https://streams.canonical.com/tools.
+    #
+    # tools-metadata-url:  https://your-tools-metadata-url
 
-    # image-metadata-url specifies the location of Ubuntu cloud image metadata. It defaults to the
-    # global public image metadata location https://cloud-images.ubuntu.com/releases.
-    # image-metadata-url:  https://you-tools-metadata-url
+    # image-metadata-url specifies the location of Ubuntu cloud image
+    # metadata. It defaults to the global public image metadata
+    # location https://cloud-images.ubuntu.com/releases.
+    #
+    # image-metadata-url:  https://your-image-metadata-url
 
-    # image-stream chooses a simplestreams stream to select OS images from,
-    # for example daily or released images (or any other stream available on simplestreams).
+    # image-stream chooses a simplestreams stream to select OS images
+    # from, for example daily or released images (or any other stream
+    # available on simplestreams).
+    #
     # image-stream: "released"
 
-    # auth-url defaults to the value of the environment variable OS_AUTH_URL,
-    # but can be specified here.
+    # auth-url defaults to the value of the environment variable
+    # OS_AUTH_URL, but can be specified here.
+    #
     # auth-url: https://yourkeystoneurl:443/v2.0/
 
-    # tenant-name holds the openstack tenant name. It defaults to
-    # the environment variable OS_TENANT_NAME.
+    # tenant-name holds the openstack tenant name. It defaults to the
+    # environment variable OS_TENANT_NAME.
+    #
     # tenant-name: <your tenant name>
 
-    # region holds the openstack region.  It defaults to
-    # the environment variable OS_REGION_NAME.
+    # region holds the openstack region. It defaults to the
+    # environment variable OS_REGION_NAME.
+    #
     # region: <your region>
 
-    # The auth-mode, username and password attributes
-    # are used for userpass authentication (the default).
-
+    # The auth-mode, username and password attributes are used for
+    # userpass authentication (the default).
+    #
     # auth-mode holds the authentication mode. For user-password
-    # authentication, auth-mode should be "userpass" and username
-    # and password should be set appropriately; they default to
-    # the environment variables OS_USERNAME and OS_PASSWORD
-     # respectively.
+    # authentication, auth-mode should be "userpass" and username and
+    # password should be set appropriately; they default to the
+    # environment variables OS_USERNAME and OS_PASSWORD respectively.
+    #
     # auth-mode: userpass
     # username: <your username>
     # password: <secret>
-     
-    # For key-pair authentication, auth-mode should  be "keypair"
-    # and access-key and secret-key should be  set appropriately; they default to
-    # the environment variables OS_ACCESS_KEY and OS_SECRET_KEY
-    # respectively.
+
+    # For key-pair authentication, auth-mode should be "keypair" and
+    # access-key and secret-key should be set appropriately; they
+    # default to the environment variables OS_ACCESS_KEY and
+    # OS_SECRET_KEY respectively.
+    #
     # auth-mode: keypair
     # access-key: <secret>
     # secret-key: <secret>
@@ -127,45 +144,59 @@ openstack:
 # https://juju.ubuntu.com/docs/config-hpcloud.html
 hpcloud:
     type: openstack
-    
-    # use-floating-ip specifies whether a floating IP address is required
-    # to give the nodes a public IP address. Some installations assign public IP
-    # addresses by default without requiring a floating IP address.
+
+    # use-floating-ip specifies whether a floating IP address is
+    # required to give the nodes a public IP address. Some
+    # installations assign public IP addresses by default without
+    # requiring a floating IP address.
+    #
     # use-floating-ip: false
 
-    # use-default-secgroup specifies whether new machine instances should have the "default"
-    # Openstack security group assigned.
+    # use-default-secgroup specifies whether new machine instances
+    # should have the "default" Openstack security group assigned.
+    #
     # use-default-secgroup: false
 
-    # tenant-name holds the openstack tenant name. In HPCloud, this is 
-    # synonymous with the project-name  It defaults to
-    # the environment variable OS_TENANT_NAME.
+    # tenant-name holds the openstack tenant name. In HPCloud, this is
+    # synonymous with the project-name It defaults to the environment
+    # variable OS_TENANT_NAME.
+    #
     # tenant-name: <your tenant name>
-    
-    # auth-url holds the keystone url for authentication. 
-    # It defaults to the value of the environment variable OS_AUTH_URL.
+
+    # image-stream chooses a simplestreams stream to select OS images
+    # from, for example daily or released images (or any other stream
+    # available on simplestreams).
+    #
+    # image-stream: "released"
+
+    # auth-url holds the keystone url for authentication. It defaults
+    # to the value of the environment variable OS_AUTH_URL.
+    #
     # auth-url: https://region-a.geo-1.identity.hpcloudsvc.com:35357/v2.0/
 
-    # region holds the HP Cloud region (e.g. az-1.region-a.geo-1).  
-    # It defaults to the environment variable OS_REGION_NAME.
+    # region holds the HP Cloud region (e.g. az-1.region-a.geo-1). It
+    # defaults to the environment variable OS_REGION_NAME.
+    #
     # region: <your region>
-    
+
     # auth-mode holds the authentication mode. For user-password
-    # authentication, auth-mode should be "userpass" and username
-    # and password should be set appropriately; they default to
-    # the environment variables OS_USERNAME and OS_PASSWORD
-    # respectively.
+    # authentication, auth-mode should be "userpass" and username and
+    # password should be set appropriately; they default to the
+    # environment variables OS_USERNAME and OS_PASSWORD respectively.
+    #
     # auth-mode: userpass
     # username: <your_username>
     # password: <your_password>
-    
-    # For key-pair authentication, auth-mode should  be "keypair"
-    # and access-key and secret-key should be  set appropriately; they default to
-    # the environment variables OS_ACCESS_KEY and OS_SECRET_KEY
-    # respectively.
+
+    # For key-pair authentication, auth-mode should be "keypair" and
+    # access-key and secret-key should be set appropriately; they
+    # default to the environment variables OS_ACCESS_KEY and
+    # OS_SECRET_KEY respectively.
+    #
     # auth-mode: keypair
     # access-key: <secret>
     # secret-key: <secret>
+
 `[1:]
 }
 
@@ -204,7 +235,7 @@ func (p environProvider) MetadataLookupParams(region string) (*simplestreams.Met
 	}
 	return &simplestreams.MetadataLookupParams{
 		Region:        region,
-		Architectures: []string{"amd64", "arm", "arm64", "ppc64"},
+		Architectures: arch.AllSupportedArches,
 	}, nil
 }
 
@@ -218,36 +249,6 @@ func (p environProvider) SecretAttrs(cfg *config.Config) (map[string]string, err
 	m["password"] = ecfg.password()
 	m["tenant-name"] = ecfg.tenantName()
 	return m, nil
-}
-
-func (p environProvider) PublicAddress() (string, error) {
-	if addr, err := fetchMetadata("public-ipv4"); err != nil {
-		return "", err
-	} else if addr != "" {
-		return addr, nil
-	}
-	return p.PrivateAddress()
-}
-
-func (p environProvider) PrivateAddress() (string, error) {
-	return fetchMetadata("local-ipv4")
-}
-
-// metadataHost holds the address of the instance metadata service.
-// It is a variable so that tests can change it to refer to a local
-// server when needed.
-var metadataHost = "http://169.254.169.254"
-
-// fetchMetadata fetches a single atom of data from the openstack instance metadata service.
-// http://docs.amazonwebservices.com/AWSEC2/latest/UserGuide/AESDG-chapter-instancedata.html
-// (the same specs is implemented in ec2, hence the reference)
-func fetchMetadata(name string) (value string, err error) {
-	uri := fmt.Sprintf("%s/latest/meta-data/%s", metadataHost, name)
-	data, err := retryGet(uri)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
 }
 
 func retryGet(uri string) (data []byte, err error) {
@@ -276,7 +277,15 @@ func retryGet(uri string) (data []byte, err error) {
 }
 
 type environ struct {
+	common.SupportsUnitPlacementPolicy
+
 	name string
+
+	// archMutex gates access to supportedArchitectures
+	archMutex sync.Mutex
+	// supportedArchitectures caches the architectures
+	// for which images can be instantiated.
+	supportedArchitectures []string
 
 	ecfgMutex       sync.Mutex
 	imageBaseMutex  sync.Mutex
@@ -297,6 +306,7 @@ var _ environs.Environ = (*environ)(nil)
 var _ imagemetadata.SupportsCustomSources = (*environ)(nil)
 var _ envtools.SupportsCustomSources = (*environ)(nil)
 var _ simplestreams.HasRegion = (*environ)(nil)
+var _ state.Prechecker = (*environ)(nil)
 
 type openstackInstance struct {
 	e        *environ
@@ -359,7 +369,7 @@ func (inst *openstackInstance) hardwareCharacteristics() *instance.HardwareChara
 	return hc
 }
 
-// getAddress returns the existing server information on addresses,
+// getAddresses returns the existing server information on addresses,
 // but fetches the details over the api again if no addresses exist.
 func (inst *openstackInstance) getAddresses() (map[string][]nova.IPAddress, error) {
 	addrs := inst.getServerDetail().Addresses
@@ -403,12 +413,10 @@ func convertNovaAddresses(addresses map[string][]nova.IPAddress) []instance.Addr
 			if address.Version == 6 {
 				addrtype = instance.Ipv6Address
 			}
-			// TODO(gz): Use NewAddress... with sanity checking
-			machineAddr := instance.Address{
-				Value:        address.Address,
-				Type:         addrtype,
-				NetworkName:  network,
-				NetworkScope: networkscope,
+			machineAddr := instance.NewAddress(address.Address, networkscope)
+			machineAddr.NetworkName = network
+			if machineAddr.Type != addrtype {
+				logger.Warningf("derived address type %v, nova reports %v", machineAddr.Type, addrtype)
 			}
 			machineAddresses = append(machineAddresses, machineAddr)
 		}
@@ -487,6 +495,85 @@ func (e *environ) Name() string {
 	return e.name
 }
 
+// SupportedArchitectures is specified on the EnvironCapability interface.
+func (e *environ) SupportedArchitectures() ([]string, error) {
+	e.archMutex.Lock()
+	defer e.archMutex.Unlock()
+	if e.supportedArchitectures != nil {
+		return e.supportedArchitectures, nil
+	}
+	// Create a filter to get all images from our region and for the correct stream.
+	cloudSpec, err := e.Region()
+	if err != nil {
+		return nil, err
+	}
+	imageConstraint := imagemetadata.NewImageConstraint(simplestreams.LookupParams{
+		CloudSpec: cloudSpec,
+		Stream:    e.Config().ImageStream(),
+	})
+	e.supportedArchitectures, err = common.SupportedArchitectures(e, imageConstraint)
+	return e.supportedArchitectures, err
+}
+
+// SupportNetworks is specified on the EnvironCapability interface.
+func (e *environ) SupportNetworks() bool {
+	// TODO(dimitern) Once we have support for networking, inquire
+	// about capabilities and return true if supported.
+	return false
+}
+
+var unsupportedConstraints = []string{
+	constraints.Tags,
+	constraints.CpuPower,
+}
+
+// ConstraintsValidator is defined on the Environs interface.
+func (e *environ) ConstraintsValidator() (constraints.Validator, error) {
+	validator := constraints.NewValidator()
+	validator.RegisterConflicts(
+		[]string{constraints.InstanceType},
+		[]string{constraints.Mem, constraints.Arch, constraints.RootDisk, constraints.CpuCores})
+	validator.RegisterUnsupported(unsupportedConstraints)
+	supportedArches, err := e.SupportedArchitectures()
+	if err != nil {
+		return nil, err
+	}
+	validator.RegisterVocabulary(constraints.Arch, supportedArches)
+	novaClient := e.nova()
+	flavors, err := novaClient.ListFlavorsDetail()
+	if err != nil {
+		return nil, err
+	}
+	instTypeNames := make([]string, len(flavors))
+	for i, flavor := range flavors {
+		instTypeNames[i] = flavor.Name
+	}
+	validator.RegisterVocabulary(constraints.InstanceType, instTypeNames)
+	return validator, nil
+}
+
+// PrecheckInstance is defined on the state.Prechecker interface.
+func (e *environ) PrecheckInstance(series string, cons constraints.Value, placement string) error {
+	if placement != "" {
+		return fmt.Errorf("unknown placement directive: %s", placement)
+	}
+	if !cons.HasInstanceType() {
+		return nil
+	}
+	// Constraint has an instance-type constraint so let's see if it is valid.
+	novaClient := e.nova()
+	flavors, err := novaClient.ListFlavorsDetail()
+	if err != nil {
+		return err
+	}
+	for _, flavor := range flavors {
+		if flavor.Name == *cons.InstanceType {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid Openstack flavour %q specified", *cons.InstanceType)
+}
+
 func (e *environ) Storage() storage.Storage {
 	e.ecfgMutex.Lock()
 	stor := e.storageUnlocked
@@ -494,7 +581,7 @@ func (e *environ) Storage() storage.Storage {
 	return stor
 }
 
-func (e *environ) Bootstrap(ctx environs.BootstrapContext, cons constraints.Value) error {
+func (e *environ) Bootstrap(ctx environs.BootstrapContext, args environs.BootstrapParams) error {
 	// The client's authentication may have been reset when finding tools if the agent-version
 	// attribute was updated so we need to re-authenticate. This will be a no-op if already authenticated.
 	// An authenticated client is needed for the URL() call below.
@@ -502,7 +589,7 @@ func (e *environ) Bootstrap(ctx environs.BootstrapContext, cons constraints.Valu
 	if err != nil {
 		return err
 	}
-	return common.Bootstrap(ctx, e, cons)
+	return common.Bootstrap(ctx, e, args)
 }
 
 func (e *environ) StateInfo() (*state.Info, *api.Info, error) {
@@ -589,9 +676,9 @@ func (e *environ) GetImageSources() ([]simplestreams.DataSource, error) {
 	// Add the simplestreams base URL from keystone if it is defined.
 	productStreamsURL, err := e.client.MakeServiceURL("product-streams", nil)
 	if err == nil {
-		verify := simplestreams.VerifySSLHostnames
+		verify := utils.VerifySSLHostnames
 		if !e.Config().SSLHostnameVerification() {
-			verify = simplestreams.NoVerifySSLHostnames
+			verify = utils.NoVerifySSLHostnames
 		}
 		source := simplestreams.NewURLDataSource("keystone catalog", productStreamsURL, verify)
 		e.imageSources = append(e.imageSources, source)
@@ -613,9 +700,9 @@ func (e *environ) GetToolsSources() ([]simplestreams.DataSource, error) {
 			return nil, err
 		}
 	}
-	verify := simplestreams.VerifySSLHostnames
+	verify := utils.VerifySSLHostnames
 	if !e.Config().SSLHostnameVerification() {
-		verify = simplestreams.NoVerifySSLHostnames
+		verify = utils.NoVerifySSLHostnames
 	}
 	// Add the simplestreams source off the control bucket.
 	e.toolsSources = append(e.toolsSources, storage.NewStorageSimpleStreamsDataSource(
@@ -711,33 +798,36 @@ func (e *environ) assignPublicIP(fip *nova.FloatingIP, serverId string) (err err
 }
 
 // StartInstance is specified in the InstanceBroker interface.
-func (e *environ) StartInstance(cons constraints.Value, possibleTools tools.List,
-	machineConfig *cloudinit.MachineConfig) (instance.Instance, *instance.HardwareCharacteristics, error) {
+func (e *environ) StartInstance(args environs.StartInstanceParams) (instance.Instance, *instance.HardwareCharacteristics, []network.Info, error) {
 
-	series := possibleTools.OneSeries()
-	arches := possibleTools.Arches()
+	if args.MachineConfig.HasNetworks() {
+		return nil, nil, nil, fmt.Errorf("starting instances with networks is not supported yet.")
+	}
+
+	series := args.Tools.OneSeries()
+	arches := args.Tools.Arches()
 	spec, err := findInstanceSpec(e, &instances.InstanceConstraint{
 		Region:      e.ecfg().region(),
 		Series:      series,
 		Arches:      arches,
-		Constraints: cons,
+		Constraints: args.Constraints,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	tools, err := possibleTools.Match(tools.Filter{Arch: spec.Image.Arch})
+	tools, err := args.Tools.Match(tools.Filter{Arch: spec.Image.Arch})
 	if err != nil {
-		return nil, nil, fmt.Errorf("chosen architecture %v not present in %v", spec.Image.Arch, arches)
+		return nil, nil, nil, fmt.Errorf("chosen architecture %v not present in %v", spec.Image.Arch, arches)
 	}
 
-	machineConfig.Tools = tools[0]
+	args.MachineConfig.Tools = tools[0]
 
-	if err := environs.FinishMachineConfig(machineConfig, e.Config(), cons); err != nil {
-		return nil, nil, err
+	if err := environs.FinishMachineConfig(args.MachineConfig, e.Config(), args.Constraints); err != nil {
+		return nil, nil, nil, err
 	}
-	userData, err := environs.ComposeUserData(machineConfig)
+	userData, err := environs.ComposeUserData(args.MachineConfig, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot make user data: %v", err)
+		return nil, nil, nil, fmt.Errorf("cannot make user data: %v", err)
 	}
 	logger.Debugf("openstack user data; %d bytes", len(userData))
 	var networks = []nova.ServerNetworks{}
@@ -745,7 +835,7 @@ func (e *environ) StartInstance(cons constraints.Value, possibleTools tools.List
 	if usingNetwork != "" {
 		networkId, err := e.resolveNetwork(usingNetwork)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		logger.Debugf("using network id %q", networkId)
 		networks = append(networks, nova.ServerNetworks{NetworkId: networkId})
@@ -754,23 +844,23 @@ func (e *environ) StartInstance(cons constraints.Value, possibleTools tools.List
 	var publicIP *nova.FloatingIP
 	if withPublicIP {
 		if fip, err := e.allocatePublicIP(); err != nil {
-			return nil, nil, fmt.Errorf("cannot allocate a public IP as needed: %v", err)
+			return nil, nil, nil, fmt.Errorf("cannot allocate a public IP as needed: %v", err)
 		} else {
 			publicIP = fip
 			logger.Infof("allocated public IP %s", publicIP.IP)
 		}
 	}
 	cfg := e.Config()
-	groups, err := e.setUpGroups(machineConfig.MachineId, cfg.StatePort(), cfg.APIPort())
+	groups, err := e.setUpGroups(args.MachineConfig.MachineId, cfg.StatePort(), cfg.APIPort())
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot set up groups: %v", err)
+		return nil, nil, nil, fmt.Errorf("cannot set up groups: %v", err)
 	}
 	var groupNames = make([]nova.SecurityGroupName, len(groups))
 	for i, g := range groups {
 		groupNames[i] = nova.SecurityGroupName{g.Name}
 	}
 	var opts = nova.RunServerOpts{
-		Name:               e.machineFullName(machineConfig.MachineId),
+		Name:               e.machineFullName(args.MachineConfig.MachineId),
 		FlavorId:           spec.InstanceType.Id,
 		ImageId:            spec.Image.Id,
 		UserData:           userData,
@@ -785,11 +875,11 @@ func (e *environ) StartInstance(cons constraints.Value, possibleTools tools.List
 		}
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot run instance: %v", err)
+		return nil, nil, nil, fmt.Errorf("cannot run instance: %v", err)
 	}
 	detail, err := e.nova().GetServer(server.Id)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot get started instance: %v", err)
+		return nil, nil, nil, fmt.Errorf("cannot get started instance: %v", err)
 	}
 	inst := &openstackInstance{
 		e:            e,
@@ -804,24 +894,43 @@ func (e *environ) StartInstance(cons constraints.Value, possibleTools tools.List
 				// ignore the failure at this stage, just log it
 				logger.Debugf("failed to terminate instance %q: %v", inst.Id(), err)
 			}
-			return nil, nil, fmt.Errorf("cannot assign public address %s to instance %q: %v", publicIP.IP, inst.Id(), err)
+			return nil, nil, nil, fmt.Errorf("cannot assign public address %s to instance %q: %v", publicIP.IP, inst.Id(), err)
 		}
 		logger.Infof("assigned public IP %s to %q", publicIP.IP, inst.Id())
 	}
-	return inst, inst.hardwareCharacteristics(), nil
+	return inst, inst.hardwareCharacteristics(), nil, nil
 }
 
-func (e *environ) StopInstances(insts []instance.Instance) error {
-	ids := make([]instance.Id, len(insts))
-	for i, inst := range insts {
-		instanceValue, ok := inst.(*openstackInstance)
-		if !ok {
-			return errors.New("Incompatible instance.Instance supplied")
+func (e *environ) StopInstances(ids ...instance.Id) error {
+	// If in instance firewall mode, gather the security group names.
+	var securityGroupNames []string
+	if e.Config().FirewallMode() == config.FwInstance {
+		instances, err := e.Instances(ids)
+		if err == environs.ErrNoInstances {
+			return nil
 		}
-		ids[i] = instanceValue.Id()
+		securityGroupNames = make([]string, 0, len(ids))
+		for _, inst := range instances {
+			if inst == nil {
+				continue
+			}
+			openstackName := inst.(*openstackInstance).getServerDetail().Name
+			lastDashPos := strings.LastIndex(openstackName, "-")
+			if lastDashPos == -1 {
+				return fmt.Errorf("cannot identify machine ID in openstack server name %q", openstackName)
+			}
+			securityGroupName := e.machineGroupName(openstackName[lastDashPos+1:])
+			securityGroupNames = append(securityGroupNames, securityGroupName)
+		}
 	}
 	logger.Debugf("terminating instances %v", ids)
-	return e.terminateInstances(ids)
+	if err := e.terminateInstances(ids); err != nil {
+		return err
+	}
+	if securityGroupNames != nil {
+		return e.deleteSecurityGroups(securityGroupNames)
+	}
+	return nil
 }
 
 // collectInstances tries to get information on each instance id in ids.
@@ -892,6 +1001,13 @@ func (e *environ) Instances(ids []instance.Id) ([]instance.Instance, error) {
 	return insts, err
 }
 
+// AllocateAddress requests a new address to be allocated for the
+// given instance on the given network. This is not implemented on the
+// OpenStack provider yet.
+func (*environ) AllocateAddress(_ instance.Id, _ network.Id) (instance.Address, error) {
+	return instance.Address{}, jujuerrors.NotImplementedf("AllocateAddress")
+}
+
 func (e *environ) AllInstances() (insts []instance.Instance, err error) {
 	servers, err := e.nova().ListServersDetail(e.machinesFilter())
 	if err != nil {
@@ -911,7 +1027,29 @@ func (e *environ) AllInstances() (insts []instance.Instance, err error) {
 }
 
 func (e *environ) Destroy() error {
-	return common.Destroy(e)
+	err := common.Destroy(e)
+	if err != nil {
+		return err
+	}
+	novaClient := e.nova()
+	securityGroups, err := novaClient.ListSecurityGroups()
+	if err != nil {
+		return err
+	}
+	re, err := regexp.Compile(fmt.Sprintf("^%s(-\\d+)?$", e.jujuGroupName()))
+	if err != nil {
+		return err
+	}
+	globalGroupName := e.globalGroupName()
+	for _, group := range securityGroups {
+		if re.MatchString(group.Name) || group.Name == globalGroupName {
+			err = novaClient.DeleteSecurityGroup(group.Id)
+			if err != nil {
+				logger.Warningf("cannot delete security group %q. Used by another environment?", group.Name)
+			}
+		}
+	}
+	return nil
 }
 
 func (e *environ) globalGroupName() string {
@@ -1169,6 +1307,29 @@ func (e *environ) ensureGroup(name string, rules []nova.RuleInfo) (nova.Security
 	return *group, nil
 }
 
+// deleteSecurityGroups deletes the given security groups. If a security
+// group is also used by another environment (see bug #1300755), an attempt
+// to delete this group fails. A warning is logged in this case.
+func (e *environ) deleteSecurityGroups(securityGroupNames []string) error {
+	novaclient := e.nova()
+	allSecurityGroups, err := novaclient.ListSecurityGroups()
+	if err != nil {
+		return err
+	}
+	for _, securityGroup := range allSecurityGroups {
+		for _, name := range securityGroupNames {
+			if securityGroup.Name == name {
+				err := novaclient.DeleteSecurityGroup(securityGroup.Id)
+				if err != nil {
+					logger.Warningf("cannot delete security group %q. Used by another environment?", name)
+				}
+				break
+			}
+		}
+	}
+	return nil
+}
+
 func (e *environ) terminateInstances(ids []instance.Id) error {
 	if len(ids) == 0 {
 		return nil
@@ -1193,18 +1354,26 @@ func (e *environ) MetadataLookupParams(region string) (*simplestreams.MetadataLo
 	if region == "" {
 		region = e.ecfg().region()
 	}
+	cloudSpec, err := e.cloudSpec(region)
+	if err != nil {
+		return nil, err
+	}
 	return &simplestreams.MetadataLookupParams{
-		Series:        e.ecfg().DefaultSeries(),
-		Region:        region,
-		Endpoint:      e.ecfg().authURL(),
-		Architectures: []string{"amd64", "arm", "arm64", "ppc64"},
+		Series:        config.PreferredSeries(e.ecfg()),
+		Region:        cloudSpec.Region,
+		Endpoint:      cloudSpec.Endpoint,
+		Architectures: arch.AllSupportedArches,
 	}, nil
 }
 
 // Region is specified in the HasRegion interface.
 func (e *environ) Region() (simplestreams.CloudSpec, error) {
+	return e.cloudSpec(e.ecfg().region())
+}
+
+func (e *environ) cloudSpec(region string) (simplestreams.CloudSpec, error) {
 	return simplestreams.CloudSpec{
-		Region:   e.ecfg().region(),
+		Region:   region,
 		Endpoint: e.ecfg().authURL(),
 	}, nil
 }

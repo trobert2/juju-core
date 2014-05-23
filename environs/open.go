@@ -9,13 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/errgo/errgo"
+	"github.com/juju/errors"
 
 	"launchpad.net/juju-core/cert"
 	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/environs/configstore"
 	"launchpad.net/juju-core/environs/storage"
-	"launchpad.net/juju-core/errors"
 )
 
 // File named `VerificationFilename` in the storage will contain
@@ -46,16 +45,25 @@ const (
 	ConfigFromEnvirons
 )
 
-// ConfigForName returns the configuration for the environment with the
-// given name from the default environments file. If the name is blank,
-// the default environment will be used. If the configuration is not
-// found, an errors.NotFoundError is returned.
-// If the given store contains an entry for the environment
-// and it has associated bootstrap config, that configuration
-// will be returned.
-// ConfigForName also returns where the configuration
-// was sourced from (this is also valid even when there
-// is an error.
+// EmptyConfig indicates the .jenv file is empty.
+type EmptyConfig struct {
+	error
+}
+
+// IsEmptyConfig reports whether err is a EmptyConfig.
+func IsEmptyConfig(err error) bool {
+	_, ok := err.(EmptyConfig)
+	return ok
+}
+
+// ConfigForName returns the configuration for the environment with
+// the given name from the default environments file. If the name is
+// blank, the default environment will be used. If the configuration
+// is not found, an errors.NotFoundError is returned. If the given
+// store contains an entry for the environment and it has associated
+// bootstrap config, that configuration will be returned.
+// ConfigForName also returns where the configuration was sourced from
+// (this is also valid even when there is an error.
 func ConfigForName(name string, store configstore.Storage) (*config.Config, ConfigSource, error) {
 	envs, err := ReadEnvirons("")
 	if err != nil {
@@ -72,18 +80,28 @@ func ConfigForName(name string, store configstore.Storage) (*config.Config, Conf
 		info, err := store.ReadInfo(name)
 		if err == nil {
 			if len(info.BootstrapConfig()) == 0 {
-				return nil, ConfigFromNowhere, fmt.Errorf("environment has no bootstrap configuration data")
+				return nil, ConfigFromNowhere, EmptyConfig{fmt.Errorf("environment has no bootstrap configuration data")}
 			}
 			logger.Debugf("ConfigForName found bootstrap config %#v", info.BootstrapConfig())
 			cfg, err := config.New(config.NoDefaults, info.BootstrapConfig())
 			return cfg, ConfigFromInfo, err
 		}
-		if err != nil && !errors.IsNotFoundError(err) {
+		if err != nil && !errors.IsNotFound(err) {
 			return nil, ConfigFromInfo, fmt.Errorf("cannot read environment info for %q: %v", name, err)
 		}
 	}
 	cfg, err := envs.Config(name)
 	return cfg, ConfigFromEnvirons, err
+}
+
+// maybeNotBootstrapped takes an error and source, returned by
+// ConfigForName and returns ErrNotBootstrapped if it looks like the
+// environment is not bootstrapped, or err as-is otherwise.
+func maybeNotBootstrapped(err error, source ConfigSource) error {
+	if err != nil && source == ConfigFromEnvirons {
+		return ErrNotBootstrapped
+	}
+	return err
 }
 
 // NewFromName opens the environment with the given
@@ -99,16 +117,16 @@ func NewFromName(name string, store configstore.Storage) (Environ, error) {
 	// configuration attributes don't exist which
 	// will be filled in by Prepare.
 	cfg, source, err := ConfigForName(name, store)
-	if err != nil && source == ConfigFromEnvirons {
-		err = ErrNotBootstrapped
+	if err := maybeNotBootstrapped(err, source); err != nil {
+		return nil, err
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	env, err := New(cfg)
-	if err != nil && source == ConfigFromEnvirons {
-		err = ErrNotBootstrapped
+	if err := maybeNotBootstrapped(err, source); err != nil {
+		return nil, err
 	}
 	return env, err
 }
@@ -249,13 +267,13 @@ func Destroy(env Environ, store configstore.Storage) error {
 func DestroyInfo(envName string, store configstore.Storage) error {
 	info, err := store.ReadInfo(envName)
 	if err != nil {
-		if errors.IsNotFoundError(err) {
+		if errors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
 	if err := info.Destroy(); err != nil {
-		return errgo.Annotate(err, "cannot destroy environment configuration information")
+		return errors.Annotate(err, "cannot destroy environment configuration information")
 	}
 	return nil
 }
@@ -285,7 +303,7 @@ func VerifyStorage(stor storage.Storage) error {
 func CheckEnvironment(environ Environ) error {
 	stor := environ.Storage()
 	reader, err := storage.Get(stor, VerificationFilename)
-	if errors.IsNotFoundError(err) {
+	if errors.IsNotFound(err) {
 		// When verification file does not exist, this is a juju-core
 		// environment.
 		return nil

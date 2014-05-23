@@ -26,12 +26,12 @@ func extractSystemId(instanceId instance.Id) string {
 }
 
 // getSystemIdValues returns a url.Values object with all the 'system_ids'
-// from the given instanceIds stored under the key 'id'.  This is used
+// from the given instanceIds stored under the specified key.  This is used
 // to filter out instances when listing the nodes objects.
-func getSystemIdValues(instanceIds []instance.Id) url.Values {
+func getSystemIdValues(key string, instanceIds []instance.Id) url.Values {
 	values := url.Values{}
 	for _, instanceId := range instanceIds {
-		values.Add("id", extractSystemId(instanceId))
+		values.Add(key, extractSystemId(instanceId))
 	}
 	return values
 }
@@ -61,6 +61,12 @@ func (info *machineInfo) cloudinitRunCmd() (string, error) {
 	return script, nil
 }
 
+// load loads the "machine info" file and parse the content into the info
+// object.
+func (info *machineInfo) load() error {
+	return utils.ReadYaml(_MAASInstanceFilename, info)
+}
+
 // winCloudinitRunCmd returns the shell command that, when run, will create the
 // "machine info" file containing the hostname of a machine on a winows system.
 // That command is destined to be used by cloudinit.
@@ -72,10 +78,4 @@ func (info *machineInfo) winCloudinitRunCmd() (string, error) {
 	}
 	script := fmt.Sprintf("mkdir \"%s\"\r\n Set-Content \"%s\" @\"\n%s\n\"@", utils.PathToWindows(osenv.WinDataDir), utils.PathToWindows(_MAASInstanceFilenameWin), string(yaml))
 	return script, nil
-}
-
-// load loads the "machine info" file and parse the content into the info
-// object.
-func (info *machineInfo) load() error {
-	return utils.ReadYaml(_MAASInstanceFilename, info)
 }

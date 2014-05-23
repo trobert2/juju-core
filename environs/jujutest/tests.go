@@ -9,22 +9,19 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
-	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/bootstrap"
 	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/environs/configstore"
 	"launchpad.net/juju-core/environs/storage"
 	envtesting "launchpad.net/juju-core/environs/testing"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/juju/testing"
-	"launchpad.net/juju-core/provider/common"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
 )
@@ -35,7 +32,6 @@ import (
 // is opened once for each test, and some potentially expensive operations
 // may be executed.
 type Tests struct {
-	testbase.LoggingSuite
 	TestConfig coretesting.Attrs
 	envtesting.ToolsFixture
 
@@ -68,19 +64,17 @@ func (t *Tests) Prepare(c *gc.C) environs.Environ {
 }
 
 func (t *Tests) SetUpTest(c *gc.C) {
-	t.LoggingSuite.SetUpTest(c)
 	t.ToolsFixture.SetUpTest(c)
 	t.ConfigStore = configstore.NewMem()
 }
 
 func (t *Tests) TearDownTest(c *gc.C) {
 	t.ToolsFixture.TearDownTest(c)
-	t.LoggingSuite.TearDownTest(c)
 }
 
 func (t *Tests) TestStartStop(c *gc.C) {
 	e := t.Prepare(c)
-	envtesting.UploadFakeTools(c, e.Storage())
+	t.UploadFakeTools(c, e.Storage())
 	cfg, err := e.Config().Apply(map[string]interface{}{
 		"agent-version": version.Current.Number.String(),
 	})
@@ -116,7 +110,7 @@ func (t *Tests) TestStartStop(c *gc.C) {
 	c.Assert(insts, gc.HasLen, 2)
 	c.Assert(insts[0].Id(), gc.Not(gc.Equals), insts[1].Id())
 
-	err = e.StopInstances([]instance.Instance{inst0})
+	err = e.StopInstances(inst0.Id())
 	c.Assert(err, gc.IsNil)
 
 	insts, err = e.Instances([]instance.Id{id0, id1})
@@ -131,22 +125,22 @@ func (t *Tests) TestStartStop(c *gc.C) {
 
 func (t *Tests) TestBootstrap(c *gc.C) {
 	e := t.Prepare(c)
-	envtesting.UploadFakeTools(c, e.Storage())
-	err := common.EnsureNotBootstrapped(e)
+	t.UploadFakeTools(c, e.Storage())
+	err := bootstrap.EnsureNotBootstrapped(e)
 	c.Assert(err, gc.IsNil)
-	err = bootstrap.Bootstrap(coretesting.Context(c), e, constraints.Value{})
+	err = bootstrap.Bootstrap(coretesting.Context(c), e, environs.BootstrapParams{})
 	c.Assert(err, gc.IsNil)
 
 	info, apiInfo, err := e.StateInfo()
 	c.Check(info.Addrs, gc.Not(gc.HasLen), 0)
 	c.Check(apiInfo.Addrs, gc.Not(gc.HasLen), 0)
 
-	err = common.EnsureNotBootstrapped(e)
+	err = bootstrap.EnsureNotBootstrapped(e)
 	c.Assert(err, gc.ErrorMatches, "environment is already bootstrapped")
 
 	e2 := t.Open(c)
-	envtesting.UploadFakeTools(c, e2.Storage())
-	err = common.EnsureNotBootstrapped(e2)
+	t.UploadFakeTools(c, e2.Storage())
+	err = bootstrap.EnsureNotBootstrapped(e2)
 	c.Assert(err, gc.ErrorMatches, "environment is already bootstrapped")
 
 	info2, apiInfo2, err := e2.StateInfo()
@@ -158,14 +152,14 @@ func (t *Tests) TestBootstrap(c *gc.C) {
 
 	// Prepare again because Destroy invalidates old environments.
 	e3 := t.Prepare(c)
-	envtesting.UploadFakeTools(c, e3.Storage())
+	t.UploadFakeTools(c, e3.Storage())
 
-	err = common.EnsureNotBootstrapped(e3)
+	err = bootstrap.EnsureNotBootstrapped(e3)
 	c.Assert(err, gc.IsNil)
-	err = bootstrap.Bootstrap(coretesting.Context(c), e3, constraints.Value{})
+	err = bootstrap.Bootstrap(coretesting.Context(c), e3, environs.BootstrapParams{})
 	c.Assert(err, gc.IsNil)
 
-	err = common.EnsureNotBootstrapped(e3)
+	err = bootstrap.EnsureNotBootstrapped(e3)
 	c.Assert(err, gc.ErrorMatches, "environment is already bootstrapped")
 }
 
@@ -241,7 +235,7 @@ func checkPutFile(c *gc.C, stor storage.StorageWriter, name string, contents []b
 func checkFileDoesNotExist(c *gc.C, stor storage.StorageReader, name string, attempt utils.AttemptStrategy) {
 	r, err := storage.GetWithRetry(stor, name, attempt)
 	c.Assert(r, gc.IsNil)
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func checkFileHasContents(c *gc.C, stor storage.StorageReader, name string, contents []byte, attempt utils.AttemptStrategy) {
@@ -259,7 +253,7 @@ func checkFileHasContents(c *gc.C, stor storage.StorageReader, name string, cont
 
 	var resp *http.Response
 	for a := attempt.Start(); a.Next(); {
-		resp, err = http.Get(url)
+		resp, err = utils.GetValidatingHTTPClient().Get(url)
 		c.Assert(err, gc.IsNil)
 		if resp.StatusCode != 404 {
 			break

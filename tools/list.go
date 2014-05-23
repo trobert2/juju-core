@@ -105,7 +105,7 @@ func (src List) NewestCompatible(base version.Number) (newest version.Number, fo
 	return newest, found
 }
 
-// Difference returns the tools in src that are not in excluded.
+// Exclude returns the tools in src that are not in excluded.
 func (src List) Exclude(excluded List) List {
 	ignore := make(map[version.Binary]bool, len(excluded))
 	for _, tool := range excluded {
@@ -130,7 +130,6 @@ func (src List) Match(f Filter) (List, error) {
 		}
 	}
 	if len(result) == 0 {
-		logger.Errorf("cannot match %#v", f)
 		return nil, ErrNoMatches
 	}
 	return result, nil

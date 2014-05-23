@@ -14,7 +14,6 @@ import (
 	"launchpad.net/goose/identity"
 	"launchpad.net/goose/nova"
 
-	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/bootstrap"
 	"launchpad.net/juju-core/environs/config"
@@ -24,7 +23,6 @@ import (
 	jujutesting "launchpad.net/juju-core/juju/testing"
 	"launchpad.net/juju-core/provider/openstack"
 	coretesting "launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 // generate a different bucket name for each config instance, so that
@@ -79,14 +77,14 @@ func registerLiveTests(cred *identity.Credentials) {
 // The deployment can be a real live instance or service doubles.
 // Each test runs using the same connection.
 type LiveTests struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 	jujutest.LiveTests
 	cred            *identity.Credentials
 	metadataStorage storage.Storage
 }
 
 func (t *LiveTests) SetUpSuite(c *gc.C) {
-	t.LoggingSuite.SetUpSuite(c)
+	t.BaseSuite.SetUpSuite(c)
 	// Update some Config items now that we have services running.
 	// This is setting the simplestreams urls and auth-url because that
 	// information is set during startup of the localLiveSuite
@@ -119,17 +117,17 @@ func (t *LiveTests) TearDownSuite(c *gc.C) {
 		envtesting.RemoveFakeToolsMetadata(c, t.metadataStorage)
 	}
 	t.LiveTests.TearDownSuite(c)
-	t.LoggingSuite.TearDownSuite(c)
+	t.BaseSuite.TearDownSuite(c)
 }
 
 func (t *LiveTests) SetUpTest(c *gc.C) {
-	t.LoggingSuite.SetUpTest(c)
+	t.BaseSuite.SetUpTest(c)
 	t.LiveTests.SetUpTest(c)
 }
 
 func (t *LiveTests) TearDownTest(c *gc.C) {
 	t.LiveTests.TearDownTest(c)
-	t.LoggingSuite.TearDownTest(c)
+	t.BaseSuite.TearDownTest(c)
 }
 
 func (t *LiveTests) TestEnsureGroupSetsGroupId(c *gc.C) {
@@ -230,7 +228,7 @@ func (s *LiveTests) assertStartInstanceDefaultSecurityGroup(c *gc.C, useDefault 
 	c.Assert(env, gc.NotNil)
 	defer env.Destroy()
 	// Bootstrap and start an instance.
-	err = bootstrap.Bootstrap(coretesting.Context(c), env, constraints.Value{})
+	err = bootstrap.Bootstrap(coretesting.Context(c), env, environs.BootstrapParams{})
 	c.Assert(err, gc.IsNil)
 	inst, _ := jujutesting.AssertStartInstance(c, env, "100")
 	// Check whether the instance has the default security group assigned.

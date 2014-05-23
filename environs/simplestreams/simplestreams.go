@@ -10,22 +10,18 @@
 package simplestreams
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
-	"net/http"
-	"os"
 	"path"
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 
-	"launchpad.net/juju-core/errors"
+	"launchpad.net/juju-core/utils"
 )
 
 var logger = loggo.GetLogger("juju.environs.simplestreams")
@@ -92,108 +88,6 @@ type LookupParams struct {
 
 func (p LookupParams) Params() LookupParams {
 	return p
-}
-
-// seriesVersions provides a mapping between Ubuntu series names and version numbers.
-// The values here are current as of the time of writing. On Ubuntu systems, we update
-// these values from /usr/share/distro-info/ubuntu.csv to ensure we have the latest values.
-// On non-Ubuntu systems, these values provide a nice fallback option.
-// Exported so tests can change the values to ensure the distro-info lookup works.
-var seriesVersions = map[string]string{
-	"precise": "12.04",
-	"quantal": "12.10",
-	"raring":  "13.04",
-	"saucy":   "13.10",
-	"trusty":  "14.04",
-	"win2012hv": "win2012hv",
-    "win2012hvr2": "win2012hvr2",
-    "win2012": "win2012",
-    "win2012r2": "win2012r2",
-}
-
-var (
-	seriesVersionsMutex   sync.Mutex
-	updatedseriesVersions bool
-)
-
-// SeriesVersion returns the version number for the specified Ubuntu series.
-func SeriesVersion(series string) (string, error) {
-	if series == "" {
-		panic("cannot pass empty series to SeriesVersion()")
-	}
-	seriesVersionsMutex.Lock()
-	defer seriesVersionsMutex.Unlock()
-	if vers, ok := seriesVersions[series]; ok {
-		return vers, nil
-	}
-	updateSeriesVersions()
-	if vers, ok := seriesVersions[series]; ok {
-		return vers, nil
-	}
-	return "", fmt.Errorf("invalid series %q", series)
-}
-
-// Supported series returns the Ubuntu series for which we expect to find metadata.
-func SupportedSeries() []string {
-	seriesVersionsMutex.Lock()
-	defer seriesVersionsMutex.Unlock()
-	updateSeriesVersions()
-	var series []string
-	for s := range seriesVersions {
-		series = append(series, s)
-	}
-	return series
-}
-
-func updateSeriesVersions() {
-	if !updatedseriesVersions {
-		err := updateDistroInfo()
-		if err != nil {
-			logger.Warningf("failed to update distro info: %v", err)
-		}
-		updatedseriesVersions = true
-	}
-}
-
-// updateDistroInfo updates seriesVersions from /usr/share/distro-info/ubuntu.csv if possible..
-func updateDistroInfo() error {
-	// We need to find the series version eg 12.04 from the series eg precise. Use the information found in
-	// /usr/share/distro-info/ubuntu.csv provided by distro-info-data package.
-	f, err := os.Open("/usr/share/distro-info/ubuntu.csv")
-	if err != nil {
-		// On non-Ubuntu systems this file won't exist but that's expected.
-		return nil
-	}
-	defer f.Close()
-	bufRdr := bufio.NewReader(f)
-	// Only find info for precise or later.
-	preciseOrLaterFound := false
-	for {
-		line, err := bufRdr.ReadString('\n')
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("reading distro info file file: %v", err)
-		}
-		// lines are of the form: "12.04 LTS,Precise Pangolin,precise,2011-10-13,2012-04-26,2017-04-26"
-		parts := strings.Split(line, ",")
-		// Ignore any malformed lines.
-		if len(parts) < 3 {
-			continue
-		}
-		series := parts[2]
-		if series == "precise" {
-			preciseOrLaterFound = true
-		}
-		if series != "precise" && !preciseOrLaterFound {
-			continue
-		}
-		// the numeric version may contain a LTS moniker so strip that out.
-		seriesInfo := strings.Split(parts[0], " ")
-		seriesVersions[series] = seriesInfo[0]
-	}
-	return nil
 }
 
 // The following structs define the data model used in the JSON metadata files.
@@ -379,16 +273,6 @@ func (entries IndexMetadataSlice) filter(match func(*IndexMetadata) bool) IndexM
 	return result
 }
 
-func init() {
-	RegisterProtocol("file", http.NewFileTransport(http.Dir("/")))
-}
-
-// RegisterProtocol registers a new protocol with the simplestreams http client.
-// Exported for testing.
-func RegisterProtocol(scheme string, rt http.RoundTripper) {
-	http.DefaultTransport.(*http.Transport).RegisterProtocol(scheme, rt)
-}
-
 // noMatchingProductsError is used to indicate that metadata files have been located,
 // but there is no metadata satisfying a product criteria.
 // It is used to distinguish from the situation where the metadata files could not be found.
@@ -474,7 +358,7 @@ func getMaybeSignedMetadata(source DataSource, baseIndexPath string, cons Lookup
 	resolveInfo.IndexURL = indexURL
 	indexRef, err := GetIndexWithFormat(source, indexPath, "index:1.0", signed, cons.Params().CloudSpec, params)
 	if err != nil {
-		if errors.IsNotFoundError(err) || errors.IsUnauthorizedError(err) {
+		if errors.IsNotFound(err) || errors.IsUnauthorized(err) {
 			logger.Debugf("cannot load index %q: %v", indexURL, err)
 		}
 		return nil, resolveInfo, err
@@ -482,7 +366,7 @@ func getMaybeSignedMetadata(source DataSource, baseIndexPath string, cons Lookup
 	logger.Debugf("read metadata index at %q", indexURL)
 	items, err = indexRef.getLatestMetadataWithFormat(cons, "products:1.0", signed)
 	if err != nil {
-		if errors.IsNotFoundError(err) {
+		if errors.IsNotFound(err) {
 			logger.Debugf("skipping index because of error getting latest metadata %q: %v", indexURL, err)
 			return nil, resolveInfo, err
 		}
@@ -523,7 +407,7 @@ func GetIndexWithFormat(source DataSource, indexPath, indexFormat string, requir
 
 	data, url, err := fetchData(source, indexPath, requireSigned, params.PublicKey)
 	if err != nil {
-		if errors.IsNotFoundError(err) || errors.IsUnauthorizedError(err) {
+		if errors.IsNotFound(err) || errors.IsUnauthorized(err) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("cannot read index data, %v", err)
@@ -540,7 +424,7 @@ func GetIndexWithFormat(source DataSource, indexPath, indexFormat string, requir
 	}
 
 	mirrors, url, err := getMirrorRefs(source, mirrorsPath, requireSigned, params)
-	if err != nil && !errors.IsNotFoundError(err) && !errors.IsUnauthorizedError(err) {
+	if err != nil && !errors.IsNotFound(err) && !errors.IsUnauthorized(err) {
 		return nil, fmt.Errorf("cannot load mirror metadata at URL %q: %v", url, err)
 	}
 
@@ -556,7 +440,7 @@ func GetIndexWithFormat(source DataSource, indexPath, indexFormat string, requir
 			source, mirrors, params.DataType, params.MirrorContentId, cloudSpec, requireSigned, params.PublicKey)
 		if err == nil {
 			logger.Debugf("using mirrored products path: %s", path.Join(mirrorInfo.MirrorURL, mirrorInfo.Path))
-			indexRef.Source = NewURLDataSource("mirror", mirrorInfo.MirrorURL, VerifySSLHostnames)
+			indexRef.Source = NewURLDataSource("mirror", mirrorInfo.MirrorURL, utils.VerifySSLHostnames)
 			indexRef.MirroredProductsPath = mirrorInfo.Path
 		} else {
 			logger.Debugf("no mirror information available for %s: %v", cloudSpec, err)
@@ -577,7 +461,7 @@ func getMirrorRefs(source DataSource, baseMirrorsPath string, requireSigned bool
 	var mirrors MirrorRefs
 	data, url, err := fetchData(source, mirrorsPath, requireSigned, params.PublicKey)
 	if err != nil {
-		if errors.IsNotFoundError(err) || errors.IsUnauthorizedError(err) {
+		if errors.IsNotFound(err) || errors.IsUnauthorized(err) {
 			logger.Debugf("no mirror index file found")
 			return mirrors, url, err
 		}
@@ -673,7 +557,7 @@ func (mirrorRef *MirrorReference) hasCloud(cloud CloudSpec) bool {
 	return false
 }
 
-// GetMirrorReference returns the reference to the metadata file containing mirrors for the specified content and cloud.
+// getMirrorReference returns the reference to the metadata file containing mirrors for the specified content and cloud.
 func (mirrorRefs *MirrorRefs) getMirrorReference(datatype, contentId string, cloud CloudSpec) (*MirrorReference, error) {
 	candidates := mirrorRefs.extractMirrorRefs(contentId)
 	if len(candidates) == 0 {
@@ -723,7 +607,7 @@ func GetMirrorMetadataWithFormat(source DataSource, mirrorPath, format string,
 
 	data, url, err := fetchData(source, mirrorPath, requireSigned, publicKey)
 	if err != nil {
-		if errors.IsNotFoundError(err) || errors.IsUnauthorizedError(err) {
+		if errors.IsNotFound(err) || errors.IsUnauthorized(err) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("cannot read mirror data, %v", err)

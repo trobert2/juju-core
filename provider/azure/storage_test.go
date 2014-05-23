@@ -11,12 +11,12 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 	"launchpad.net/gwacl"
 
 	"launchpad.net/juju-core/environs/storage"
-	"launchpad.net/juju-core/errors"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 type storageSuite struct {
@@ -183,7 +183,7 @@ func (*storageSuite) TestGetReturnsNotFoundIf404(c *gc.C) {
 	transport.AddExchange(response, nil)
 	_, err := storage.Get(azStorage, filename)
 	c.Assert(err, gc.NotNil)
-	c.Check(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Check(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (*storageSuite) TestPut(c *gc.C) {

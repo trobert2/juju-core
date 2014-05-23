@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"labix.org/v2/mgo"
 	"labix.org/v2/mgo/bson"
@@ -15,7 +16,6 @@ import (
 
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/constraints"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/state/api/params"
@@ -63,21 +63,23 @@ const (
 // unitDoc represents the internal state of a unit in MongoDB.
 // Note the correspondence with UnitInfo in state/api/params.
 type unitDoc struct {
-	Name           string `bson:"_id"`
-	Service        string
-	Series         string
-	CharmURL       *charm.URL
-	Principal      string
-	Subordinates   []string
+	Name         string `bson:"_id"`
+	Service      string
+	Series       string
+	CharmURL     *charm.URL
+	Principal    string
+	Subordinates []string
+	MachineId    string
+	Resolved     ResolvedMode
+	Tools        *tools.Tools `bson:",omitempty"`
+	Ports        []instance.Port
+	Life         Life
+	TxnRevno     int64 `bson:"txn-revno"`
+	PasswordHash string
+
+	// No longer used - to be removed.
 	PublicAddress  string
 	PrivateAddress string
-	MachineId      string
-	Resolved       ResolvedMode
-	Tools          *tools.Tools `bson:",omitempty"`
-	Ports          []instance.Port
-	Life           Life
-	TxnRevno       int64 `bson:"txn-revno"`
-	PasswordHash   string
 }
 
 // Unit represents the state of a service unit.
@@ -117,11 +119,11 @@ func (u *Unit) ConfigSettings() (charm.Settings, error) {
 	if err != nil {
 		return nil, err
 	}
-	charm, err := u.st.Charm(u.doc.CharmURL)
+	chrm, err := u.st.Charm(u.doc.CharmURL)
 	if err != nil {
 		return nil, err
 	}
-	result := charm.Config().DefaultSettings()
+	result := chrm.Config().DefaultSettings()
 	for name, value := range settings.Map() {
 		result[name] = value
 	}
@@ -164,7 +166,8 @@ func (u *Unit) Life() Life {
 }
 
 // AgentTools returns the tools that the agent is currently running.
-// It an error that satisfies IsNotFound if the tools have not yet been set.
+// It an error that satisfies errors.IsNotFound if the tools have not
+// yet been set.
 func (u *Unit) AgentTools() (*tools.Tools, error) {
 	if u.doc.Tools == nil {
 		return nil, errors.NotFoundf("agent tools for unit %q", u)
@@ -176,7 +179,7 @@ func (u *Unit) AgentTools() (*tools.Tools, error) {
 // SetAgentVersion sets the version of juju that the agent is
 // currently running.
 func (u *Unit) SetAgentVersion(v version.Binary) (err error) {
-	defer utils.ErrorContextf(&err, "cannot set agent version for unit %q", u)
+	defer errors.Maskf(&err, "cannot set agent version for unit %q", u)
 	if err = checkVersionValidity(v); err != nil {
 		return err
 	}
@@ -185,7 +188,7 @@ func (u *Unit) SetAgentVersion(v version.Binary) (err error) {
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: notDeadDoc,
-		Update: D{{"$set", D{{"tools", tools}}}},
+		Update: bson.D{{"$set", bson.D{{"tools", tools}}}},
 	}}
 	if err := u.st.runTransaction(ops); err != nil {
 		return onAbort(err, errDead)
@@ -217,7 +220,7 @@ func (u *Unit) setPasswordHash(passwordHash string) error {
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: notDeadDoc,
-		Update: D{{"$set", D{{"passwordhash", passwordHash}}}},
+		Update: bson.D{{"$set", bson.D{{"passwordhash", passwordHash}}}},
 	}}
 	err := u.st.runTransaction(ops)
 	if err != nil {
@@ -280,7 +283,7 @@ func (u *Unit) Destroy() (err error) {
 		default:
 			return err
 		}
-		if err := unit.Refresh(); errors.IsNotFoundError(err) {
+		if err := unit.Refresh(); errors.IsNotFound(err) {
 			return nil
 		} else if err != nil {
 			return err
@@ -319,12 +322,13 @@ func (u *Unit) destroyOps() ([]txn.Op, error) {
 	// the number of tests that have to change and defer that improvement to
 	// its own CL.
 	minUnitsOp := minUnitsTriggerOp(u.st, u.ServiceName())
+	cleanupOp := u.st.newCleanupOp(cleanupDyingUnit, u.doc.Name)
 	setDyingOps := []txn.Op{{
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: isAliveDoc,
-		Update: D{{"$set", D{{"life", Dying}}}},
-	}, minUnitsOp}
+		Update: bson.D{{"$set", bson.D{{"life", Dying}}}},
+	}, cleanupOp, minUnitsOp}
 	if u.doc.Principal != "" {
 		return setDyingOps, nil
 	} else if len(u.doc.Subordinates) != 0 {
@@ -333,7 +337,7 @@ func (u *Unit) destroyOps() ([]txn.Op, error) {
 
 	sdocId := u.globalKey()
 	sdoc, err := getStatus(u.st, sdocId)
-	if errors.IsNotFoundError(err) {
+	if errors.IsNotFound(err) {
 		return nil, errAlreadyDying
 	} else if err != nil {
 		return nil, err
@@ -344,7 +348,7 @@ func (u *Unit) destroyOps() ([]txn.Op, error) {
 	ops := []txn.Op{{
 		C:      u.st.statuses.Name,
 		Id:     sdocId,
-		Assert: D{{"status", params.StatusPending}},
+		Assert: bson.D{{"status", params.StatusPending}},
 	}, minUnitsOp}
 	removeAsserts := append(isAliveDoc, unitHasNoSubordinates...)
 	removeOps, err := u.removeOps(removeAsserts)
@@ -360,9 +364,9 @@ var errAlreadyRemoved = stderrors.New("entity has already been removed")
 
 // removeOps returns the operations necessary to remove the unit, assuming
 // the supplied asserts apply to the unit document.
-func (u *Unit) removeOps(asserts D) ([]txn.Op, error) {
+func (u *Unit) removeOps(asserts bson.D) ([]txn.Op, error) {
 	svc, err := u.st.Service(u.doc.Service)
-	if errors.IsNotFoundError(err) {
+	if errors.IsNotFound(err) {
 		// If the service has been removed, the unit must already have been.
 		return nil, errAlreadyRemoved
 	} else if err != nil {
@@ -373,10 +377,10 @@ func (u *Unit) removeOps(asserts D) ([]txn.Op, error) {
 
 var ErrUnitHasSubordinates = stderrors.New("unit has subordinates")
 
-var unitHasNoSubordinates = D{{
-	"$or", []D{
-		{{"subordinates", D{{"$size", 0}}}},
-		{{"subordinates", D{{"$exists", false}}}},
+var unitHasNoSubordinates = bson.D{{
+	"$or", []bson.D{
+		{{"subordinates", bson.D{{"$size", 0}}}},
+		{{"subordinates", bson.D{{"$exists", false}}}},
 	},
 }}
 
@@ -396,7 +400,7 @@ func (u *Unit) EnsureDead() (err error) {
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: append(notDeadDoc, unitHasNoSubordinates...),
-		Update: D{{"$set", D{{"life", Dead}}}},
+		Update: bson.D{{"$set", bson.D{{"life", Dead}}}},
 	}}
 	if err := u.st.runTransaction(ops); err != txn.ErrAborted {
 		return err
@@ -413,7 +417,7 @@ func (u *Unit) EnsureDead() (err error) {
 // the service is Dying and no other references to it exist. It will fail if
 // the unit is not Dead.
 func (u *Unit) Remove() (err error) {
-	defer utils.ErrorContextf(&err, "cannot remove unit %q", u)
+	defer errors.Maskf(&err, "cannot remove unit %q", u)
 	if u.doc.Life != Dead {
 		return stderrors.New("unit is not dead")
 	}
@@ -452,7 +456,7 @@ func (u *Unit) Remove() (err error) {
 		default:
 			return err
 		}
-		if err := unit.Refresh(); errors.IsNotFoundError(err) {
+		if err := unit.Refresh(); errors.IsNotFound(err) {
 			return nil
 		} else if err != nil {
 			return err
@@ -479,6 +483,45 @@ func (u *Unit) SubordinateNames() []string {
 	return names
 }
 
+// RelationsJoined returns the relations for which the unit has entered scope
+// and neither left it nor prepared to leave it
+func (u *Unit) RelationsJoined() ([]*Relation, error) {
+	return u.relations(func(ru *RelationUnit) (bool, error) {
+		return ru.Joined()
+	})
+}
+
+// RelationsInScope returns the relations for which the unit has entered scope
+// and not left it.
+func (u *Unit) RelationsInScope() ([]*Relation, error) {
+	return u.relations(func(ru *RelationUnit) (bool, error) {
+		return ru.InScope()
+	})
+}
+
+type relationPredicate func(ru *RelationUnit) (bool, error)
+
+// relations implements RelationsJoined and RelationsInScope.
+func (u *Unit) relations(predicate relationPredicate) ([]*Relation, error) {
+	candidates, err := serviceRelations(u.st, u.doc.Service)
+	if err != nil {
+		return nil, err
+	}
+	var filtered []*Relation
+	for _, relation := range candidates {
+		relationUnit, err := relation.Unit(u)
+		if err != nil {
+			return nil, err
+		}
+		if include, err := predicate(relationUnit); err != nil {
+			return nil, err
+		} else if include {
+			filtered = append(filtered, relation)
+		}
+	}
+	return filtered, nil
+}
+
 // DeployerTag returns the tag of the agent responsible for deploying
 // the unit. If no such entity can be determined, false is returned.
 func (u *Unit) DeployerTag() (string, bool) {
@@ -498,8 +541,10 @@ func (u *Unit) PrincipalName() (string, bool) {
 
 // addressesOfMachine returns Addresses of the related machine if present.
 func (u *Unit) addressesOfMachine() []instance.Address {
-	id := u.doc.MachineId
-	if id != "" {
+	if id, err := u.AssignedMachineId(); err != nil {
+		unitLogger.Errorf("unit %v cannot get assigned machine: %v", u, err)
+		return nil
+	} else {
 		m, err := u.st.Machine(id)
 		if err == nil {
 			return m.Addresses()
@@ -511,7 +556,7 @@ func (u *Unit) addressesOfMachine() []instance.Address {
 
 // PublicAddress returns the public address of the unit and whether it is valid.
 func (u *Unit) PublicAddress() (string, bool) {
-	publicAddress := u.doc.PublicAddress
+	var publicAddress string
 	addresses := u.addressesOfMachine()
 	if len(addresses) > 0 {
 		publicAddress = instance.SelectPublicAddress(addresses)
@@ -521,7 +566,7 @@ func (u *Unit) PublicAddress() (string, bool) {
 
 // PrivateAddress returns the private address of the unit and whether it is valid.
 func (u *Unit) PrivateAddress() (string, bool) {
-	privateAddress := u.doc.PrivateAddress
+	var privateAddress string
 	addresses := u.addressesOfMachine()
 	if len(addresses) > 0 {
 		privateAddress = instance.SelectInternalAddress(addresses, false)
@@ -530,7 +575,8 @@ func (u *Unit) PrivateAddress() (string, bool) {
 }
 
 // Refresh refreshes the contents of the Unit from the underlying
-// state. It an error that satisfies IsNotFound if the unit has been removed.
+// state. It an error that satisfies errors.IsNotFound if the unit has
+// been removed.
 func (u *Unit) Refresh() error {
 	err := u.st.units.FindId(u.doc.Name).One(&u.doc)
 	if err == mgo.ErrNotFound {
@@ -562,7 +608,7 @@ func (u *Unit) SetStatus(status params.Status, info string, data params.StatusDa
 		StatusInfo: info,
 		StatusData: data,
 	}
-	if err := doc.validateSet(); err != nil {
+	if err := doc.validateSet(false); err != nil {
 		return err
 	}
 	ops := []txn.Op{{
@@ -582,12 +628,12 @@ func (u *Unit) SetStatus(status params.Status, info string, data params.StatusDa
 // OpenPort sets the policy of the port with protocol and number to be opened.
 func (u *Unit) OpenPort(protocol string, number int) (err error) {
 	port := instance.Port{Protocol: protocol, Number: number}
-	defer utils.ErrorContextf(&err, "cannot open port %v for unit %q", port, u)
+	defer errors.Maskf(&err, "cannot open port %v for unit %q", port, u)
 	ops := []txn.Op{{
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: notDeadDoc,
-		Update: D{{"$addToSet", D{{"ports", port}}}},
+		Update: bson.D{{"$addToSet", bson.D{{"ports", port}}}},
 	}}
 	err = u.st.runTransaction(ops)
 	if err != nil {
@@ -608,12 +654,12 @@ func (u *Unit) OpenPort(protocol string, number int) (err error) {
 // ClosePort sets the policy of the port with protocol and number to be closed.
 func (u *Unit) ClosePort(protocol string, number int) (err error) {
 	port := instance.Port{Protocol: protocol, Number: number}
-	defer utils.ErrorContextf(&err, "cannot close port %v for unit %q", port, u)
+	defer errors.Maskf(&err, "cannot close port %v for unit %q", port, u)
 	ops := []txn.Op{{
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: notDeadDoc,
-		Update: D{{"$pull", D{{"ports", port}}}},
+		Update: bson.D{{"$pull", bson.D{{"ports", port}}}},
 	}}
 	err = u.st.runTransaction(ops)
 	if err != nil {
@@ -661,7 +707,7 @@ func (u *Unit) SetCharmURL(curl *charm.URL) (err error) {
 		} else if !notDead {
 			return fmt.Errorf("unit %q is dead", u)
 		}
-		sel := D{{"_id", u.doc.Name}, {"charmurl", curl}}
+		sel := bson.D{{"_id", u.doc.Name}, {"charmurl", curl}}
 		if count, err := u.st.units.Find(sel).Count(); err != nil {
 			return err
 		} else if count == 1 {
@@ -681,14 +727,14 @@ func (u *Unit) SetCharmURL(curl *charm.URL) (err error) {
 		}
 
 		// Set the new charm URL.
-		differentCharm := D{{"charmurl", D{{"$ne", curl}}}}
+		differentCharm := bson.D{{"charmurl", bson.D{{"$ne", curl}}}}
 		ops := []txn.Op{
 			incOp,
 			{
 				C:      u.st.units.Name,
 				Id:     u.doc.Name,
 				Assert: append(notDeadDoc, differentCharm...),
-				Update: D{{"$set", D{{"charmurl", curl}}}},
+				Update: bson.D{{"$set", bson.D{{"charmurl", curl}}}},
 			}}
 		if u.doc.CharmURL != nil {
 			// Drop the reference to the old charm.
@@ -719,7 +765,7 @@ func (u *Unit) Tag() string {
 
 // WaitAgentAlive blocks until the respective agent is alive.
 func (u *Unit) WaitAgentAlive(timeout time.Duration) (err error) {
-	defer utils.ErrorContextf(&err, "waiting for agent of unit %q", u)
+	defer errors.Maskf(&err, "waiting for agent of unit %q", u)
 	ch := make(chan presence.Change)
 	u.st.pwatcher.Watch(u.globalKey(), ch)
 	defer u.st.pwatcher.Unwatch(u.globalKey(), ch)
@@ -771,7 +817,7 @@ func (u *Unit) AssignedMachineId() (id string, err error) {
 		return u.doc.MachineId, nil
 	}
 	pudoc := unitDoc{}
-	err = u.st.units.Find(D{{"_id", u.doc.Principal}}).One(&pudoc)
+	err = u.st.units.Find(bson.D{{"_id", u.doc.Principal}}).One(&pudoc)
 	if err == mgo.ErrNotFound {
 		return "", errors.NotFoundf("principal unit %q of %q", u.doc.Principal, u)
 	} else if err != nil {
@@ -821,26 +867,31 @@ func (u *Unit) assignToMachine(m *Machine, unused bool) (err error) {
 	if !canHost {
 		return fmt.Errorf("machine %q cannot host units", m)
 	}
-	assert := append(isAliveDoc, D{
-		{"$or", []D{
+	// assignToMachine implies assignment to an existing machine,
+	// which is only permitted if unit placement is supported.
+	if err := u.st.supportsUnitPlacement(); err != nil {
+		return err
+	}
+	assert := append(isAliveDoc, bson.D{
+		{"$or", []bson.D{
 			{{"machineid", ""}},
 			{{"machineid", m.Id()}},
 		}},
 	}...)
 	massert := isAliveDoc
 	if unused {
-		massert = append(massert, D{{"clean", D{{"$ne", false}}}}...)
+		massert = append(massert, bson.D{{"clean", bson.D{{"$ne", false}}}}...)
 	}
 	ops := []txn.Op{{
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: assert,
-		Update: D{{"$set", D{{"machineid", m.doc.Id}}}},
+		Update: bson.D{{"$set", bson.D{{"machineid", m.doc.Id}}}},
 	}, {
 		C:      u.st.machines.Name,
 		Id:     m.doc.Id,
 		Assert: massert,
-		Update: D{{"$addToSet", D{{"principals", u.doc.Name}}}, {"$set", D{{"clean", false}}}},
+		Update: bson.D{{"$addToSet", bson.D{{"principals", u.doc.Name}}}, {"$set", bson.D{{"clean", false}}}},
 	}}
 	err = u.st.runTransaction(ops)
 	if err == nil {
@@ -917,20 +968,20 @@ func (u *Unit) assignToNewMachine(template MachineTemplate, parentId string, con
 		ops = append(ops, txn.Op{
 			C:      u.st.machines.Name,
 			Id:     parentId,
-			Assert: D{{"clean", true}},
+			Assert: bson.D{{"clean", true}},
 		}, txn.Op{
 			C:      u.st.containerRefs.Name,
 			Id:     parentId,
-			Assert: D{hasNoContainersTerm},
+			Assert: bson.D{hasNoContainersTerm},
 		})
 	}
-	isUnassigned := D{{"machineid", ""}}
+	isUnassigned := bson.D{{"machineid", ""}}
 	asserts := append(isAliveDoc, isUnassigned...)
 	ops = append(ops, txn.Op{
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: asserts,
-		Update: D{{"$set", D{{"machineid", mdoc.Id}}}},
+		Update: bson.D{{"$set", bson.D{{"machineid", mdoc.Id}}}},
 	})
 
 	err = u.st.runTransaction(ops)
@@ -982,7 +1033,7 @@ func (u *Unit) assignToNewMachine(template MachineTemplate, parentId string, con
 // constraints is a helper function to return a unit's deployment constraints.
 func (u *Unit) constraints() (*constraints.Value, error) {
 	cons, err := readConstraints(u.st, u.globalKey())
-	if errors.IsNotFoundError(err) {
+	if errors.IsNotFound(err) {
 		// Lack of constraints indicates lack of unit.
 		return nil, errors.NotFoundf("unit")
 	} else if err != nil {
@@ -991,11 +1042,12 @@ func (u *Unit) constraints() (*constraints.Value, error) {
 	return &cons, nil
 }
 
-// AssignToNewMachineOrContainer assigns the unit to a new machine, with constraints
-// determined according to the service and environment constraints at the time of unit creation.
-// If a container is required, a clean, empty machine instance is required on which to create
-// the container. An existing clean, empty instance is first searched for, and if not found,
-// a new one is created.
+// AssignToNewMachineOrContainer assigns the unit to a new machine,
+// with constraints determined according to the service and
+// environment constraints at the time of unit creation. If a
+// container is required, a clean, empty machine instance is required
+// on which to create the container. An existing clean, empty instance
+// is first searched for, and if not found, a new one is created.
 func (u *Unit) AssignToNewMachineOrContainer() (err error) {
 	defer assignContextf(&err, u, "new machine or container")
 	if u.doc.Principal != "" {
@@ -1026,10 +1078,20 @@ func (u *Unit) AssignToNewMachineOrContainer() (err error) {
 	} else if err != nil {
 		return err
 	}
+	svc, err := u.Service()
+	if err != nil {
+		return err
+	}
+	includeNetworks, excludeNetworks, err := svc.Networks()
+	if err != nil {
+		return err
+	}
 	template := MachineTemplate{
-		Series:      u.doc.Series,
-		Constraints: *cons,
-		Jobs:        []MachineJob{JobHostUnits},
+		Series:          u.doc.Series,
+		Constraints:     *cons,
+		Jobs:            []MachineJob{JobHostUnits},
+		IncludeNetworks: includeNetworks,
+		ExcludeNetworks: excludeNetworks,
 	}
 	err = u.assignToNewMachine(template, host.Id, *cons.Container)
 	if err == machineNotCleanErr {
@@ -1059,10 +1121,20 @@ func (u *Unit) AssignToNewMachine() (err error) {
 	if cons.HasContainer() {
 		containerType = *cons.Container
 	}
+	svc, err := u.Service()
+	if err != nil {
+		return err
+	}
+	includeNetworks, excludeNetworks, err := svc.Networks()
+	if err != nil {
+		return err
+	}
 	template := MachineTemplate{
-		Series:      u.doc.Series,
-		Constraints: *cons,
-		Jobs:        []MachineJob{JobHostUnits},
+		Series:          u.doc.Series,
+		Constraints:     *cons,
+		Jobs:            []MachineJob{JobHostUnits},
+		IncludeNetworks: includeNetworks,
+		ExcludeNetworks: excludeNetworks,
 	}
 	return u.assignToNewMachine(template, "", containerType)
 }
@@ -1079,7 +1151,7 @@ func (u *Unit) AssignToCleanMachine() (m *Machine, err error) {
 	return u.assignToCleanMaybeEmptyMachine(false)
 }
 
-// AssignToCleanMachine assigns u to a machine which is marked as clean and is also
+// AssignToCleanEmptyMachine assigns u to a machine which is marked as clean and is also
 // not hosting any containers. A machine is clean if it has never had any principal units
 // assigned to it. If there are no clean machines besides any machine(s) running JobHostEnviron,
 // an error is returned.
@@ -1090,15 +1162,15 @@ func (u *Unit) AssignToCleanEmptyMachine() (m *Machine, err error) {
 }
 
 var hasContainerTerm = bson.DocElem{
-	"$and", []D{
-		{{"children", D{{"$not", D{{"$size", 0}}}}}},
-		{{"children", D{{"$exists", true}}}},
+	"$and", []bson.D{
+		{{"children", bson.D{{"$not", bson.D{{"$size", 0}}}}}},
+		{{"children", bson.D{{"$exists", true}}}},
 	}}
 
 var hasNoContainersTerm = bson.DocElem{
-	"$or", []D{
-		{{"children", D{{"$size", 0}}}},
-		{{"children", D{{"$exists", false}}}},
+	"$or", []bson.D{
+		{{"children", bson.D{{"$size", 0}}}},
+		{{"children", bson.D{{"$exists", false}}}},
 	}}
 
 // findCleanMachineQuery returns a Mongo query to find clean (and possibly empty) machines with
@@ -1109,7 +1181,7 @@ func (u *Unit) findCleanMachineQuery(requireEmpty bool, cons *constraints.Value)
 	// If we need empty machines, first build up a list of machine ids which have containers
 	// so we can exclude those.
 	if requireEmpty {
-		err := u.st.containerRefs.Find(D{hasContainerTerm}).All(&containerRefs)
+		err := u.st.containerRefs.Find(bson.D{hasContainerTerm}).All(&containerRefs)
 		if err != nil {
 			return nil, err
 		}
@@ -1118,12 +1190,12 @@ func (u *Unit) findCleanMachineQuery(requireEmpty bool, cons *constraints.Value)
 	for i, cref := range containerRefs {
 		machinesWithContainers[i] = cref.Id
 	}
-	terms := D{
+	terms := bson.D{
 		{"life", Alive},
 		{"series", u.doc.Series},
 		{"jobs", []MachineJob{JobHostUnits}},
 		{"clean", true},
-		{"_id", D{{"$nin", machinesWithContainers}}},
+		{"_id", bson.D{{"$nin", machinesWithContainers}}},
 	}
 	// Add the container filter term if necessary.
 	var containerType instance.ContainerType
@@ -1144,24 +1216,24 @@ func (u *Unit) findCleanMachineQuery(requireEmpty bool, cons *constraints.Value)
 	// be suitable, but we don't know that right now and it's best
 	// to err on the side of caution and exclude such machines.
 	var suitableInstanceData []instanceData
-	var suitableTerms D
+	var suitableTerms bson.D
 	if cons.Arch != nil && *cons.Arch != "" {
 		suitableTerms = append(suitableTerms, bson.DocElem{"arch", *cons.Arch})
 	}
 	if cons.Mem != nil && *cons.Mem > 0 {
-		suitableTerms = append(suitableTerms, bson.DocElem{"mem", D{{"$gte", *cons.Mem}}})
+		suitableTerms = append(suitableTerms, bson.DocElem{"mem", bson.D{{"$gte", *cons.Mem}}})
 	}
 	if cons.RootDisk != nil && *cons.RootDisk > 0 {
-		suitableTerms = append(suitableTerms, bson.DocElem{"rootdisk", D{{"$gte", *cons.RootDisk}}})
+		suitableTerms = append(suitableTerms, bson.DocElem{"rootdisk", bson.D{{"$gte", *cons.RootDisk}}})
 	}
 	if cons.CpuCores != nil && *cons.CpuCores > 0 {
-		suitableTerms = append(suitableTerms, bson.DocElem{"cpucores", D{{"$gte", *cons.CpuCores}}})
+		suitableTerms = append(suitableTerms, bson.DocElem{"cpucores", bson.D{{"$gte", *cons.CpuCores}}})
 	}
 	if cons.CpuPower != nil && *cons.CpuPower > 0 {
-		suitableTerms = append(suitableTerms, bson.DocElem{"cpupower", D{{"$gte", *cons.CpuPower}}})
+		suitableTerms = append(suitableTerms, bson.DocElem{"cpupower", bson.D{{"$gte", *cons.CpuPower}}})
 	}
 	if cons.Tags != nil && len(*cons.Tags) > 0 {
-		suitableTerms = append(suitableTerms, bson.DocElem{"tags", D{{"$all", *cons.Tags}}})
+		suitableTerms = append(suitableTerms, bson.DocElem{"tags", bson.D{{"$all", *cons.Tags}}})
 	}
 	if len(suitableTerms) > 0 {
 		err := u.st.instanceData.Find(suitableTerms).Select(bson.M{"_id": 1}).All(&suitableInstanceData)
@@ -1172,7 +1244,7 @@ func (u *Unit) findCleanMachineQuery(requireEmpty bool, cons *constraints.Value)
 		for i, m := range suitableInstanceData {
 			suitableIds[i] = m.Id
 		}
-		terms = append(terms, bson.DocElem{"_id", D{{"$in", suitableIds}}})
+		terms = append(terms, bson.DocElem{"_id", bson.D{{"$in", suitableIds}}})
 	}
 	return u.st.machines.Find(terms), nil
 }
@@ -1237,14 +1309,14 @@ func (u *Unit) UnassignFromMachine() (err error) {
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: txn.DocExists,
-		Update: D{{"$set", D{{"machineid", ""}}}},
+		Update: bson.D{{"$set", bson.D{{"machineid", ""}}}},
 	}}
 	if u.doc.MachineId != "" {
 		ops = append(ops, txn.Op{
 			C:      u.st.machines.Name,
 			Id:     u.doc.MachineId,
 			Assert: txn.DocExists,
-			Update: D{{"$pull", D{{"principals", u.doc.Name}}}},
+			Update: bson.D{{"$pull", bson.D{{"principals", u.doc.Name}}}},
 		})
 	}
 	err = u.st.runTransaction(ops)
@@ -1252,37 +1324,6 @@ func (u *Unit) UnassignFromMachine() (err error) {
 		return fmt.Errorf("cannot unassign unit %q from machine: %v", u, onAbort(err, errors.NotFoundf("machine")))
 	}
 	u.doc.MachineId = ""
-	return nil
-}
-
-// SetPublicAddress sets the public address of the unit.
-func (u *Unit) SetPublicAddress(address string) (err error) {
-	ops := []txn.Op{{
-		C:      u.st.units.Name,
-		Id:     u.doc.Name,
-		Assert: txn.DocExists,
-		Update: D{{"$set", D{{"publicaddress", address}}}},
-	}}
-	if err := u.st.runTransaction(ops); err != nil {
-		return fmt.Errorf("cannot set public address of unit %q: %v", u, onAbort(err, errors.NotFoundf("unit")))
-	}
-	u.doc.PublicAddress = address
-	return nil
-}
-
-// SetPrivateAddress sets the private address of the unit.
-func (u *Unit) SetPrivateAddress(address string) error {
-	ops := []txn.Op{{
-		C:      u.st.units.Name,
-		Id:     u.doc.Name,
-		Assert: notDeadDoc,
-		Update: D{{"$set", D{{"privateaddress", address}}}},
-	}}
-	err := u.st.runTransaction(ops)
-	if err != nil {
-		return fmt.Errorf("cannot set private address of unit %q: %v", u, onAbort(err, errors.NotFoundf("unit")))
-	}
-	u.doc.PrivateAddress = address
 	return nil
 }
 
@@ -1312,19 +1353,19 @@ func (u *Unit) Resolve(retryHooks bool) error {
 // whether to attempt to reexecute previous failed hooks or to continue
 // as if they had succeeded before.
 func (u *Unit) SetResolved(mode ResolvedMode) (err error) {
-	defer utils.ErrorContextf(&err, "cannot set resolved mode for unit %q", u)
+	defer errors.Maskf(&err, "cannot set resolved mode for unit %q", u)
 	switch mode {
 	case ResolvedRetryHooks, ResolvedNoHooks:
 	default:
 		return fmt.Errorf("invalid error resolution mode: %q", mode)
 	}
 	// TODO(fwereade): assert unit has error status.
-	resolvedNotSet := D{{"resolved", ResolvedNone}}
+	resolvedNotSet := bson.D{{"resolved", ResolvedNone}}
 	ops := []txn.Op{{
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: append(notDeadDoc, resolvedNotSet...),
-		Update: D{{"$set", D{{"resolved", mode}}}},
+		Update: bson.D{{"$set", bson.D{{"resolved", mode}}}},
 	}}
 	if err := u.st.runTransaction(ops); err == nil {
 		u.doc.Resolved = mode
@@ -1347,7 +1388,7 @@ func (u *Unit) ClearResolved() error {
 		C:      u.st.units.Name,
 		Id:     u.doc.Name,
 		Assert: txn.DocExists,
-		Update: D{{"$set", D{{"resolved", ResolvedNone}}}},
+		Update: bson.D{{"$set", bson.D{{"resolved", ResolvedNone}}}},
 	}}
 	err := u.st.runTransaction(ops)
 	if err != nil {

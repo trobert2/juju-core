@@ -27,6 +27,7 @@ import (
 	"launchpad.net/juju-core/state/apiserver/rsyslog"
 	"launchpad.net/juju-core/state/apiserver/uniter"
 	"launchpad.net/juju-core/state/apiserver/upgrader"
+	"launchpad.net/juju-core/state/apiserver/usermanager"
 	"launchpad.net/juju-core/state/multiwatcher"
 )
 
@@ -37,20 +38,27 @@ type taggedAuthenticator interface {
 	state.Authenticator
 }
 
-// maxPingInterval defines the timeframe until the ping
-// timeout closes the monitored connection.
-// TODO(mue): Idea by Roger: Move to API (e.g. params) so
-// that the pinging there may depend on the interval.
-var maxPingInterval = 3 * time.Minute
+var (
+	// maxClientPingInterval defines the timeframe until the ping timeout
+	// closes the monitored connection. TODO(mue): Idea by Roger:
+	// Move to API (e.g. params) so that the pinging there may
+	// depend on the interval.
+	maxClientPingInterval = 3 * time.Minute
+
+	// mongoPingInterval defines the interval at which an API server
+	// will ping the mongo session to make sure that it's still
+	// alive. When the ping returns an error, the server will be
+	// terminated.
+	mongoPingInterval = 10 * time.Second
+)
 
 // srvRoot represents a single client's connection to the state
 // after it has logged in.
 type srvRoot struct {
 	clientAPI
-	srv         *Server
-	rpcConn     *rpc.Conn
-	resources   *common.Resources
-	pingTimeout *pingTimeout
+	srv       *Server
+	rpcConn   *rpc.Conn
+	resources *common.Resources
 
 	entity taggedAuthenticator
 }
@@ -65,7 +73,8 @@ func newSrvRoot(root *initialRoot, entity taggedAuthenticator) *srvRoot {
 		resources: common.NewResources(),
 		entity:    entity,
 	}
-	r.clientAPI.API = client.NewAPI(r.srv.state, r.resources, r, r.srv.dataDir)
+	r.resources.RegisterNamed("dataDir", common.StringResource(r.srv.dataDir))
+	r.clientAPI.API = client.NewAPI(r.srv.state, r.resources, r)
 	return r
 }
 
@@ -73,9 +82,6 @@ func newSrvRoot(root *initialRoot, entity taggedAuthenticator) *srvRoot {
 // cleaning up to ensure that all outstanding requests return.
 func (r *srvRoot) Kill() {
 	r.resources.StopAll()
-	if r.pingTimeout != nil {
-		r.pingTimeout.stop()
-	}
 }
 
 // requireAgent checks whether the current client is an agent and hence
@@ -106,6 +112,16 @@ func (r *srvRoot) KeyManager(id string) (*keymanager.KeyManagerAPI, error) {
 		return nil, common.ErrBadId
 	}
 	return keymanager.NewKeyManagerAPI(r.srv.state, r.resources, r)
+}
+
+// UserManager returns an object that provides access to the UserManager API
+// facade. The id argument is reserved for future use and currently
+// needs to be empty
+func (r *srvRoot) UserManager(id string) (*usermanager.UserManagerAPI, error) {
+	if id != "" {
+		return nil, common.ErrBadId
+	}
+	return usermanager.NewUserManagerAPI(r.srv.state, r)
 }
 
 // Machiner returns an object that provides access to the Machiner API
@@ -223,7 +239,7 @@ func (r *srvRoot) Upgrader(id string) (upgrader.Upgrader, error) {
 	case names.MachineTagKind:
 		return upgrader.NewUpgraderAPI(r.srv.state, r.resources, r)
 	case names.UnitTagKind:
-		return upgrader.NewUnitUpgraderAPI(r.srv.state, r.resources, r, r.srv.dataDir)
+		return upgrader.NewUnitUpgraderAPI(r.srv.state, r.resources, r)
 	}
 	// Not a machine or unit.
 	return nil, common.ErrPerm
@@ -328,10 +344,11 @@ func (r *srvRoot) AllWatcher(id string) (*srvClientAllWatcher, error) {
 // is not called frequently enough, the connection
 // will be dropped.
 func (r *srvRoot) Pinger(id string) (pinger, error) {
-	if r.pingTimeout == nil {
+	pingTimeout, ok := r.resources.Get("pingTimeout").(pinger)
+	if !ok {
 		return nullPinger{}, nil
 	}
-	return r.pingTimeout, nil
+	return pingTimeout, nil
 }
 
 type nullPinger struct{}
@@ -419,8 +436,8 @@ func (pt *pingTimeout) Ping() {
 	}
 }
 
-// stop terminates the ping timeout.
-func (pt *pingTimeout) stop() error {
+// Stop terminates the ping timeout.
+func (pt *pingTimeout) Stop() error {
 	pt.tomb.Kill(nil)
 	return pt.tomb.Wait()
 }

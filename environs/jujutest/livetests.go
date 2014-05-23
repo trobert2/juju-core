@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/charm"
@@ -23,18 +25,14 @@ import (
 	"launchpad.net/juju-core/environs/sync"
 	envtesting "launchpad.net/juju-core/environs/testing"
 	envtools "launchpad.net/juju-core/environs/tools"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/juju"
 	"launchpad.net/juju-core/juju/testing"
-	"launchpad.net/juju-core/provider/common"
 	"launchpad.net/juju-core/provider/dummy"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
 	statetesting "launchpad.net/juju-core/state/testing"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
@@ -44,7 +42,6 @@ import (
 // (e.g. Amazon EC2).  The Environ is opened once only for all the tests
 // in the suite, stored in Env, and Destroyed after the suite has completed.
 type LiveTests struct {
-	testbase.LoggingSuite
 	envtesting.ToolsFixture
 
 	// TestConfig contains the configuration attributes for opening an environment.
@@ -76,13 +73,7 @@ type LiveTests struct {
 }
 
 func (t *LiveTests) SetUpSuite(c *gc.C) {
-	t.LoggingSuite.SetUpSuite(c)
 	t.ConfigStore = configstore.NewMem()
-}
-
-func (t *LiveTests) SetUpTest(c *gc.C) {
-	t.LoggingSuite.SetUpTest(c)
-	t.ToolsFixture.SetUpTest(c)
 }
 
 func publicAttrs(e environs.Environ) map[string]interface{} {
@@ -102,12 +93,6 @@ func (t *LiveTests) TearDownSuite(c *gc.C) {
 	if t.Env != nil {
 		t.Destroy(c)
 	}
-	t.LoggingSuite.TearDownSuite(c)
-}
-
-func (t *LiveTests) TearDownTest(c *gc.C) {
-	t.ToolsFixture.TearDownTest(c)
-	t.LoggingSuite.TearDownTest(c)
 }
 
 // PrepareOnce ensures that the environment is
@@ -134,13 +119,13 @@ func (t *LiveTests) BootstrapOnce(c *gc.C) {
 	// we could connect to (actual live tests, rather than local-only)
 	cons := constraints.MustParse("mem=2G")
 	if t.CanOpenState {
-		_, err := sync.Upload(t.Env.Storage(), nil, config.DefaultSeries)
+		_, err := sync.Upload(t.Env.Storage(), nil, coretesting.FakeDefaultSeries)
 		c.Assert(err, gc.IsNil)
 	}
-	envtesting.UploadFakeTools(c, t.Env.Storage())
-	err := common.EnsureNotBootstrapped(t.Env)
+	t.UploadFakeTools(c, t.Env.Storage())
+	err := bootstrap.EnsureNotBootstrapped(t.Env)
 	c.Assert(err, gc.IsNil)
-	err = bootstrap.Bootstrap(coretesting.Context(c), t.Env, cons)
+	err = bootstrap.Bootstrap(coretesting.Context(c), t.Env, environs.BootstrapParams{Constraints: cons})
 	c.Assert(err, gc.IsNil)
 	t.bootstrapped = true
 }
@@ -163,7 +148,8 @@ func (t *LiveTests) TestPrechecker(c *gc.C) {
 	if !ok {
 		return
 	}
-	err := prechecker.PrecheckInstance("precise", constraints.Value{})
+	const placement = ""
+	err := prechecker.PrecheckInstance("precise", constraints.Value{}, placement)
 	c.Assert(err, gc.IsNil)
 }
 
@@ -171,7 +157,7 @@ func (t *LiveTests) TestPrechecker(c *gc.C) {
 // that it does not assume a pristine environment.
 func (t *LiveTests) TestStartStop(c *gc.C) {
 	t.PrepareOnce(c)
-	envtesting.UploadFakeTools(c, t.Env.Storage())
+	t.UploadFakeTools(c, t.Env.Storage())
 
 	inst, _ := testing.AssertStartInstance(c, t.Env, "0")
 	c.Assert(inst, gc.NotNil)
@@ -208,7 +194,7 @@ func (t *LiveTests) TestStartStop(c *gc.C) {
 	c.Check(insts[0].Id(), gc.Equals, id0)
 	c.Check(insts[1], gc.IsNil)
 
-	err = t.Env.StopInstances([]instance.Instance{inst})
+	err = t.Env.StopInstances(inst.Id())
 	c.Assert(err, gc.IsNil)
 
 	// The machine may not be marked as shutting down
@@ -225,11 +211,11 @@ func (t *LiveTests) TestStartStop(c *gc.C) {
 
 func (t *LiveTests) TestPorts(c *gc.C) {
 	t.PrepareOnce(c)
-	envtesting.UploadFakeTools(c, t.Env.Storage())
+	t.UploadFakeTools(c, t.Env.Storage())
 
 	inst1, _ := testing.AssertStartInstance(c, t.Env, "1")
 	c.Assert(inst1, gc.NotNil)
-	defer t.Env.StopInstances([]instance.Instance{inst1})
+	defer t.Env.StopInstances(inst1.Id())
 	ports, err := inst1.Ports("1")
 	c.Assert(err, gc.IsNil)
 	c.Assert(ports, gc.HasLen, 0)
@@ -239,7 +225,7 @@ func (t *LiveTests) TestPorts(c *gc.C) {
 	ports, err = inst2.Ports("2")
 	c.Assert(err, gc.IsNil)
 	c.Assert(ports, gc.HasLen, 0)
-	defer t.Env.StopInstances([]instance.Instance{inst2})
+	defer t.Env.StopInstances(inst2.Id())
 
 	// Open some ports and check they're there.
 	err = inst1.OpenPorts("1", []instance.Port{{"udp", 67}, {"tcp", 45}})
@@ -314,7 +300,7 @@ func (t *LiveTests) TestPorts(c *gc.C) {
 
 func (t *LiveTests) TestGlobalPorts(c *gc.C) {
 	t.PrepareOnce(c)
-	envtesting.UploadFakeTools(c, t.Env.Storage())
+	t.UploadFakeTools(c, t.Env.Storage())
 
 	// Change configuration.
 	oldConfig := t.Env.Config()
@@ -332,7 +318,7 @@ func (t *LiveTests) TestGlobalPorts(c *gc.C) {
 
 	// Create instances and check open ports on both instances.
 	inst1, _ := testing.AssertStartInstance(c, t.Env, "1")
-	defer t.Env.StopInstances([]instance.Instance{inst1})
+	defer t.Env.StopInstances(inst1.Id())
 	ports, err := t.Env.Ports()
 	c.Assert(err, gc.IsNil)
 	c.Assert(ports, gc.HasLen, 0)
@@ -341,7 +327,7 @@ func (t *LiveTests) TestGlobalPorts(c *gc.C) {
 	ports, err = t.Env.Ports()
 	c.Assert(err, gc.IsNil)
 	c.Assert(ports, gc.HasLen, 0)
-	defer t.Env.StopInstances([]instance.Instance{inst2})
+	defer t.Env.StopInstances(inst2.Id())
 
 	err = t.Env.OpenPorts([]instance.Port{{"udp", 67}, {"tcp", 45}, {"tcp", 89}, {"tcp", 99}})
 	c.Assert(err, gc.IsNil)
@@ -382,7 +368,7 @@ func (t *LiveTests) TestBootstrapMultiple(c *gc.C) {
 	// already up, this has been moved into the bootstrap command.
 	t.BootstrapOnce(c)
 
-	err := common.EnsureNotBootstrapped(t.Env)
+	err := bootstrap.EnsureNotBootstrapped(t.Env)
 	c.Assert(err, gc.ErrorMatches, "environment is already bootstrapped")
 
 	c.Logf("destroy env")
@@ -443,7 +429,7 @@ func (t *LiveTests) TestBootstrapAndDeploy(c *gc.C) {
 
 	// If the series has not been specified, we expect the most recent Ubuntu LTS release to be used.
 	expectedVersion := version.Current
-	expectedVersion.Series = config.DefaultSeries
+	expectedVersion.Series = config.LatestLtsSeries()
 
 	mtools0 := waitAgentTools(c, mw0, expectedVersion)
 
@@ -451,9 +437,9 @@ func (t *LiveTests) TestBootstrapAndDeploy(c *gc.C) {
 	c.Logf("deploying service")
 	repoDir := c.MkDir()
 	url := coretesting.Charms.ClonedURL(repoDir, mtools0.Version.Series, "dummy")
-	sch, err := conn.PutCharm(url, &charm.LocalRepository{repoDir}, false)
+	sch, err := conn.PutCharm(url, &charm.LocalRepository{Path: repoDir}, false)
 	c.Assert(err, gc.IsNil)
-	svc, err := conn.State.AddService("dummy", "user-admin", sch)
+	svc, err := conn.State.AddService("dummy", "user-admin", sch, nil, nil)
 	c.Assert(err, gc.IsNil)
 	units, err := juju.AddUnits(conn.State, svc, 1, "")
 	c.Assert(err, gc.IsNil)
@@ -505,7 +491,7 @@ func (t *LiveTests) TestBootstrapAndDeploy(c *gc.C) {
 		<-uwatch.Changes()
 		err := unit.Refresh()
 		c.Logf("refreshed; err %v", err)
-		if errors.IsNotFoundError(err) {
+		if errors.IsNotFound(err) {
 			c.Logf("unit has been removed")
 			break
 		}
@@ -520,7 +506,7 @@ func (t *LiveTests) TestBootstrapAndDeploy(c *gc.C) {
 		c.Assert(err, gc.FitsTypeOf, &state.HasAssignedUnitsError{})
 		time.Sleep(5 * time.Second)
 		err = m1.Refresh()
-		if errors.IsNotFoundError(err) {
+		if errors.IsNotFound(err) {
 			break
 		}
 		c.Assert(err, gc.IsNil)
@@ -686,7 +672,7 @@ func (w *toolsWaiter) NextTools(c *gc.C) (*coretools.Tools, error) {
 			return nil, fmt.Errorf("object is dead")
 		}
 		tools, err := w.tooler.AgentTools()
-		if errors.IsNotFoundError(err) {
+		if errors.IsNotFound(err) {
 			c.Logf("tools not yet set")
 			continue
 		}
@@ -856,13 +842,16 @@ func (t *LiveTests) TestStartInstanceWithEmptyNonceFails(c *gc.C) {
 	machineId := "4"
 	stateInfo := testing.FakeStateInfo(machineId)
 	apiInfo := testing.FakeAPIInfo(machineId)
-	machineConfig := environs.NewMachineConfig(machineId, "", "", stateInfo, apiInfo)
+	machineConfig := environs.NewMachineConfig(machineId, "", "", nil, nil, stateInfo, apiInfo)
 
 	t.PrepareOnce(c)
 	possibleTools := envtesting.AssertUploadFakeToolsVersions(c, t.Env.Storage(), version.MustParseBinary("5.4.5-precise-amd64"))
-	inst, _, err := t.Env.StartInstance(constraints.Value{}, possibleTools, machineConfig)
+	inst, _, _, err := t.Env.StartInstance(environs.StartInstanceParams{
+		Tools:         possibleTools,
+		MachineConfig: machineConfig,
+	})
 	if inst != nil {
-		err := t.Env.StopInstances([]instance.Instance{inst})
+		err := t.Env.StopInstances(inst.Id())
 		c.Check(err, gc.IsNil)
 	}
 	c.Assert(inst, gc.IsNil)
@@ -914,7 +903,7 @@ func (t *LiveTests) TestBootstrapWithDefaultSeries(c *gc.C) {
 	err = storageCopy(dummyStorage, currentName, envStorage, otherName)
 	c.Assert(err, gc.IsNil)
 
-	err = bootstrap.Bootstrap(coretesting.Context(c), env, constraints.Value{})
+	err = bootstrap.Bootstrap(coretesting.Context(c), env, environs.BootstrapParams{})
 	c.Assert(err, gc.IsNil)
 
 	conn, err := juju.NewConn(env)

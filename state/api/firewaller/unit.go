@@ -49,12 +49,12 @@ func (u *Unit) Watch() (watcher.NotifyWatcher, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: u.tag}},
 	}
-	err := u.st.caller.Call("Firewaller", "", "Watch", args, &results)
+	err := u.st.call("Watch", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -89,12 +89,12 @@ func (u *Unit) OpenedPorts() ([]instance.Port, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: u.tag}},
 	}
-	err := u.st.caller.Call("Firewaller", "", "OpenedPorts", args, &results)
+	err := u.st.call("OpenedPorts", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -110,12 +110,12 @@ func (u *Unit) AssignedMachine() (string, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: u.tag}},
 	}
-	err := u.st.caller.Call("Firewaller", "", "GetAssignedMachine", args, &results)
+	err := u.st.call("GetAssignedMachine", args, &results)
 	if err != nil {
 		return "", err
 	}
 	if len(results.Results) != 1 {
-		return "", fmt.Errorf("expected one result, got %d", len(results.Results))
+		return "", fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {

@@ -8,21 +8,20 @@ import (
 	"time"
 
 	"github.com/juju/loggo"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/configstore"
 	"launchpad.net/juju-core/environs/sync"
 	"launchpad.net/juju-core/provider/dummy"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 type syncToolsSuite struct {
-	testbase.LoggingSuite
-	home         *coretesting.FakeHome
+	coretesting.FakeJujuHomeSuite
 	configStore  configstore.Storage
 	localStorage string
 
@@ -32,10 +31,10 @@ type syncToolsSuite struct {
 var _ = gc.Suite(&syncToolsSuite{})
 
 func (s *syncToolsSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.FakeJujuHomeSuite.SetUpTest(c)
 
 	// Create a target environments.yaml and make sure its environment is empty.
-	s.home = coretesting.MakeFakeHome(c, `
+	coretesting.WriteEnvironments(c, `
 environments:
     test-target:
         type: dummy
@@ -51,8 +50,7 @@ environments:
 func (s *syncToolsSuite) TearDownTest(c *gc.C) {
 	syncTools = s.origSyncTools
 	dummy.Reset()
-	s.home.Restore()
-	s.LoggingSuite.TearDownTest(c)
+	s.FakeJujuHomeSuite.TearDownTest(c)
 }
 
 func (s *syncToolsSuite) Reset(c *gc.C) {
@@ -61,7 +59,7 @@ func (s *syncToolsSuite) Reset(c *gc.C) {
 }
 
 func runSyncToolsCommand(c *gc.C, args ...string) (*cmd.Context, error) {
-	return coretesting.RunCommand(c, &SyncToolsCommand{}, args)
+	return coretesting.RunCommand(c, envcmd.Wrap(&SyncToolsCommand{}), args)
 }
 
 func wait(signal chan struct{}) error {
@@ -125,7 +123,7 @@ var syncToolsCommandTests = []struct {
 func (s *syncToolsSuite) TestSyncToolsCommand(c *gc.C) {
 	for i, test := range syncToolsCommandTests {
 		c.Logf("test %d: %s", i, test.description)
-		targetEnv, err := environs.PrepareFromName("test-target", nullContext(), s.configStore)
+		targetEnv, err := environs.PrepareFromName("test-target", nullContext(c), s.configStore)
 		c.Assert(err, gc.IsNil)
 		called := false
 		syncTools = func(sctx *sync.SyncContext) error {

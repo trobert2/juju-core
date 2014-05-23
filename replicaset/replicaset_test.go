@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	jc "github.com/juju/testing/checkers"
 	"labix.org/v2/mgo"
 	gc "launchpad.net/gocheck"
 
@@ -12,65 +13,48 @@ import (
 	"launchpad.net/juju-core/utils"
 )
 
-var (
-	name = "juju"
-	root *coretesting.MgoInstance
-)
+const rsName = "juju"
 
 func TestPackage(t *testing.T) {
 	gc.TestingT(t)
 }
 
-func newServer() (*coretesting.MgoInstance, error) {
-	inst := &coretesting.MgoInstance{Params: []string{"--replSet", name}}
-
-	err := inst.Start(true)
-	if err != nil {
-		return nil, fmt.Errorf("Error starting mongo server: %s", err.Error())
-	}
-
-	// by dialing right now, we'll wait until it's running
-	strategy := utils.AttemptStrategy{Total: time.Second * 5, Delay: time.Millisecond * 100}
-	attempt := strategy.Start()
-	for attempt.Next() {
-		var session *mgo.Session
-		session, err = inst.DialDirect()
-		if err != nil {
-			err = fmt.Errorf("Error dialing mongo server %q: %s", inst.Addr(), err.Error())
-		} else {
-			session.SetMode(mgo.Monotonic, true)
-			err = session.Ping()
-			if err != nil {
-				err = fmt.Errorf("Error pinging mongo server %q: %s", inst.Addr(), err.Error())
-			}
-			session.Close()
-		}
-		if err == nil || !attempt.HasNext() {
-			break
-		}
-	}
-	return inst, err
+type MongoSuite struct {
+	coretesting.BaseSuite
+	root *coretesting.MgoInstance
 }
 
-type MongoSuite struct{}
+func newServer(c *gc.C) *coretesting.MgoInstance {
+	inst := &coretesting.MgoInstance{Params: []string{"--replSet", rsName}}
+	err := inst.Start(true)
+	c.Assert(err, gc.IsNil)
+
+	session, err := inst.DialDirect()
+	if err != nil {
+		inst.Destroy()
+		c.Fatalf("error dialing mongo server: %v", err.Error())
+	}
+	defer session.Close()
+
+	session.SetMode(mgo.Monotonic, true)
+	if err = session.Ping(); err != nil {
+		inst.Destroy()
+		c.Fatalf("error pinging mongo server: %v", err.Error())
+	}
+	return inst
+}
 
 var _ = gc.Suite(&MongoSuite{})
 
 func (s *MongoSuite) SetUpSuite(c *gc.C) {
-	var err error
-	// do all this stuff here, since we don't want to have to redo it for each test
-	root, err = newServer()
-	if err != nil {
-		c.Fatalf("Got error from Start of root server: %s", err.Error())
-	}
-	// note, this is an actual test around Initiate, but again, I don't want to
-	// have to redo it, so I just do it once.
-	dialAndTestInitiate(c)
+	s.BaseSuite.SetUpSuite(c)
+	s.root = newServer(c)
+	s.dialAndTestInitiate(c)
 }
 
 func (s *MongoSuite) TearDownTest(c *gc.C) {
 	// remove all secondaries from the replicaset on test teardown
-	session, err := root.DialDirect()
+	session, err := s.root.DialDirect()
 	if err != nil {
 		c.Logf("Failed to dial root during test cleanup: %v", err)
 		return
@@ -81,27 +65,32 @@ func (s *MongoSuite) TearDownTest(c *gc.C) {
 		c.Logf("Failed to get list of memners during test cleanup: %v", err)
 		return
 	}
-
 	addrs := []string{}
 	for _, m := range mems {
-		if root.Addr() != m.Address {
+		if s.root.Addr() != m.Address {
 			addrs = append(addrs, m.Address)
 		}
 	}
-	if err = Remove(session, addrs...); err != nil {
-		c.Logf("Error removing secondaries: %v", err)
-	}
+	err = Remove(session, addrs...)
+	c.Assert(err, gc.IsNil)
+	s.BaseSuite.TearDownTest(c)
 }
 
-func dialAndTestInitiate(c *gc.C) {
-	session := root.MustDialDirect()
+var initialTags = map[string]string{"foo": "bar"}
+
+func (s *MongoSuite) dialAndTestInitiate(c *gc.C) {
+	session := s.root.MustDialDirect()
 	defer session.Close()
 
-	err := Initiate(session, root.Addr(), name)
+	mode := session.Mode()
+	err := Initiate(session, s.root.Addr(), rsName, initialTags)
 	c.Assert(err, gc.IsNil)
 
+	// make sure we haven't messed with the session's mode
+	c.Assert(session.Mode(), gc.Equals, mode)
+
 	// Ids start at 1 for us, so we can differentiate between set and unset
-	expectedMembers := []Member{Member{Id: 1, Address: root.Addr()}}
+	expectedMembers := []Member{Member{Id: 1, Address: s.root.Addr(), Tags: initialTags}}
 
 	// need to set mode to strong so that we wait for the write to succeed
 	// before reading and thus ensure that we're getting consistent reads.
@@ -109,7 +98,7 @@ func dialAndTestInitiate(c *gc.C) {
 
 	mems, err := CurrentMembers(session)
 	c.Assert(err, gc.IsNil)
-	c.Assert(mems, gc.DeepEquals, expectedMembers)
+	c.Assert(mems, jc.DeepEquals, expectedMembers)
 
 	// now add some data so we get a more real-life test
 	loadData(session, c)
@@ -138,135 +127,133 @@ func loadData(session *mgo.Session, c *gc.C) {
 }
 
 func (s *MongoSuite) TearDownSuite(c *gc.C) {
-	root.Destroy()
+	s.root.Destroy()
+	s.BaseSuite.TearDownSuite(c)
+}
+
+func attemptLoop(c *gc.C, strategy utils.AttemptStrategy, desc string, f func() error) {
+	var err error
+	start := time.Now()
+	attemptCount := 0
+	for attempt := strategy.Start(); attempt.Next(); {
+		attemptCount += 1
+		if err = f(); err == nil || !attempt.HasNext() {
+			break
+		}
+		c.Logf("%s failed: %v", desc, err)
+	}
+	c.Logf("%s: %d attempts in %s", desc, attemptCount, time.Since(start))
+	c.Assert(err, gc.IsNil)
 }
 
 func (s *MongoSuite) TestAddRemoveSet(c *gc.C) {
-	session := root.MustDial()
+	session := s.root.MustDial()
 	defer session.Close()
 
 	members := make([]Member, 0, 5)
 
 	// Add should be idempotent, so re-adding root here shouldn't result in
 	// two copies of root in the replica set
-	members = append(members, Member{Address: root.Addr()})
+	members = append(members, Member{Address: s.root.Addr(), Tags: initialTags})
 
-	instances := make([]*coretesting.MgoInstance, 0, 5)
-	instances = append(instances, root)
-
-	for x := 0; x < 4; x++ {
-		inst, err := newServer()
-		c.Assert(err, gc.IsNil)
-		instances = append(instances, inst)
+	instances := make([]*coretesting.MgoInstance, 5)
+	instances[0] = s.root
+	for i := 1; i < len(instances); i++ {
+		inst := newServer(c)
+		instances[i] = inst
 		defer inst.Destroy()
-		defer Remove(session, inst.Addr())
-
-		key := fmt.Sprintf("key%d", x)
-		val := fmt.Sprintf("val%d", x)
-
+		defer func() {
+			err := Remove(session, inst.Addr())
+			c.Assert(err, gc.IsNil)
+		}()
+		key := fmt.Sprintf("key%d", i)
+		val := fmt.Sprintf("val%d", i)
 		tags := map[string]string{key: val}
-
 		members = append(members, Member{Address: inst.Addr(), Tags: tags})
 	}
 
-	var err error
-
-	strategy := utils.AttemptStrategy{Total: time.Second * 30, Delay: time.Millisecond * 100}
-	attempt := strategy.Start()
-	for attempt.Next() {
-		err = Add(session, members...)
-		if err == nil || !attempt.HasNext() {
-			break
-		}
-	}
-	c.Assert(err, gc.IsNil)
+	// We allow for up to 2m per operation, since Add, Set, etc. call
+	// replSetReconfig which may cause primary renegotiation. According
+	// to the Mongo docs, "typically this is 10-20 seconds, but could be
+	// as long as a minute or more."
+	//
+	// Note that the delay is set at 500ms to cater for relatively quick
+	// operations without thrashing on those that take longer.
+	strategy := utils.AttemptStrategy{Total: time.Minute * 2, Delay: time.Millisecond * 500}
+	attemptLoop(c, strategy, "Add()", func() error {
+		return Add(session, members...)
+	})
 
 	expectedMembers := make([]Member, len(members))
-	for x, m := range members {
+	for i, m := range members {
 		// Ids should start at 1 (for the root) and go up
-		m.Id = x + 1
-		expectedMembers[x] = m
+		m.Id = i + 1
+		expectedMembers[i] = m
 	}
 
 	var cfg *Config
-	attempt = strategy.Start()
-	for attempt.Next() {
+	attemptLoop(c, strategy, "CurrentConfig()", func() error {
+		var err error
 		cfg, err = CurrentConfig(session)
-		if err == nil || !attempt.HasNext() {
-			break
-		}
-	}
-
-	c.Assert(err, gc.IsNil)
-	c.Assert(cfg.Name, gc.Equals, name)
-
+		return err
+	})
+	c.Assert(cfg.Name, gc.Equals, rsName)
 	// 2 since we already changed it once
 	c.Assert(cfg.Version, gc.Equals, 2)
 
 	mems := cfg.Members
+	c.Assert(mems, jc.DeepEquals, expectedMembers)
 
-	c.Assert(mems, gc.DeepEquals, expectedMembers)
-
-	// Now remove the last two Members
-	attempt = strategy.Start()
-	for attempt.Next() {
-		err = Remove(session, members[3].Address, members[4].Address)
-		if err == nil || !attempt.HasNext() {
-			break
-		}
-	}
-	c.Assert(err, gc.IsNil)
-
+	// Now remove the last two Members...
+	attemptLoop(c, strategy, "Remove()", func() error {
+		return Remove(session, members[3].Address, members[4].Address)
+	})
 	expectedMembers = expectedMembers[0:3]
 
-	mems, err = CurrentMembers(session)
-	c.Assert(err, gc.IsNil)
-	c.Assert(mems, gc.DeepEquals, expectedMembers)
+	// ... and confirm that CurrentMembers reflects the removal.
+	attemptLoop(c, strategy, "CurrentMembers()", func() error {
+		var err error
+		mems, err = CurrentMembers(session)
+		return err
+	})
+	c.Assert(mems, jc.DeepEquals, expectedMembers)
 
 	// now let's mix it up and set the new members to a mix of the previous
 	// plus the new arbiter
 	mems = []Member{members[3], mems[2], mems[0], members[4]}
-
-	attempt = strategy.Start()
-	for attempt.Next() {
-		err = Set(session, mems)
-		if err == nil || !attempt.HasNext() {
-			break
+	attemptLoop(c, strategy, "Set()", func() error {
+		err := Set(session, mems)
+		if err != nil {
+			c.Logf("current session mode: %v", session.Mode())
+			session.Refresh()
 		}
-	}
+		return err
+	})
 
-	c.Assert(err, gc.IsNil)
-
-	attempt = strategy.Start()
-	for attempt.Next() {
+	attemptLoop(c, strategy, "Ping()", func() error {
 		// can dial whichever replica address here, mongo will figure it out
-		session = instances[0].MustDialDirect()
-		err = session.Ping()
-		if err == nil || !attempt.HasNext() {
-			break
+		if session != nil {
+			session.Close()
 		}
-	}
-	c.Assert(err, gc.IsNil)
-
-	expectedMembers = []Member{members[3], expectedMembers[2], expectedMembers[0], members[4]}
+		session = instances[0].MustDialDirect()
+		return session.Ping()
+	})
 
 	// any new members will get an id of max(other_ids...)+1
+	expectedMembers = []Member{members[3], expectedMembers[2], expectedMembers[0], members[4]}
 	expectedMembers[0].Id = 4
 	expectedMembers[3].Id = 5
 
-	attempt = strategy.Start()
-	for attempt.Next() {
+	attemptLoop(c, strategy, "CurrentMembers()", func() error {
+		var err error
 		mems, err = CurrentMembers(session)
-		if err == nil || !attempt.HasNext() {
-			break
-		}
-	}
-	c.Assert(err, gc.IsNil)
-	c.Assert(mems, gc.DeepEquals, expectedMembers)
+		return err
+	})
+	c.Assert(mems, jc.DeepEquals, expectedMembers)
 }
 
 func (s *MongoSuite) TestIsMaster(c *gc.C) {
-	session := root.MustDial()
+	session := s.root.MustDial()
 	defer session.Close()
 
 	expected := IsMasterResults{
@@ -274,38 +261,60 @@ func (s *MongoSuite) TestIsMaster(c *gc.C) {
 		IsMaster:  true,
 		Secondary: false,
 		Arbiter:   false,
-		Address:   root.Addr(),
+		Address:   s.root.Addr(),
 		LocalTime: time.Time{},
 
 		// The following fields hold information about the replica set.
-		ReplicaSetName: name,
-		Addresses:      []string{root.Addr()},
+		ReplicaSetName: rsName,
+		Addresses:      []string{s.root.Addr()},
 		Arbiters:       nil,
-		PrimaryAddress: root.Addr(),
+		PrimaryAddress: s.root.Addr(),
 	}
 
 	res, err := IsMaster(session)
 	c.Assert(err, gc.IsNil)
 	c.Check(closeEnough(res.LocalTime, time.Now()), gc.Equals, true)
 	res.LocalTime = time.Time{}
-	c.Check(*res, gc.DeepEquals, expected)
+	c.Check(*res, jc.DeepEquals, expected)
+}
+
+func (s *MongoSuite) TestMasterHostPort(c *gc.C) {
+	session := s.root.MustDial()
+	defer session.Close()
+
+	expected := s.root.Addr()
+	result, err := MasterHostPort(session)
+
+	c.Logf("TestMasterHostPort expected: %v, got: %v", expected, result)
+	c.Assert(err, gc.IsNil)
+	c.Assert(result, gc.Equals, expected)
+}
+
+func (s *MongoSuite) TestMasterHostPortOnUnconfiguredReplicaSet(c *gc.C) {
+	inst := &coretesting.MgoInstance{}
+	err := inst.Start(true)
+	c.Assert(err, gc.IsNil)
+	defer inst.Destroy()
+	session := inst.MustDial()
+	hp, err := MasterHostPort(session)
+	c.Assert(err, gc.Equals, ErrMasterNotConfigured)
+	c.Assert(hp, gc.Equals, "")
 }
 
 func (s *MongoSuite) TestCurrentStatus(c *gc.C) {
-	session := root.MustDial()
+	session := s.root.MustDial()
 	defer session.Close()
 
-	inst1, err := newServer()
-	c.Assert(err, gc.IsNil)
+	inst1 := newServer(c)
 	defer inst1.Destroy()
 	defer Remove(session, inst1.Addr())
 
-	inst2, err := newServer()
-	c.Assert(err, gc.IsNil)
+	inst2 := newServer(c)
 	defer inst2.Destroy()
 	defer Remove(session, inst2.Addr())
 
-	strategy := utils.AttemptStrategy{Total: time.Second * 30, Delay: time.Millisecond * 100}
+	var err error
+	strategy := utils.AttemptStrategy{Total: time.Minute * 2, Delay: time.Millisecond * 500}
 	attempt := strategy.Start()
 	for attempt.Next() {
 		err = Add(session, Member{Address: inst1.Addr()}, Member{Address: inst2.Addr()})
@@ -316,10 +325,10 @@ func (s *MongoSuite) TestCurrentStatus(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 
 	expected := &Status{
-		Name: name,
+		Name: rsName,
 		Members: []MemberStatus{{
 			Id:      1,
-			Address: root.Addr(),
+			Address: s.root.Addr(),
 			Self:    true,
 			ErrMsg:  "",
 			Healthy: true,
@@ -341,7 +350,7 @@ func (s *MongoSuite) TestCurrentStatus(c *gc.C) {
 		}},
 	}
 
-	strategy.Total = time.Second * 60
+	strategy.Total = time.Second * 90
 	attempt = strategy.Start()
 	var res *Status
 	for attempt.Next() {
@@ -378,7 +387,7 @@ func (s *MongoSuite) TestCurrentStatus(c *gc.C) {
 		// now overwrite Uptime so it won't throw off DeepEquals
 		res.Members[x].Uptime = 0
 	}
-	c.Check(res, gc.DeepEquals, expected)
+	c.Check(res, jc.DeepEquals, expected)
 }
 
 func closeEnough(expected, obtained time.Time) bool {

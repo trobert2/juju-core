@@ -7,19 +7,20 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	stdtesting "testing"
 	"time"
 
+	"github.com/juju/testing"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/cert"
-	"launchpad.net/juju-core/juju/testing"
-	"launchpad.net/juju-core/log/syslog"
+	jujutesting "launchpad.net/juju-core/juju/testing"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/utils/syslog"
 	"launchpad.net/juju-core/worker/rsyslog"
 )
 
@@ -28,14 +29,16 @@ func TestPackage(t *stdtesting.T) {
 }
 
 type RsyslogSuite struct {
-	testing.JujuConnSuite
+	jujutesting.JujuConnSuite
 }
 
 var _ = gc.Suite(&RsyslogSuite{})
 
 func (s *RsyslogSuite) SetUpSuite(c *gc.C) {
 	s.JujuConnSuite.SetUpSuite(c)
-	restore := testbase.PatchValue(rsyslog.LookupUser, func(username string) (uid, gid int, err error) {
+	// TODO(waigani) 2014-03-19 bug 1294462
+	// Add patch for suite functions
+	restore := testing.PatchValue(rsyslog.LookupUser, func(username string) (uid, gid int, err error) {
 		// worker will not attempt to chown files if uid/gid is 0
 		return 0, 0, nil
 	})
@@ -142,9 +145,9 @@ func (s *RsyslogSuite) TestModeAccumulate(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 	rsyslogKeyPEM, err := ioutil.ReadFile(filepath.Join(*rsyslog.LogDir, "rsyslog-key.pem"))
 	c.Assert(err, gc.IsNil)
-	_, _, err = cert.ParseCertAndKey(rsyslogCertPEM, rsyslogKeyPEM)
+	_, _, err = cert.ParseCertAndKey(string(rsyslogCertPEM), string(rsyslogKeyPEM))
 	c.Assert(err, gc.IsNil)
-	err = cert.Verify(rsyslogCertPEM, caCertPEM, time.Now().UTC())
+	err = cert.Verify(string(rsyslogCertPEM), string(caCertPEM), time.Now().UTC())
 	c.Assert(err, gc.IsNil)
 
 	// Verify rsyslog configuration.
@@ -153,11 +156,25 @@ func (s *RsyslogSuite) TestModeAccumulate(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 
 	syslogPort := s.Conn.Environ.Config().SyslogPort()
-	syslogConfig := syslog.NewAccumulateConfig(m.Tag(), *rsyslog.LogDir, syslogPort, "")
+	syslogConfig := syslog.NewAccumulateConfig(m.Tag(), *rsyslog.LogDir, syslogPort, "", []string{})
 	syslogConfig.ConfigDir = *rsyslog.RsyslogConfDir
 	rendered, err := syslogConfig.Render()
 	c.Assert(err, gc.IsNil)
+
 	c.Assert(string(rsyslogConf), gc.DeepEquals, string(rendered))
+}
+
+func (s *RsyslogSuite) TestAccumulateHA(c *gc.C) {
+	_, m := s.OpenAPIAsNewMachine(c, state.JobManageEnviron)
+	syslogConfig := syslog.NewAccumulateConfig(m.Tag(), *rsyslog.LogDir, 6541, "", []string{"192.168.1", "127.0.0.1"})
+	rendered, err := syslogConfig.Render()
+	c.Assert(err, gc.IsNil)
+
+	stateServer1Config := ":syslogtag, startswith, \"juju-\" @@192.168.1:6541;LongTagForwardFormat"
+	stateServer2Config := ":syslogtag, startswith, \"juju-\" @@127.0.0.1:6541;LongTagForwardFormat"
+
+	c.Assert(strings.Contains(string(rendered), stateServer1Config), gc.Equals, true)
+	c.Assert(strings.Contains(string(rendered), stateServer2Config), gc.Equals, true)
 }
 
 func (s *RsyslogSuite) TestNamespace(c *gc.C) {

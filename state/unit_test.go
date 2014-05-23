@@ -6,16 +6,16 @@ package state_test
 import (
 	"strconv"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/charm"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/testing"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 type UnitSuite struct {
@@ -41,7 +41,7 @@ func (s *UnitSuite) SetUpTest(c *gc.C) {
 func (s *UnitSuite) TestUnitNotFound(c *gc.C) {
 	_, err := s.State.Unit("subway/0")
 	c.Assert(err, gc.ErrorMatches, `unit "subway/0" not found`)
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *UnitSuite) TestService(c *gc.C) {
@@ -152,24 +152,55 @@ func (s *UnitSuite) TestWatchConfigSettings(c *gc.C) {
 	// because it's not very helpful and subject to change.
 }
 
-func (s *UnitSuite) TestGetSetPublicAddress(c *gc.C) {
-	_, ok := s.unit.PublicAddress()
-	c.Assert(ok, gc.Equals, false)
-
-	err := s.unit.SetPublicAddress("example.foobar.com")
+func (s *UnitSuite) addSubordinateUnit(c *gc.C) *state.Unit {
+	subCharm := s.AddTestingCharm(c, "logging")
+	s.AddTestingService(c, "logging", subCharm)
+	eps, err := s.State.InferEndpoints([]string{"wordpress", "logging"})
 	c.Assert(err, gc.IsNil)
-	address, ok := s.unit.PublicAddress()
-	c.Assert(ok, gc.Equals, true)
-	c.Assert(address, gc.Equals, "example.foobar.com")
-
-	defer state.SetBeforeHooks(c, s.State, func() {
-		c.Assert(s.unit.Destroy(), gc.IsNil)
-	}).Check()
-	err = s.unit.SetPublicAddress("example.foobar.com")
-	c.Assert(err, gc.ErrorMatches, `cannot set public address of unit "wordpress/0": unit not found`)
+	rel, err := s.State.AddRelation(eps...)
+	c.Assert(err, gc.IsNil)
+	ru, err := rel.Unit(s.unit)
+	c.Assert(err, gc.IsNil)
+	err = ru.EnterScope(nil)
+	c.Assert(err, gc.IsNil)
+	subUnit, err := s.State.Unit("logging/0")
+	c.Assert(err, gc.IsNil)
+	return subUnit
 }
 
-func (s *UnitSuite) TestGetPublicAddressFromMachine(c *gc.C) {
+func (s *UnitSuite) setAssignedMachineAddresses(c *gc.C, u *state.Unit) {
+	err := u.AssignToNewMachine()
+	c.Assert(err, gc.IsNil)
+	mid, err := u.AssignedMachineId()
+	c.Assert(err, gc.IsNil)
+	machine, err := s.State.Machine(mid)
+	c.Assert(err, gc.IsNil)
+	err = machine.SetProvisioned("i-exist", "fake_nonce", nil)
+	c.Assert(err, gc.IsNil)
+	err = machine.SetAddresses(instance.Address{
+		Type:         instance.Ipv4Address,
+		NetworkScope: instance.NetworkCloudLocal,
+		Value:        "private.address.example.com",
+	}, instance.Address{
+		Type:         instance.Ipv4Address,
+		NetworkScope: instance.NetworkPublic,
+		Value:        "public.address.example.com",
+	})
+	c.Assert(err, gc.IsNil)
+}
+
+func (s *UnitSuite) TestPublicAddressSubordinate(c *gc.C) {
+	subUnit := s.addSubordinateUnit(c)
+	_, ok := subUnit.PublicAddress()
+	c.Assert(ok, gc.Equals, false)
+
+	s.setAssignedMachineAddresses(c, s.unit)
+	address, ok := subUnit.PublicAddress()
+	c.Assert(ok, gc.Equals, true)
+	c.Assert(address, gc.Equals, "public.address.example.com")
+}
+
+func (s *UnitSuite) TestPublicAddress(c *gc.C) {
 	machine, err := s.State.AddMachine("quantal", state.JobHostUnits)
 	c.Assert(err, gc.IsNil)
 	err = s.unit.AssignToMachine(machine)
@@ -179,11 +210,10 @@ func (s *UnitSuite) TestGetPublicAddressFromMachine(c *gc.C) {
 	c.Check(address, gc.Equals, "")
 	c.Assert(ok, gc.Equals, false)
 
-	addresses := []instance.Address{
-		instance.NewAddress("127.0.0.1"),
-		instance.NewAddress("8.8.8.8"),
-	}
-	err = machine.SetAddresses(addresses)
+	public := instance.NewAddress("8.8.8.8", instance.NetworkPublic)
+	private := instance.NewAddress("127.0.0.1", instance.NetworkCloudLocal)
+
+	err = machine.SetAddresses(public, private)
 	c.Assert(err, gc.IsNil)
 
 	address, ok = s.unit.PublicAddress()
@@ -191,24 +221,43 @@ func (s *UnitSuite) TestGetPublicAddressFromMachine(c *gc.C) {
 	c.Assert(ok, gc.Equals, true)
 }
 
-func (s *UnitSuite) TestGetSetPrivateAddress(c *gc.C) {
-	_, ok := s.unit.PrivateAddress()
-	c.Assert(ok, gc.Equals, false)
-
-	err := s.unit.SetPrivateAddress("example.local")
+func (s *UnitSuite) TestPublicAddressMachineAddresses(c *gc.C) {
+	machine, err := s.State.AddMachine("quantal", state.JobHostUnits)
 	c.Assert(err, gc.IsNil)
-	address, ok := s.unit.PrivateAddress()
-	c.Assert(ok, gc.Equals, true)
-	c.Assert(address, gc.Equals, "example.local")
+	err = s.unit.AssignToMachine(machine)
+	c.Assert(err, gc.IsNil)
 
-	defer state.SetBeforeHooks(c, s.State, func() {
-		c.Assert(s.unit.Destroy(), gc.IsNil)
-	}).Check()
-	err = s.unit.SetPrivateAddress("example.local")
-	c.Assert(err, gc.ErrorMatches, `cannot set private address of unit "wordpress/0": unit not found`)
+	publicProvider := instance.NewAddress("8.8.8.8", instance.NetworkPublic)
+	privateProvider := instance.NewAddress("127.0.0.1", instance.NetworkCloudLocal)
+	privateMachine := instance.NewAddress("127.0.0.2", instance.NetworkUnknown)
+
+	err = machine.SetAddresses(privateProvider)
+	c.Assert(err, gc.IsNil)
+	err = machine.SetMachineAddresses(privateMachine)
+	c.Assert(err, gc.IsNil)
+	address, ok := s.unit.PublicAddress()
+	c.Check(address, gc.Equals, "127.0.0.1")
+	c.Assert(ok, gc.Equals, true)
+
+	err = machine.SetAddresses(publicProvider, privateProvider)
+	c.Assert(err, gc.IsNil)
+	address, ok = s.unit.PublicAddress()
+	c.Check(address, gc.Equals, "8.8.8.8")
+	c.Assert(ok, gc.Equals, true)
 }
 
-func (s *UnitSuite) TestGetPrivateAddressFromMachine(c *gc.C) {
+func (s *UnitSuite) TestPrivateAddressSubordinate(c *gc.C) {
+	subUnit := s.addSubordinateUnit(c)
+	_, ok := subUnit.PrivateAddress()
+	c.Assert(ok, gc.Equals, false)
+
+	s.setAssignedMachineAddresses(c, s.unit)
+	address, ok := subUnit.PrivateAddress()
+	c.Assert(ok, gc.Equals, true)
+	c.Assert(address, gc.Equals, "private.address.example.com")
+}
+
+func (s *UnitSuite) TestPrivateAddress(c *gc.C) {
 	machine, err := s.State.AddMachine("quantal", state.JobHostUnits)
 	c.Assert(err, gc.IsNil)
 	err = s.unit.AssignToMachine(machine)
@@ -218,11 +267,10 @@ func (s *UnitSuite) TestGetPrivateAddressFromMachine(c *gc.C) {
 	c.Check(address, gc.Equals, "")
 	c.Assert(ok, gc.Equals, false)
 
-	addresses := []instance.Address{
-		instance.NewAddress("127.0.0.1"),
-		instance.NewAddress("8.8.8.8"),
-	}
-	err = machine.SetAddresses(addresses)
+	public := instance.NewAddress("8.8.8.8", instance.NetworkPublic)
+	private := instance.NewAddress("127.0.0.1", instance.NetworkCloudLocal)
+
+	err = machine.SetAddresses(public, private)
 	c.Assert(err, gc.IsNil)
 
 	address, ok = s.unit.PrivateAddress()
@@ -234,31 +282,21 @@ func (s *UnitSuite) TestRefresh(c *gc.C) {
 	unit1, err := s.State.Unit(s.unit.Name())
 	c.Assert(err, gc.IsNil)
 
-	err = s.unit.SetPrivateAddress("example.local")
+	err = s.unit.SetPassword("arble-farble-dying-yarble")
 	c.Assert(err, gc.IsNil)
-	err = s.unit.SetPublicAddress("example.foobar.com")
-	c.Assert(err, gc.IsNil)
-
-	address, ok := unit1.PrivateAddress()
-	c.Assert(ok, gc.Equals, false)
-	address, ok = unit1.PublicAddress()
-	c.Assert(ok, gc.Equals, false)
-
+	valid := unit1.PasswordValid("arble-farble-dying-yarble")
+	c.Assert(valid, jc.IsFalse)
 	err = unit1.Refresh()
 	c.Assert(err, gc.IsNil)
-	address, ok = unit1.PrivateAddress()
-	c.Assert(ok, gc.Equals, true)
-	c.Assert(address, gc.Equals, "example.local")
-	address, ok = unit1.PublicAddress()
-	c.Assert(ok, gc.Equals, true)
-	c.Assert(address, gc.Equals, "example.foobar.com")
+	valid = unit1.PasswordValid("arble-farble-dying-yarble")
+	c.Assert(valid, jc.IsTrue)
 
 	err = unit1.EnsureDead()
 	c.Assert(err, gc.IsNil)
 	err = unit1.Remove()
 	c.Assert(err, gc.IsNil)
 	err = unit1.Refresh()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *UnitSuite) TestGetSetStatusWhileAlive(c *gc.C) {
@@ -582,7 +620,7 @@ func assertLife(c *gc.C, entity state.Living, life state.Life) {
 
 func assertRemoved(c *gc.C, entity state.Living) {
 	err := entity.Refresh()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	err = entity.Destroy()
 	c.Assert(err, gc.IsNil)
 	if entity, ok := entity.(state.AgentLiving); ok {
@@ -619,18 +657,7 @@ func (s *UnitSuite) TestSetAgentCompatPassword(c *gc.C) {
 func (s *UnitSuite) TestSetMongoPasswordOnUnitAfterConnectingAsMachineEntity(c *gc.C) {
 	// Make a second unit to use later. (Subordinate units can only be created
 	// as a side-effect of a principal entering relation scope.)
-	subCharm := s.AddTestingCharm(c, "logging")
-	s.AddTestingService(c, "logging", subCharm)
-	eps, err := s.State.InferEndpoints([]string{"wordpress", "logging"})
-	c.Assert(err, gc.IsNil)
-	rel, err := s.State.AddRelation(eps...)
-	c.Assert(err, gc.IsNil)
-	ru, err := rel.Unit(s.unit)
-	c.Assert(err, gc.IsNil)
-	err = ru.EnterScope(nil)
-	c.Assert(err, gc.IsNil)
-	subUnit, err := s.State.Unit("logging/0")
-	c.Assert(err, gc.IsNil)
+	subUnit := s.addSubordinateUnit(c)
 
 	info := state.TestingStateInfo()
 	st, err := state.Open(info, state.TestingDialOpts(), state.Policy(nil))
@@ -658,7 +685,7 @@ func (s *UnitSuite) TestSetMongoPasswordOnUnitAfterConnectingAsMachineEntity(c *
 	info.Tag = m.Tag()
 	info.Password = "foo1"
 	err = tryOpenState(info)
-	c.Assert(err, jc.Satisfies, errors.IsUnauthorizedError)
+	c.Assert(err, jc.Satisfies, errors.IsUnauthorized)
 
 	// Connect as the machine entity.
 	info.Tag = m.Tag()
@@ -991,6 +1018,60 @@ func (s *UnitSuite) TestPrincipalName(c *gc.C) {
 	c.Assert(principal, gc.Equals, "")
 }
 
+func (s *UnitSuite) TestRelations(c *gc.C) {
+	wordpress0 := s.unit
+	mysql := s.AddTestingService(c, "mysql", s.AddTestingCharm(c, "mysql"))
+	mysql0, err := mysql.AddUnit()
+	c.Assert(err, gc.IsNil)
+	eps, err := s.State.InferEndpoints([]string{"wordpress", "mysql"})
+	c.Assert(err, gc.IsNil)
+	rel, err := s.State.AddRelation(eps...)
+	c.Assert(err, gc.IsNil)
+
+	assertEquals := func(actual, expect []*state.Relation) {
+		c.Assert(actual, gc.HasLen, len(expect))
+		for i, a := range actual {
+			c.Assert(a.Id(), gc.Equals, expect[i].Id())
+		}
+	}
+	assertRelationsJoined := func(unit *state.Unit, expect ...*state.Relation) {
+		actual, err := unit.RelationsJoined()
+		c.Assert(err, gc.IsNil)
+		assertEquals(actual, expect)
+	}
+	assertRelationsInScope := func(unit *state.Unit, expect ...*state.Relation) {
+		actual, err := unit.RelationsInScope()
+		c.Assert(err, gc.IsNil)
+		assertEquals(actual, expect)
+	}
+	assertRelations := func(unit *state.Unit, expect ...*state.Relation) {
+		assertRelationsInScope(unit, expect...)
+		assertRelationsJoined(unit, expect...)
+	}
+	assertRelations(wordpress0)
+	assertRelations(mysql0)
+
+	mysql0ru, err := rel.Unit(mysql0)
+	c.Assert(err, gc.IsNil)
+	err = mysql0ru.EnterScope(nil)
+	c.Assert(err, gc.IsNil)
+	assertRelations(wordpress0)
+	assertRelations(mysql0, rel)
+
+	wordpress0ru, err := rel.Unit(wordpress0)
+	c.Assert(err, gc.IsNil)
+	err = wordpress0ru.EnterScope(nil)
+	c.Assert(err, gc.IsNil)
+	assertRelations(wordpress0, rel)
+	assertRelations(mysql0, rel)
+
+	err = mysql0ru.PrepareLeaveScope()
+	c.Assert(err, gc.IsNil)
+	assertRelations(wordpress0, rel)
+	assertRelationsInScope(mysql0, rel)
+	assertRelationsJoined(mysql0)
+}
+
 func (s *UnitSuite) TestRemove(c *gc.C) {
 	err := s.unit.Remove()
 	c.Assert(err, gc.ErrorMatches, `cannot remove unit "wordpress/0": unit is not dead`)
@@ -999,7 +1080,7 @@ func (s *UnitSuite) TestRemove(c *gc.C) {
 	err = s.unit.Remove()
 	c.Assert(err, gc.IsNil)
 	err = s.unit.Refresh()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	units, err := s.service.AllUnits()
 	c.Assert(err, gc.IsNil)
 	c.Assert(units, gc.HasLen, 0)
@@ -1049,9 +1130,9 @@ func (s *UnitSuite) TestRemovePathological(c *gc.C) {
 	err = mysql0ru.LeaveScope()
 	c.Assert(err, gc.IsNil)
 	err = wordpress.Refresh()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	err = rel.Refresh()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *UnitSuite) TestRemovePathologicalWithBuggyUniter(c *gc.C) {
@@ -1099,9 +1180,9 @@ func (s *UnitSuite) TestRemovePathologicalWithBuggyUniter(c *gc.C) {
 	err = mysql0.Remove()
 	c.Assert(err, gc.IsNil)
 	err = wordpress.Refresh()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	err = rel.Refresh()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 }
 
 func (s *UnitSuite) TestWatchSubordinates(c *gc.C) {
@@ -1181,12 +1262,11 @@ func (s *UnitSuite) TestWatchUnit(c *gc.C) {
 	// Make one change (to a separate instance), check one event.
 	unit, err := s.State.Unit(s.unit.Name())
 	c.Assert(err, gc.IsNil)
-	err = unit.SetPublicAddress("example.foobar.com")
-	c.Assert(err, gc.IsNil)
+	s.setAssignedMachineAddresses(c, unit)
 	wc.AssertOneChange()
 
 	// Make two changes, check one event.
-	err = unit.SetPrivateAddress("example.foobar")
+	err = unit.SetPassword("arble-farble-dying-yarble")
 	c.Assert(err, gc.IsNil)
 	err = unit.Destroy()
 	c.Assert(err, gc.IsNil)

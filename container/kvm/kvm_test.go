@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/juju/loggo"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/constraints"
@@ -15,8 +16,7 @@ import (
 	kvmtesting "launchpad.net/juju-core/container/kvm/testing"
 	containertesting "launchpad.net/juju-core/container/testing"
 	"launchpad.net/juju-core/instance"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	coretesting "launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/version"
 )
 
@@ -46,7 +46,7 @@ func (*KVMSuite) TestManagerWarnsAboutUnknownOption(c *gc.C) {
 		"shazam":             "Captain Marvel",
 	})
 	c.Assert(err, gc.IsNil)
-	c.Assert(c.GetTestLog(), gc.Matches, `^.*WARNING juju.container.kvm Found unused config option with key: "shazam" and value: "Captain Marvel"\n*`)
+	c.Assert(c.GetTestLog(), jc.Contains, `WARNING juju.container unused config option: "shazam" -> "Captain Marvel"`)
 }
 
 func (s *KVMSuite) TestListInitiallyEmpty(c *gc.C) {
@@ -88,17 +88,17 @@ func (s *KVMSuite) TestListMatchesRunningContainers(c *gc.C) {
 	c.Assert(string(containers[0].Id()), gc.Equals, running.Name())
 }
 
-func (s *KVMSuite) TestStartContainer(c *gc.C) {
-	instance := containertesting.StartContainer(c, s.manager, "1/kvm/0")
+func (s *KVMSuite) TestCreateContainer(c *gc.C) {
+	instance := containertesting.CreateContainer(c, s.manager, "1/kvm/0")
 	name := string(instance.Id())
 	cloudInitFilename := filepath.Join(s.ContainerDir, name, "cloud-init")
 	containertesting.AssertCloudInit(c, cloudInitFilename)
 }
 
-func (s *KVMSuite) TestStopContainer(c *gc.C) {
-	instance := containertesting.StartContainer(c, s.manager, "1/lxc/0")
+func (s *KVMSuite) TestDestroyContainer(c *gc.C) {
+	instance := containertesting.CreateContainer(c, s.manager, "1/lxc/0")
 
-	err := s.manager.StopContainer(instance)
+	err := s.manager.DestroyContainer(instance.Id())
 	c.Assert(err, gc.IsNil)
 
 	name := string(instance.Id())
@@ -109,7 +109,7 @@ func (s *KVMSuite) TestStopContainer(c *gc.C) {
 }
 
 type ConstraintsSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 }
 
 var _ = gc.Suite(&ConstraintsSuite{})
@@ -169,14 +169,14 @@ func (s *ConstraintsSuite) TestDefaults(c *gc.C) {
 			RootDisk: 4,
 		},
 	}, {
-		cons: "arch=arm",
+		cons: "arch=armhf",
 		expected: kvm.StartParams{
 			Memory:   kvm.DefaultMemory,
 			CpuCores: kvm.DefaultCpu,
 			RootDisk: kvm.DefaultDisk,
 		},
 		infoLog: []string{
-			`arch constraint of "arm" being ignored as not supported`,
+			`arch constraint of "armhf" being ignored as not supported`,
 		},
 	}, {
 		cons: "container=lxc",
@@ -209,14 +209,14 @@ func (s *ConstraintsSuite) TestDefaults(c *gc.C) {
 			`tags constraint of "foo,bar" being ignored as not supported`,
 		},
 	}, {
-		cons: "mem=4G cpu-cores=4 root-disk=20G arch=arm cpu-power=100 container=lxc tags=foo,bar",
+		cons: "mem=4G cpu-cores=4 root-disk=20G arch=armhf cpu-power=100 container=lxc tags=foo,bar",
 		expected: kvm.StartParams{
 			Memory:   4 * 1024,
 			CpuCores: 4,
 			RootDisk: 20,
 		},
 		infoLog: []string{
-			`arch constraint of "arm" being ignored as not supported`,
+			`arch constraint of "armhf" being ignored as not supported`,
 			`container constraint of "lxc" being ignored as not supported`,
 			`cpu-power constraint of 100 being ignored as not supported`,
 			`tags constraint of "foo,bar" being ignored as not supported`,

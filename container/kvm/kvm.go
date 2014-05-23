@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/agent"
@@ -15,7 +16,6 @@ import (
 	"launchpad.net/juju-core/container"
 	"launchpad.net/juju-core/environs/cloudinit"
 	"launchpad.net/juju-core/instance"
-	"launchpad.net/juju-core/log"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/version"
 )
@@ -56,20 +56,15 @@ var IsKVMSupported = func() (bool, error) {
 // containers. The containers that are created are namespaced by the name
 // parameter.
 func NewContainerManager(conf container.ManagerConfig) (container.Manager, error) {
-	name := conf[container.ConfigName]
-	delete(conf, container.ConfigName)
+	name := conf.PopValue(container.ConfigName)
 	if name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
-	logDir := conf[container.ConfigLogDir]
-	delete(conf, container.ConfigLogDir)
+	logDir := conf.PopValue(container.ConfigLogDir)
 	if logDir == "" {
 		logDir = agent.DefaultLogDir
 	}
-	for k, v := range conf {
-		logger.Warningf(`Found unused config option with key: "%v" and value: "%v"`, k, v)
-	}
-
+	conf.WarnAboutUnused()
 	return &containerManager{name: name, logdir: logDir}, nil
 }
 
@@ -83,7 +78,7 @@ type containerManager struct {
 
 var _ container.Manager = (*containerManager)(nil)
 
-func (manager *containerManager) StartContainer(
+func (manager *containerManager) CreateContainer(
 	machineConfig *cloudinit.MachineConfig,
 	series string,
 	network *container.NetworkConfig) (instance.Instance, *instance.HardwareCharacteristics, error) {
@@ -105,7 +100,7 @@ func (manager *containerManager) StartContainer(
 	logger.Tracef("write cloud-init")
 	userDataFilename, err := container.WriteUserData(machineConfig, directory)
 	if err != nil {
-		return nil, nil, log.LoggedErrorf(logger, "failed to write user data: %v", err)
+		return nil, nil, errors.LoggedErrorf(logger, "failed to write user data: %v", err)
 	}
 	// Create the container.
 	startParams := ParseConstraintsToStartParams(machineConfig.Constraints)
@@ -124,14 +119,14 @@ func (manager *containerManager) StartContainer(
 
 	logger.Tracef("create the container, constraints: %v", machineConfig.Constraints)
 	if err := kvmContainer.Start(startParams); err != nil {
-		return nil, nil, log.LoggedErrorf(logger, "kvm container creation failed: %v", err)
+		return nil, nil, errors.LoggedErrorf(logger, "kvm container creation failed: %v", err)
 	}
 	logger.Tracef("kvm container created")
 	return &kvmInstance{kvmContainer, name}, &hardware, nil
 }
 
-func (manager *containerManager) StopContainer(instance instance.Instance) error {
-	name := string(instance.Id())
+func (manager *containerManager) DestroyContainer(id instance.Id) error {
+	name := string(id)
 	kvmContainer := KvmObjectFactory.New(name)
 	if err := kvmContainer.Stop(); err != nil {
 		logger.Errorf("failed to stop kvm container: %v", err)

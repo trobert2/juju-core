@@ -9,13 +9,13 @@ import (
 	"launchpad.net/juju-core/container"
 	"launchpad.net/juju-core/container/lxc"
 	"launchpad.net/juju-core/container/lxc/mock"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
 // TestSuite replaces the lxc factory that the broker uses with a mock
 // implementation.
 type TestSuite struct {
-	testbase.LoggingSuite
+	testing.FakeJujuHomeSuite
 	Factory      mock.ContainerFactory
 	ContainerDir string
 	RemovedDir   string
@@ -24,7 +24,7 @@ type TestSuite struct {
 }
 
 func (s *TestSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.FakeJujuHomeSuite.SetUpTest(c)
 	s.ContainerDir = c.MkDir()
 	s.PatchValue(&container.ContainerDir, s.ContainerDir)
 	s.RemovedDir = c.MkDir()
@@ -33,6 +33,6 @@ func (s *TestSuite) SetUpTest(c *gc.C) {
 	s.PatchValue(&lxc.LxcContainerDir, s.LxcDir)
 	s.RestartDir = c.MkDir()
 	s.PatchValue(&lxc.LxcRestartDir, s.RestartDir)
-	s.Factory = mock.MockFactory()
+	s.Factory = mock.MockFactory(s.LxcDir)
 	s.PatchValue(&lxc.LxcObjectFactory, s.Factory)
 }

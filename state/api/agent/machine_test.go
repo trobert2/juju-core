@@ -7,20 +7,75 @@ import (
 	"fmt"
 	stdtesting "testing"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
+	"labix.org/v2/mgo"
 	gc "launchpad.net/gocheck"
 
+	"launchpad.net/juju-core/agent/mongo"
 	"launchpad.net/juju-core/environs"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/juju/testing"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
 	"launchpad.net/juju-core/state/api/params"
+	apiserveragent "launchpad.net/juju-core/state/apiserver/agent"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 func TestAll(t *stdtesting.T) {
 	coretesting.MgoTestPackage(t)
+}
+
+type servingInfoSuite struct {
+	testing.JujuConnSuite
+}
+
+var _ = gc.Suite(&servingInfoSuite{})
+
+func (s *servingInfoSuite) TestStateServingInfo(c *gc.C) {
+	st, _ := s.OpenAPIAsNewMachine(c, state.JobManageEnviron)
+
+	expected := params.StateServingInfo{
+		PrivateKey:   "some key",
+		Cert:         "Some cert",
+		SharedSecret: "really, really secret",
+		APIPort:      33,
+		StatePort:    44,
+	}
+	s.State.SetStateServingInfo(expected)
+	info, err := st.Agent().StateServingInfo()
+	c.Assert(err, gc.IsNil)
+	c.Assert(info, jc.DeepEquals, expected)
+}
+
+func (s *servingInfoSuite) TestStateServingInfoPermission(c *gc.C) {
+	st, _ := s.OpenAPIAsNewMachine(c)
+
+	_, err := st.Agent().StateServingInfo()
+	c.Assert(err, gc.ErrorMatches, "permission denied")
+}
+
+func (s *servingInfoSuite) TestIsMaster(c *gc.C) {
+	calledIsMaster := false
+	var fakeMongoIsMaster = func(session *mgo.Session, m mongo.WithAddresses) (bool, error) {
+		calledIsMaster = true
+		return true, nil
+	}
+	s.PatchValue(&apiserveragent.MongoIsMaster, fakeMongoIsMaster)
+
+	st, _ := s.OpenAPIAsNewMachine(c, state.JobManageEnviron)
+	expected := true
+	result, err := st.Agent().IsMaster()
+
+	c.Assert(err, gc.IsNil)
+	c.Assert(result, gc.Equals, expected)
+	c.Assert(calledIsMaster, gc.Equals, true)
+}
+
+func (s *servingInfoSuite) TestIsMasterPermission(c *gc.C) {
+	st, _ := s.OpenAPIAsNewMachine(c)
+	_, err := st.Agent().IsMaster()
+	c.Assert(err, gc.ErrorMatches, "permission denied")
 }
 
 type machineSuite struct {
@@ -80,7 +135,7 @@ func (s *machineSuite) TestEntitySetPassword(c *gc.C) {
 	info.Tag = entity.Tag()
 	info.Password = "foo-12345678901234567890"
 	err = tryOpenState(info)
-	c.Assert(err, jc.Satisfies, errors.IsUnauthorizedError)
+	c.Assert(err, jc.Satisfies, errors.IsUnauthorized)
 }
 
 func tryOpenState(info *state.Info) error {

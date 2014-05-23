@@ -12,35 +12,47 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
-	"runtime"
 
 	"labix.org/v2/mgo/bson"
 
-	"github.com/juju/loggo"
+	"launchpad.net/juju-core/juju/arch"
 )
-
-var logger = loggo.GetLogger("juju.version.version")
-
 
 // The presence and format of this constant is very important.
 // The debian/rules build recipe uses this value for the version
 // number of the release package.
-const version = "1.17.5"
+const version = "1.19.3"
 
 // lsbReleaseFile is the name of the file that is read in order to determine
 // the release version of ubuntu.
 var lsbReleaseFile = "/etc/lsb-release"
 
+// Windows versions come in various flavors:
+// Standard, Datacenter, etc. We use regex to match them to one
+// of the following. Specify the longest name in a particular serie first
+// For example, if we have "Win 2012" and "Win 2012 R2". we specify "Win 2012 R2" first
+var WindowsVersions = map[string]string{
+    "Microsoft Hyper-V Server 2012 R2": "win2012hvr2",
+    "Microsoft Hyper-V Server 2012": "win2012hv",
+    "Microsoft Windows Server 2012 R2": "win2012r2",
+    "Microsoft Windows Server 2012": "win2012",
+    "Windows Storage Server 2012 R2": "win2012r2",
+    "Windows Storage Server 2012": "win2012",
+}
+
 // Current gives the current version of the system.  If the file
 // "FORCE-VERSION" is present in the same directory as the running
 // binary, it will override this.
 var Current = Binary{
-    Number: MustParse(version),
-    Series: readSeries(lsbReleaseFile),
-    Arch:   ubuntuArch(runtime.GOARCH),
+	Number: MustParse(version),
+	Series: osVersion(),
+	Arch:   arch.HostArch(),
 }
+
+var Compiler = runtime.Compiler
 
 func init() {
 	toolsDir := filepath.Dir(os.Args[0])
@@ -314,11 +326,21 @@ func (v Number) IsDev() bool {
 	return isOdd(v.Minor) || v.Build > 0
 }
 
-func ubuntuArch(arch string) string {
-    if arch == "386" {
-        arch = "i386"
-    }
-    return arch
+// ReleaseVersion looks for the value of DISTRIB_RELEASE in the content of
+// the lsbReleaseFile.  If the value is not found, the file is not found, or
+// an error occurs reading the file, an empty string is returned.
+func ReleaseVersion() string {
+	content, err := ioutil.ReadFile(lsbReleaseFile)
+	if err != nil {
+		return ""
+	}
+	const prefix = "DISTRIB_RELEASE="
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.Trim(line[len(prefix):], "\t '\"")
+		}
+	}
+	return ""
 }
 
 // ParseMajorMinor takes an argument of the form "major.minor" and returns ints major and minor.
@@ -338,4 +360,13 @@ func ParseMajorMinor(vers string) (int, int, error) {
 		return -1, -1, fmt.Errorf("invalid major.minor version number %s", vers)
 	}
 	return major, minor, nil
+}
+
+func IsWindows(serie string) bool{
+	for _, val := range WindowsVersions {
+		if serie == val {
+			return true
+		}
+	}
+	return false
 }

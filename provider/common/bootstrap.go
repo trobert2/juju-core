@@ -15,7 +15,6 @@ import (
 
 	coreCloudinit "launchpad.net/juju-core/cloudinit"
 	"launchpad.net/juju-core/cloudinit/sshinit"
-	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/bootstrap"
 	"launchpad.net/juju-core/environs/cloudinit"
@@ -24,6 +23,7 @@ import (
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/utils/parallel"
+	"launchpad.net/juju-core/utils/shell"
 	"launchpad.net/juju-core/utils/ssh"
 )
 
@@ -32,13 +32,19 @@ var logger = loggo.GetLogger("juju.provider.common")
 // Bootstrap is a common implementation of the Bootstrap method defined on
 // environs.Environ; we strongly recommend that this implementation be used
 // when writing a new provider.
-func Bootstrap(ctx environs.BootstrapContext, env environs.Environ, cons constraints.Value) (err error) {
+func Bootstrap(ctx environs.BootstrapContext, env environs.Environ, args environs.BootstrapParams) (err error) {
 	// TODO make safe in the case of racing Bootstraps
 	// If two Bootstraps are called concurrently, there's
 	// no way to make sure that only one succeeds.
 
 	var inst instance.Instance
 	defer func() { handleBootstrapError(err, ctx, inst, env) }()
+
+	// First thing, ensure we have tools otherwise there's no point.
+	selectedTools, err := EnsureBootstrapTools(ctx, env, config.PreferredSeries(env.Config()), args.Constraints.Arch)
+	if err != nil {
+		return err
+	}
 
 	// Get the bootstrap SSH client. Do this early, so we know
 	// not to bother with any of the below if we can't finish the job.
@@ -49,41 +55,30 @@ func Bootstrap(ctx environs.BootstrapContext, env environs.Environ, cons constra
 		return fmt.Errorf("no SSH client available")
 	}
 
-	// Create an empty bootstrap state file so we can get its URL.
-	// It will be updated with the instance id and hardware characteristics
-	// after the bootstrap instance is started.
-	stateFileURL, err := bootstrap.CreateStateFile(env.Storage())
-	if err != nil {
-		return err
-	}
-
 	privateKey, err := GenerateSystemSSHKey(env)
 	if err != nil {
 		return err
 	}
-	machineConfig := environs.NewBootstrapMachineConfig(stateFileURL, privateKey)
-
-	selectedTools, err := EnsureBootstrapTools(env, env.Config().DefaultSeries(), cons.Arch)
-	if err != nil {
-		return err
-	}
+	machineConfig := environs.NewBootstrapMachineConfig(privateKey)
 
 	fmt.Fprintln(ctx.GetStderr(), "Launching instance")
-	inst, hw, err := env.StartInstance(cons, selectedTools, machineConfig)
+	inst, hw, _, err := env.StartInstance(environs.StartInstanceParams{
+		Constraints:   args.Constraints,
+		Tools:         selectedTools,
+		MachineConfig: machineConfig,
+		Placement:     args.Placement,
+	})
 	if err != nil {
 		return fmt.Errorf("cannot start bootstrap instance: %v", err)
 	}
 	fmt.Fprintf(ctx.GetStderr(), " - %s\n", inst.Id())
+	machineConfig.InstanceId = inst.Id()
+	machineConfig.HardwareCharacteristics = hw
 
-	var characteristics []instance.HardwareCharacteristics
-	if hw != nil {
-		characteristics = []instance.HardwareCharacteristics{*hw}
-	}
 	err = bootstrap.SaveState(
 		env.Storage(),
 		&bootstrap.BootstrapState{
-			StateInstances:  []instance.Id{inst.Id()},
-			Characteristics: characteristics,
+			StateInstances: []instance.Id{inst.Id()},
 		})
 	if err != nil {
 		return fmt.Errorf("cannot save state: %v", err)
@@ -114,7 +109,7 @@ func GenerateSystemSSHKey(env environs.Environ) (privateKey string, err error) {
 	return privateKey, nil
 }
 
-// handelBootstrapError cleans up after a failed bootstrap.
+// handleBootstrapError cleans up after a failed bootstrap.
 func handleBootstrapError(err error, ctx environs.BootstrapContext, inst instance.Instance, env environs.Environ) {
 	if err == nil {
 		return
@@ -133,7 +128,7 @@ func handleBootstrapError(err error, ctx environs.BootstrapContext, inst instanc
 
 	if inst != nil {
 		fmt.Fprintln(ctx.GetStderr(), "Stopping instance...")
-		if stoperr := env.StopInstances([]instance.Instance{inst}); stoperr != nil {
+		if stoperr := env.StopInstances(inst.Id()); stoperr != nil {
 			logger.Errorf("cannot stop failed bootstrap instance %q: %v", inst.Id(), stoperr)
 		} else {
 			// set to nil so we know we can safely delete the state file
@@ -196,7 +191,12 @@ var FinishBootstrap = func(ctx environs.BootstrapContext, client ssh.Client, ins
 	if err := cloudinit.ConfigureJuju(machineConfig, cloudcfg); err != nil {
 		return err
 	}
-	return sshinit.Configure(sshinit.ConfigureParams{
+	configScript, err := sshinit.ConfigureScript(cloudcfg)
+	if err != nil {
+		return err
+	}
+	script := shell.DumpFileOnErrorScript(machineConfig.CloudInitOutputLog) + configScript
+	return sshinit.RunConfigureScript(script, sshinit.ConfigureParams{
 		Host:           "ubuntu@" + addr,
 		Client:         client,
 		Config:         cloudcfg,
@@ -398,25 +398,10 @@ func waitSSH(ctx environs.BootstrapContext, interrupted <-chan os.Signal, client
 // EnsureBootstrapTools finds tools, syncing with an external tools source as
 // necessary; it then selects the newest tools to bootstrap with, and sets
 // agent-version.
-func EnsureBootstrapTools(env environs.Environ, series string, arch *string) (coretools.List, error) {
-	possibleTools, err := bootstrap.EnsureToolsAvailability(env, series, arch)
+func EnsureBootstrapTools(ctx environs.BootstrapContext, env environs.Environ, series string, arch *string) (coretools.List, error) {
+	possibleTools, err := bootstrap.EnsureToolsAvailability(ctx, env, series, arch)
 	if err != nil {
 		return nil, err
 	}
 	return bootstrap.SetBootstrapTools(env, possibleTools)
-}
-
-// EnsureNotBootstrapped returns null if the environment is not bootstrapped,
-// and an error if it is or if the function was not able to tell.
-func EnsureNotBootstrapped(env environs.Environ) error {
-	_, err := bootstrap.LoadState(env.Storage())
-	// If there is no error loading the bootstrap state, then we are
-	// bootstrapped.
-	if err == nil {
-		return fmt.Errorf("environment is already bootstrapped")
-	}
-	if err == environs.ErrNotBootstrapped {
-		return nil
-	}
-	return err
 }

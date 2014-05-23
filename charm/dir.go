@@ -15,7 +15,7 @@ import (
 	"strings"
 	"syscall"
 
-	"launchpad.net/juju-core/log"
+	"launchpad.net/juju-core/utils"
 )
 
 // The Dir type encapsulates access to data and operations
@@ -190,7 +190,7 @@ func (zp *zipPacker) visit(path string, fi os.FileInfo, err error) error {
 	if filepath.Dir(relpath) == "hooks" {
 		hookName := filepath.Base(relpath)
 		if _, ok := zp.hooks[hookName]; !fi.IsDir() && ok && mode&0100 == 0 {
-			log.Warningf("charm: making %q executable in charm", path)
+			logger.Warningf("making %q executable in charm", path)
 			perm = perm | 0100
 		}
 	}
@@ -202,7 +202,7 @@ func (zp *zipPacker) visit(path string, fi os.FileInfo, err error) error {
 	}
 	var data []byte
 	if mode&os.ModeSymlink != 0 {
-		target, err := os.Readlink(path)
+		target, err := utils.Readlink(path)
 		if err != nil {
 			return err
 		}

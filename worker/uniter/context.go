@@ -11,9 +11,10 @@ import (
 	"os/exec"
 	// "path/filepath"
 	"sort"
+	// "strings"
 	"sync"
-	"syscall"
 	"time"
+	"syscall"
 
 	"github.com/juju/loggo"
 
@@ -22,8 +23,8 @@ import (
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/api/uniter"
 	utilexec "launchpad.net/juju-core/utils/exec"
-	"launchpad.net/juju-core/worker/uniter/jujuc"
 	unitdebug "launchpad.net/juju-core/worker/uniter/debug"
+	"launchpad.net/juju-core/worker/uniter/jujuc"
 )
 
 type missingHookError struct {
@@ -31,19 +32,19 @@ type missingHookError struct {
 }
 
 func RebootRequiredError(err error) bool {
-    if err == nil {
-        return false
-    }
-    msg, _ := err.(*exec.ExitError)
-    if msg == nil {
-    	return false
-    }
-    code := msg.Sys().(syscall.WaitStatus).ExitStatus()
-    if code == osenv.MustReboot {
-        return true
-    }
+	if err == nil {
+		return false
+	}
+	msg, _ := err.(*exec.ExitError)
+	if msg == nil {
+		return false
+	}
+	code := msg.Sys().(syscall.WaitStatus).ExitStatus()
+	if code == osenv.MustReboot {
+		return true
+	}
 
-    return false
+	return false
 }
 
 func (e *missingHookError) Error() string {
@@ -192,32 +193,31 @@ func (ctx *HookContext) RelationIds() []int {
 }
 
 func (ctx *HookContext) finalizeContext(process string, err error) error {
-    if err != nil{
-        // gsamfira: We need this later to requeue the hook
-        logger.Infof("Checking if reboot is needed")
-        if RebootRequiredError(err){
-        	logger.Infof("Error code is reboot code")
-            return err
-        }
-    }
-    logger.Infof("Continuing without reboot")
-    writeChanges := err == nil
-    for id, rctx := range ctx.relations {
-        if writeChanges {
-            if e := rctx.WriteSettings(); e != nil {
-                e = fmt.Errorf(
-                    "could not write settings from %q to relation %d: %v",
-                    process, id, e,
-                )
-                logger.Errorf("%v", e)
-                if err == nil {
-                    err = e
-                }
-            }
-        }
-        rctx.ClearCache()
-    }
-    return err
+	if err != nil{
+		// gsamfira: We need this later to requeue the hook
+		logger.Infof("Checking if reboot is needed")
+		if RebootRequiredError(err){
+			logger.Infof("Error code is reboot code")
+			return err
+		}
+	}
+	writeChanges := err == nil
+	for id, rctx := range ctx.relations {
+		if writeChanges {
+			if e := rctx.WriteSettings(); e != nil {
+				e = fmt.Errorf(
+					"could not write settings from %q to relation %d: %v",
+					process, id, e,
+				)
+				logger.Errorf("%v", e)
+				if err == nil {
+					err = e
+				}
+			}
+		}
+		rctx.ClearCache()
+	}
+	return err
 }
 
 // RunCommands executes the commands in an environment which allows it to to
@@ -236,20 +236,19 @@ func (ctx *HookContext) GetLogger(hookName string) loggo.Logger {
 	return loggo.GetLogger(fmt.Sprintf("unit.%s.%s", ctx.UnitName(), hookName))
 }
 
-
 // RunHook executes a hook in an environment which allows it to to call back
 // into the hook context to execute jujuc tools.
 func (ctx *HookContext) RunHook(hookName, charmDir, toolsDir, socketPath string) error {
-    var err error
-    env := ctx.hookVars(charmDir, toolsDir, socketPath)
-    debugctx := unitdebug.NewHooksContext(ctx.unit.Name())
-    if session, _ := debugctx.FindSession(); session != nil && session.MatchHook(hookName) {
-        logger.Infof("executing %s via debug-hooks", hookName)
-        err = session.RunHook(hookName, charmDir, env)
-    } else {
-        err = ctx.runCharmHook(hookName, charmDir, env)
-    }
-    return ctx.finalizeContext(hookName, err)
+	var err error
+	env := ctx.hookVars(charmDir, toolsDir, socketPath)
+	debugctx := unitdebug.NewHooksContext(ctx.unit.Name())
+	if session, _ := debugctx.FindSession(); session != nil && session.MatchHook(hookName) {
+		logger.Infof("executing %s via debug-hooks", hookName)
+		err = session.RunHook(hookName, charmDir, env)
+	} else {
+		err = ctx.runCharmHook(hookName, charmDir, env)
+	}
+	return ctx.finalizeContext(hookName, err)
 }
 
 type hookLogger struct {

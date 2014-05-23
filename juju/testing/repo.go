@@ -25,11 +25,8 @@ func (s *RepoSuite) SetUpTest(c *gc.C) {
 	s.JujuConnSuite.SetUpTest(c)
 	// Change the environ's config to ensure we're using the one in state,
 	// not the one in the local environments.yaml
-	oldcfg, err := s.State.EnvironConfig()
-	c.Assert(err, gc.IsNil)
-	cfg, err := oldcfg.Apply(map[string]interface{}{"default-series": "precise"})
-	c.Assert(err, gc.IsNil)
-	err = s.State.SetEnvironConfig(cfg, oldcfg)
+	updateAttrs := map[string]interface{}{"default-series": "precise"}
+	err := s.State.UpdateEnvironConfig(updateAttrs, nil, nil)
 	c.Assert(err, gc.IsNil)
 	s.RepoPath = os.Getenv("JUJU_REPOSITORY")
 	repoPath := c.MkDir()
@@ -41,7 +38,7 @@ func (s *RepoSuite) SetUpTest(c *gc.C) {
 	// and machines are written with hard-coded "quantal" series,
 	// hence they interact badly with a local repository that assumes
 	// only "precise" charms are available.
-	err = utils.Symlink(s.SeriesPath, filepath.Join(repoPath, "quantal"))
+	err = os.Symlink(s.SeriesPath, filepath.Join(repoPath, "quantal"))
 	c.Assert(err, gc.IsNil)
 }
 

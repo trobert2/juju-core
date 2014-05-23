@@ -5,7 +5,6 @@ package testing
 
 import (
 	"bytes"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -14,14 +13,14 @@ import (
 
 	agenttools "launchpad.net/juju-core/agent/tools"
 	"launchpad.net/juju-core/environs"
-	"launchpad.net/juju-core/environs/config"
+	"launchpad.net/juju-core/environs/bootstrap"
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/storage"
 	envtools "launchpad.net/juju-core/environs/tools"
-	"launchpad.net/juju-core/log"
 	"launchpad.net/juju-core/state"
 	coretesting "launchpad.net/juju-core/testing"
 	coretools "launchpad.net/juju-core/tools"
+	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
 	"launchpad.net/juju-core/worker/upgrader"
 )
@@ -31,6 +30,11 @@ import (
 type ToolsFixture struct {
 	origDefaultURL string
 	DefaultBaseURL string
+
+	// UploadArches holds the architectures of tools to
+	// upload in UploadFakeTools. If empty, it will default
+	// to just version.Current.Arch.
+	UploadArches []string
 }
 
 func (s *ToolsFixture) SetUpTest(c *gc.C) {
@@ -42,7 +46,27 @@ func (s *ToolsFixture) TearDownTest(c *gc.C) {
 	envtools.DefaultBaseURL = s.origDefaultURL
 }
 
-// RemoveFakeMetadata deletes the fake simplestreams tools metadata from the supplied storage.
+// UploadFakeTools uploads fake tools of the architectures in
+// s.UploadArches for each LTS release to the specified storage.
+func (s *ToolsFixture) UploadFakeTools(c *gc.C, stor storage.Storage) {
+	arches := s.UploadArches
+	if len(arches) == 0 {
+		arches = []string{version.Current.Arch}
+	}
+	var versions []version.Binary
+	for _, arch := range arches {
+		v := version.Current
+		v.Arch = arch
+		for _, series := range bootstrap.ToolsLtsSeries {
+			v.Series = series
+			versions = append(versions, v)
+		}
+	}
+	_, err := UploadFakeToolsVersions(stor, versions...)
+	c.Assert(err, gc.IsNil)
+}
+
+// RemoveFakeToolsMetadata deletes the fake simplestreams tools metadata from the supplied storage.
 func RemoveFakeToolsMetadata(c *gc.C, stor storage.Storage) {
 	files := []string{simplestreams.UnsignedIndex, envtools.ProductMetadataPath}
 	for _, file := range files {
@@ -84,7 +108,7 @@ func PrimeTools(c *gc.C, stor storage.Storage, dataDir string, vers version.Bina
 	c.Assert(err, gc.IsNil)
 	agentTools, err := uploadFakeToolsVersion(stor, vers)
 	c.Assert(err, gc.IsNil)
-	resp, err := http.Get(agentTools.URL)
+	resp, err := utils.GetValidatingHTTPClient().Get(agentTools.URL)
 	c.Assert(err, gc.IsNil)
 	defer resp.Body.Close()
 	err = agenttools.UnpackTools(dataDir, agentTools, resp.Body)
@@ -93,7 +117,7 @@ func PrimeTools(c *gc.C, stor storage.Storage, dataDir string, vers version.Bina
 }
 
 func uploadFakeToolsVersion(stor storage.Storage, vers version.Binary) (*coretools.Tools, error) {
-	log.Noticef("environs/testing: uploading FAKE tools %s", vers)
+	logger.Infof("uploading FAKE tools %s", vers)
 	tgz, checksum := coretesting.TarGz(
 		coretesting.NewTarFile("jujud", 0777, "jujud contents "+vers.String()))
 	size := int64(len(tgz))
@@ -138,6 +162,8 @@ func UploadFakeToolsVersions(stor storage.Storage, versions ...version.Binary) (
 func AssertUploadFakeToolsVersions(c *gc.C, stor storage.Storage, versions ...version.Binary) []*coretools.Tools {
 	agentTools, err := UploadFakeToolsVersions(stor, versions...)
 	c.Assert(err, gc.IsNil)
+	err = envtools.MergeAndWriteMetadata(stor, agentTools, envtools.DoNotWriteMirrors)
+	c.Assert(err, gc.IsNil)
 	return agentTools
 }
 
@@ -159,11 +185,11 @@ func MustUploadFakeToolsVersions(stor storage.Storage, versions ...version.Binar
 }
 
 func uploadFakeTools(stor storage.Storage) error {
-	versions := []version.Binary{version.Current}
-	toolsVersion := version.Current
-	if toolsVersion.Series != config.DefaultSeries {
-		toolsVersion.Series = config.DefaultSeries
-		versions = append(versions, toolsVersion)
+	var versions []version.Binary
+	for _, series := range bootstrap.ToolsLtsSeries {
+		vers := version.Current
+		vers.Series = series
+		versions = append(versions, vers)
 	}
 	if _, err := UploadFakeToolsVersions(stor, versions...); err != nil {
 		return err
@@ -173,9 +199,9 @@ func uploadFakeTools(stor storage.Storage) error {
 
 // UploadFakeTools puts fake tools into the supplied storage with a binary
 // version matching version.Current; if version.Current's series is different
-// to config.DefaultSeries, matching fake tools will be uploaded for that series.
-// This is useful for tests that are kinda casual about specifying their
-// environment.
+// to coretesting.FakeDefaultSeries, matching fake tools will be uploaded for that
+// series.  This is useful for tests that are kinda casual about specifying
+// their environment.
 func UploadFakeTools(c *gc.C, stor storage.Storage) {
 	c.Assert(uploadFakeTools(stor), gc.IsNil)
 }
@@ -194,8 +220,9 @@ func RemoveFakeTools(c *gc.C, stor storage.Storage) {
 	name := envtools.StorageName(toolsVersion)
 	err := stor.Remove(name)
 	c.Check(err, gc.IsNil)
-	if version.Current.Series != config.DefaultSeries {
-		toolsVersion.Series = config.DefaultSeries
+	defaultSeries := coretesting.FakeDefaultSeries
+	if version.Current.Series != defaultSeries {
+		toolsVersion.Series = defaultSeries
 		name := envtools.StorageName(toolsVersion)
 		err := stor.Remove(name)
 		c.Check(err, gc.IsNil)
@@ -267,6 +294,9 @@ var (
 	V220q64 = version.MustParseBinary("2.2.0-quantal-amd64")
 	V220all = []version.Binary{V220p64, V220p32, V220q64, V220q32}
 	VAll    = append(V1all, V220all...)
+
+	V310qppc64  = version.MustParseBinary("3.1.0-quantal-ppc64")
+	V3101qppc64 = version.MustParseBinary("3.1.0.1-quantal-ppc64")
 )
 
 type BootstrapToolsTest struct {
@@ -278,15 +308,17 @@ type BootstrapToolsTest struct {
 	Development   bool
 	Arch          string
 	Expect        []version.Binary
-	Err           error
+	Err           string
 }
+
+var noToolsMessage = "Juju cannot bootstrap because no tools are available for your environment.*"
 
 var BootstrapToolsTests = []BootstrapToolsTest{
 	{
 		Info:          "no tools at all",
 		CliVersion:    V100p64,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: use newest compatible release version",
 		Available:     VAll,
@@ -343,70 +375,70 @@ var BootstrapToolsTests = []BootstrapToolsTest{
 		Available:     V220all,
 		CliVersion:    V100p64,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: minor upgrades bad",
 		Available:     V120all,
 		CliVersion:    V100p64,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: major downgrades bad",
 		Available:     V100Xall,
 		CliVersion:    V220p64,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: minor downgrades bad",
 		Available:     V100Xall,
 		CliVersion:    V120p64,
 		DefaultSeries: "quantal",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: no matching series",
 		Available:     VAll,
 		CliVersion:    V100p64,
 		DefaultSeries: "raring",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: no matching arches",
 		Available:     VAll,
 		CliVersion:    V100p64,
 		DefaultSeries: "precise",
-		Arch:          "arm",
-		Err:           coretools.ErrNoMatches,
+		Arch:          "armhf",
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: specific bad major 1",
 		Available:     VAll,
 		CliVersion:    V220p64,
 		AgentVersion:  V120,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: specific bad major 2",
 		Available:     VAll,
 		CliVersion:    V120p64,
 		AgentVersion:  V220,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: ignore dev tools 1",
 		Available:     V110all,
 		CliVersion:    V100p64,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: ignore dev tools 2",
 		Available:     V110all,
 		CliVersion:    V120p64,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli: ignore dev tools 3",
 		Available:     []version.Binary{V1001p64},
 		CliVersion:    V100p64,
 		DefaultSeries: "precise",
-		Err:           coretools.ErrNoMatches,
+		Err:           noToolsMessage,
 	}, {
 		Info:          "released cli with dev setting respects agent-version",
 		Available:     VAll,
@@ -440,12 +472,6 @@ var BootstrapToolsTests = []BootstrapToolsTest{
 	}}
 
 func SetSSLHostnameVerification(c *gc.C, st *state.State, SSLHostnameVerification bool) {
-	envConfig, err := st.EnvironConfig()
-	c.Assert(err, gc.IsNil)
-	attrs := envConfig.AllAttrs()
-	attrs["ssl-hostname-verification"] = SSLHostnameVerification
-	newConfig, err := config.New(config.NoDefaults, attrs)
-	c.Assert(err, gc.IsNil)
-	err = st.SetEnvironConfig(newConfig, envConfig)
+	err := st.UpdateEnvironConfig(map[string]interface{}{"ssl-hostname-verification": SSLHostnameVerification}, nil, nil)
 	c.Assert(err, gc.IsNil)
 }

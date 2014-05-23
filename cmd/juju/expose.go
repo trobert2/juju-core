@@ -7,20 +7,28 @@ import (
 	"errors"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/juju"
 )
 
 // ExposeCommand is responsible exposing services.
 type ExposeCommand struct {
-	cmd.EnvCommandBase
+	envcmd.EnvCommandBase
 	ServiceName string
 }
+
+var jujuExposeHelp = `
+Adjusts firewall rules and similar security mechanisms of the provider, to
+allow the service to be accessed on its public address.
+
+`
 
 func (c *ExposeCommand) Info() *cmd.Info {
 	return &cmd.Info{
 		Name:    "expose",
 		Args:    "<service>",
 		Purpose: "expose a service",
+		Doc:     jujuExposeHelp,
 	}
 }
 

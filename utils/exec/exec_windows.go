@@ -21,14 +21,6 @@ func RunPSCommand(script string) (string, error){
     return RunCommand(cmd)
 }
 
-func RunCommand(args []string) (string, error) {
-    out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
-    if err != nil {
-        return string(out), err
-    }
-    return string(out), nil
-}
-
 func RunCommands(run RunParams) (*ExecResponse, error) {
     ps := exec.Command("powershell.exe", "-noprofile", "-noninteractive", "-command", "$input|iex")
     if run.Environment != nil {

@@ -11,7 +11,6 @@ import (
 
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/charm/hooks"
-	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/watcher"
 	"launchpad.net/juju-core/worker"
@@ -22,41 +21,6 @@ import (
 // Mode defines the signature of the functions that implement the possible
 // states of a running Uniter.
 type Mode func(u *Uniter) (Mode, error)
-
-// ModeInit is the initial Uniter mode.
-func ModeInit(u *Uniter) (next Mode, err error) {
-	defer modeContext("ModeInit", &err)()
-	logger.Infof("updating unit addresses")
-	// TODO(dimitern): We might be able to drop all this address stuff
-	// entirely once we have machine addresses.
-	providerType, err := u.st.ProviderType()
-	if err != nil {
-		return nil, err
-	}
-	provider, err := environs.Provider(providerType)
-	if err != nil {
-		return nil, err
-	}
-	if private, err := provider.PrivateAddress(); err != nil {
-		logger.Errorf("cannot get unit's private address: %v", err)
-		return nil, err
-	} else if err = u.unit.SetPrivateAddress(private); err != nil {
-		logger.Errorf("cannot set unit's private address: %v", err)
-		return nil, err
-	}
-	if public, err := provider.PublicAddress(); err != nil {
-		logger.Errorf("cannot get unit's public address: %v", err)
-		return nil, err
-	} else if err = u.unit.SetPublicAddress(public); err != nil {
-		logger.Errorf("cannot set unit's public address: %v", err)
-		return nil, err
-	}
-	logger.Infof("reconciling relation state")
-	if err := u.restoreRelations(); err != nil {
-		return nil, err
-	}
-	return ModeContinue, nil
-}
 
 // ModeContinue determines what action to take based on persistent uniter state.
 func ModeContinue(u *Uniter) (next Mode, err error) {
@@ -239,6 +203,9 @@ func ModeAbide(u *Uniter) (next Mode, err error) {
 	if u.s.Op != Continue {
 		return nil, fmt.Errorf("insane uniter state: %#v", u.s)
 	}
+	if err := u.fixDeployer(); err != nil {
+		return nil, err
+	}
 	if err = u.unit.SetStatus(params.StatusStarted, "", nil); err != nil {
 		return nil, err
 	}
@@ -332,7 +299,7 @@ func modeAbideDyingLoop(u *Uniter) (next Mode, err error) {
 
 // ModeHookError is responsible for watching and responding to:
 // * user resolution of hook errors
-// * charm upgrade requests
+// * forced charm upgrade requests
 func ModeHookError(u *Uniter) (next Mode, err error) {
 	defer modeContext("ModeHookError", &err)()
 	if u.s.Op != RunHook || u.s.OpStep != Pending {
@@ -395,6 +362,15 @@ func ModeConflicted(curl *charm.URL) Mode {
 		select {
 		case <-u.tomb.Dying():
 			return nil, tomb.ErrDying
+		case curl = <-u.f.UpgradeEvents():
+			if err := u.deployer.NotifyRevert(); err != nil {
+				return nil, err
+			}
+			// Now the git dir (if it is one) has been reverted, it's safe to
+			// use a manifest deployer to deploy the new charm.
+			if err := u.fixDeployer(); err != nil {
+				return nil, err
+			}
 		case <-u.f.ResolvedEvents():
 			err = u.deployer.NotifyResolved()
 			if e := u.f.ClearResolved(); e != nil {
@@ -403,10 +379,12 @@ func ModeConflicted(curl *charm.URL) Mode {
 			if err != nil {
 				return nil, err
 			}
-		case curl = <-u.f.UpgradeEvents():
-			if err := u.deployer.NotifyRevert(); err != nil {
-				return nil, err
-			}
+			// We don't fixDeployer at this stage, because we have *no idea*
+			// what (if anything) the user has done to the charm dir before
+			// setting resolved. But the balance of probability is that the
+			// dir is filled with git droppings, that will be considered user
+			// files and hang around forever, so in this case we wait for the
+			// upgrade to complete and fixDeployer in ModeAbide.
 		}
 		return ModeUpgrading(curl), nil
 	}

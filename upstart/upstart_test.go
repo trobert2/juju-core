@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	coretesting "launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/upstart"
 	"launchpad.net/juju-core/utils"
 )
@@ -21,7 +21,7 @@ import (
 func Test(t *testing.T) { gc.TestingT(t) }
 
 type UpstartSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 	testPath string
 	service  *upstart.Service
 }
@@ -246,7 +246,7 @@ func (s *UpstartSuite) TestInstallAlreadyRunning(c *gc.C) {
 		"rm %s; ln -s %s %s",
 		pathTo("status"), pathTo("status-started"), pathTo("status"),
 	))
-	err := utils.Symlink(pathTo("status-started"), pathTo("status"))
+	err := os.Symlink(pathTo("status-started"), pathTo("status"))
 	c.Assert(err, gc.IsNil)
 
 	conf := s.dummyConf(c)

@@ -6,10 +6,11 @@ package upgrader_test
 import (
 	stdtesting "testing"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	envtesting "launchpad.net/juju-core/environs/testing"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/juju/testing"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
@@ -17,8 +18,8 @@ import (
 	"launchpad.net/juju-core/state/api/upgrader"
 	statetesting "launchpad.net/juju-core/state/testing"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/tools"
+	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
 )
 
@@ -70,7 +71,7 @@ func (s *machineUpgraderSuite) TestSetVersionNotMachine(c *gc.C) {
 func (s *machineUpgraderSuite) TestSetVersion(c *gc.C) {
 	cur := version.Current
 	agentTools, err := s.rawMachine.AgentTools()
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	c.Assert(agentTools, gc.IsNil)
 	err = s.st.SetVersion(s.rawMachine.Tag(), cur)
 	c.Assert(err, gc.IsNil)
@@ -101,19 +102,19 @@ func (s *machineUpgraderSuite) TestTools(c *gc.C) {
 	s.rawMachine.SetAgentVersion(cur)
 	// Upgrader.Tools returns the *desired* set of tools, not the currently
 	// running set. We want to be upgraded to cur.Version
-	stateTools, disableSSLHostnameVerification, err := s.st.Tools(s.rawMachine.Tag())
+	stateTools, hostnameVerification, err := s.st.Tools(s.rawMachine.Tag())
 	c.Assert(err, gc.IsNil)
 	c.Assert(stateTools.Version, gc.Equals, cur)
 	c.Assert(stateTools.URL, gc.Not(gc.Equals), "")
-	c.Assert(disableSSLHostnameVerification, jc.IsFalse)
+	c.Assert(hostnameVerification, gc.Equals, utils.VerifySSLHostnames)
 
 	envtesting.SetSSLHostnameVerification(c, s.State, false)
 
-	stateTools, disableSSLHostnameVerification, err = s.st.Tools(s.rawMachine.Tag())
+	stateTools, hostnameVerification, err = s.st.Tools(s.rawMachine.Tag())
 	c.Assert(err, gc.IsNil)
 	c.Assert(stateTools.Version, gc.Equals, cur)
 	c.Assert(stateTools.URL, gc.Not(gc.Equals), "")
-	c.Assert(disableSSLHostnameVerification, jc.IsTrue)
+	c.Assert(hostnameVerification, gc.Equals, utils.NoVerifySSLHostnames)
 }
 
 func (s *machineUpgraderSuite) TestWatchAPIVersion(c *gc.C) {

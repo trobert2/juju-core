@@ -1,4 +1,4 @@
-// Copyright 2012, 2013 Canonical Ltd.
+// Copyright 2012-2014 Canonical Ltd.
 // Licensed under the AGPLv3, see LICENCE file for details.
 
 package main
@@ -11,16 +11,17 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"runtime"
 
 	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/worker/uniter/jujuc"
-	"launchpad.net/juju-core/juju/osenv"
 
 	// Import the providers.
 	_ "launchpad.net/juju-core/provider/all"
+	"launchpad.net/juju-core/juju/osenv"
 )
 
 var jujudDoc = `
@@ -95,7 +96,7 @@ func jujuCMain(commandName string, args []string) (code int, err error) {
 
 // Main registers subcommands for the jujud executable, and hands over control
 // to the cmd package.
-func jujuDMain(args []string) (code int, err error) {
+func jujuDMain(args []string, ctx *cmd.Context) (code int, err error) {
 	jujud := cmd.NewSuperCommand(cmd.SuperCommandParams{
 		Name: "jujud",
 		Doc:  jujudDoc,
@@ -105,8 +106,45 @@ func jujuDMain(args []string) (code int, err error) {
 	jujud.Register(&MachineAgent{})
 	jujud.Register(&UnitAgent{})
 	jujud.Register(&cmd.VersionCommand{})
-	code = cmd.Main(jujud, cmd.DefaultContext(), args[1:])
+	code = cmd.Main(jujud, ctx, args[1:])
 	return code, nil
+}
+
+// Main is not redundant with main(), because it provides an entry point
+// for testing with arbitrary command line arguments.
+func Main(args []string) {
+	var code int = 1
+	ctx, err := cmd.DefaultContext()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
+	}
+
+	jujudName := "jujud"
+	jujucName := "jujuc"
+	jujuRunName := "juju-run"
+
+	if runtime.GOOS == "windows" {
+		jujudName = "jujud.exe"
+		jujucName = "jujuc.exe"
+		jujuRunName = "juju-run.exe"
+	}
+	commandName := filepath.Base(args[0])
+	if commandName == jujudName {
+		code, err = jujuDMain(args, ctx)
+	} else if commandName == jujucName {
+		fmt.Fprint(os.Stderr, jujudDoc)
+		code = 2
+		err = fmt.Errorf("jujuc should not be called directly")
+	} else if commandName == jujuRunName {
+		code = cmd.Main(&RunCommand{}, ctx, args[1:])
+	} else {
+		code, err = jujuCMain(commandName, args)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	}
+	os.Exit(code)
 }
 
 func main() {

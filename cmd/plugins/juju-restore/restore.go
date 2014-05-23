@@ -11,7 +11,6 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"path"
 	"text/template"
 
@@ -20,6 +19,7 @@ import (
 	"launchpad.net/goyaml"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/bootstrap"
@@ -31,6 +31,7 @@ import (
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
 	"launchpad.net/juju-core/utils"
+	"launchpad.net/juju-core/utils/ssh"
 )
 
 func main() {
@@ -38,11 +39,16 @@ func main() {
 }
 
 func Main(args []string) {
+	ctx, err := cmd.DefaultContext()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
+	}
 	if err := juju.InitJujuHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(2)
 	}
-	os.Exit(cmd.Main(&restoreCommand{}, cmd.DefaultContext(), args[1:]))
+	os.Exit(cmd.Main(envcmd.Wrap(&restoreCommand{}), ctx, args[1:]))
 }
 
 var logger = loggo.GetLogger("juju.plugins.restore")
@@ -59,7 +65,7 @@ to choose the new instance.
 `
 
 type restoreCommand struct {
-	cmd.EnvCommandBase
+	envcmd.EnvCommandBase
 	Log             cmd.Log
 	Constraints     constraints.Value
 	backupFile      string
@@ -76,8 +82,7 @@ func (c *restoreCommand) Info() *cmd.Info {
 }
 
 func (c *restoreCommand) SetFlags(f *gnuflag.FlagSet) {
-	c.EnvCommandBase.SetFlags(f)
-	f.Var(constraints.ConstraintsValue{&c.Constraints}, "constraints", "set environment constraints")
+	f.Var(constraints.ConstraintsValue{Target: &c.Constraints}, "constraints", "set environment constraints")
 	f.BoolVar(&c.showDescription, "description", false, "show the purpose of this plugin")
 	c.Log.AddFlags(f)
 }
@@ -94,42 +99,89 @@ func (c *restoreCommand) Init(args []string) error {
 }
 
 var updateBootstrapMachineTemplate = mustParseTemplate(`
-	set -e -x
+	set -exu
+
+	export LC_ALL=C
 	tar xzf juju-backup.tgz
 	test -d juju-backup
-
+	apt-get --option=Dpkg::Options::=--force-confold --option=Dpkg::options::=--force-unsafe-io --assume-yes --quiet install mongodb-clients
+	
 	initctl stop jujud-machine-0
 
 	initctl stop juju-db
-	rm -r /var/lib/juju /var/log/juju
+	rm -r /var/lib/juju
+	rm -r /var/log/juju
+
 	tar -C / -xvp -f juju-backup/root.tar
 	mkdir -p /var/lib/juju/db
-	export LC_ALL=C
-	mongorestore --drop --dbpath /var/lib/juju/db juju-backup/dump
+
+	# Prefer jujud-mongodb binaries if available 
+	export MONGORESTORE=mongorestore
+	if [ -f /usr/lib/juju/bin/mongorestore ]; then
+		export MONGORESTORE=/usr/lib/juju/bin/mongorestore;
+	fi	
+	$MONGORESTORE --drop --dbpath /var/lib/juju/db juju-backup/dump
+
 	initctl start juju-db
+
+	mongoAdminEval() {
+		mongo --ssl -u admin -p {{.Creds.OldPassword | shquote}} localhost:37017/admin --eval "$1"
+	}
+
 
 	mongoEval() {
 		mongo --ssl -u {{.Creds.Tag}} -p {{.Creds.Password | shquote}} localhost:37017/juju --eval "$1"
 	}
+
 	# wait for mongo to come up after starting the juju-db upstart service.
-	for i in $(seq 1 60)
+	for i in $(seq 1 100)
 	do
 		mongoEval ' ' && break
-		sleep 2
+		sleep 5
 	done
+
 	mongoEval '
 		db = db.getSiblingDB("juju")
-		db.machines.update({_id: "0"}, {$set: {instanceid: '{{.NewInstanceId | printf "%q" | shquote}}' } })
-		db.instanceData.update({_id: "0"}, {$set: {instanceid: '{{.NewInstanceId | printf "%q"| shquote}}' } })
+		db.machines.update({_id: "0"}, {$set: {instanceid: {{.NewInstanceId | printf "%q" }} } })
+		db.instanceData.update({_id: "0"}, {$set: {instanceid: {{.NewInstanceId | printf "%q" }} } })
 	'
+	
+	# Create a new replicaSet conf and re initiate it
+	mongoAdminEval '
+		conf = { "_id" : "juju", "version" : 1, "members" : [ { "_id" : 1, "host" : "{{ .PrivateAddress | printf "%s:37017" }}" , "tags" : { "juju-machine-id" : "0" } }]}
+		rs.initiate(conf)
+	'
+
+	# Give time to replset to initiate
+	for i in $(seq 1 20)
+	do
+		mongoEval ' ' && break
+		sleep 5
+	done
+
+	initctl stop juju-db
+
+	# Update the agent.conf for machine-0 with the new addresses
+	cd /var/lib/juju/agents
+	sed -i.old -r -e "/^(stateaddresses):/{
+		n
+		s/- .*(:[0-9]+)/- {{.Address}}\1/
+	}" -e "/^(apiaddresses):/{
+		n
+		s/- .*(:[0-9]+)/- {{.PrivateAddress}}\1/
+	}"  machine-0/agent.conf
+
+	initctl start juju-db
 	initctl start jujud-machine-0
 `)
 
-func updateBootstrapMachineScript(instanceId instance.Id, creds credentials) string {
+func updateBootstrapMachineScript(instanceId instance.Id, creds credentials, addr, paddr string) string {
 	return execTemplate(updateBootstrapMachineTemplate, struct {
-		NewInstanceId instance.Id
-		Creds         credentials
-	}{instanceId, creds})
+		NewInstanceId  instance.Id
+		Creds          credentials
+		Address        string
+		PrivateAddress string
+	}{instanceId, creds, addr, paddr})
 }
 
 func (c *restoreCommand) Run(ctx *cmd.Context) error {
@@ -244,18 +296,24 @@ func rebootstrap(cfg *config.Config, ctx *cmd.Context, cons constraints.Value) (
 	// error-prone) or we could provide a --no-check flag to make
 	// it go ahead anyway without the check.
 
-	if err := bootstrap.Bootstrap(ctx, env, cons); err != nil {
+	args := environs.BootstrapParams{Constraints: cons}
+	if err := bootstrap.Bootstrap(ctx, env, args); err != nil {
 		return nil, fmt.Errorf("cannot bootstrap new instance: %v", err)
 	}
 	return env, nil
 }
 
 func restoreBootstrapMachine(conn *juju.APIConn, backupFile string, creds credentials) (newInstId instance.Id, addr string, err error) {
-	addr, err = conn.State.Client().PublicAddress("0")
+	client := conn.State.Client()
+	addr, err = client.PublicAddress("0")
 	if err != nil {
 		return "", "", fmt.Errorf("cannot get public address of bootstrap machine: %v", err)
 	}
-	status, err := conn.State.Client().Status(nil)
+	paddr, err := client.PrivateAddress("0")
+	if err != nil {
+		return "", "", fmt.Errorf("cannot get private address of bootstrap machine: %v", err)
+	}
+	status, err := client.Status(nil)
 	if err != nil {
 		return "", "", fmt.Errorf("cannot get environment status: %v", err)
 	}
@@ -266,19 +324,20 @@ func restoreBootstrapMachine(conn *juju.APIConn, backupFile string, creds creden
 	newInstId = instance.Id(info.InstanceId)
 
 	progress("copying backup file to bootstrap host")
-	if err := scp(backupFile, addr, "~/juju-backup.tgz"); err != nil {
+	if err := sendViaScp(backupFile, addr, "~/juju-backup.tgz"); err != nil {
 		return "", "", fmt.Errorf("cannot copy backup file to bootstrap instance: %v", err)
 	}
 	progress("updating bootstrap machine")
-	if err := ssh(addr, updateBootstrapMachineScript(newInstId, creds)); err != nil {
+	if err := runViaSsh(addr, updateBootstrapMachineScript(newInstId, creds, addr, paddr)); err != nil {
 		return "", "", fmt.Errorf("update script failed: %v", err)
 	}
 	return newInstId, addr, nil
 }
 
 type credentials struct {
-	Tag      string
-	Password string
+	Tag         string
+	Password    string
+	OldPassword string
 }
 
 func extractCreds(backupFile string) (credentials, error) {
@@ -316,9 +375,15 @@ func extractCreds(backupFile string) (credentials, error) {
 	if !ok || password == "" {
 		return credentials{}, fmt.Errorf("agent password not found in configuration")
 	}
+	oldPassword, ok := m["oldpassword"].(string)
+	if !ok || oldPassword == "" {
+		return credentials{}, fmt.Errorf("agent old password not found in configuration")
+	}
+
 	return credentials{
-		Tag:      "machine-0",
-		Password: password,
+		Tag:         "machine-0",
+		Password:    password,
+		OldPassword: oldPassword,
 	}, nil
 }
 
@@ -345,13 +410,18 @@ do
 		n
 		s/- .*(:[0-9]+)/- {{.Address}}\1/
 	}" $agent/agent.conf
+
+	# If we're processing a unit agent's directly
+	# and it has some relations, reset
+	# the stored version of all of them to
+	# ensure that any relation hooks will
+	# fire.
 	if [[ $agent = unit-* ]]
 	then
- 		sed -i -r 's/change-version: [0-9]+$/change-version: 0/' $agent/state/relations/*/* || true
+		find $agent/state/relations -type f -exec sed -i -r 's/change-version: [0-9]+$/change-version: 0/' {} \;
 	fi
 	initctl start jujud-$agent
 done
-sed -i -r 's/^(:syslogtag, startswith, "juju-" @)(.*)(:[0-9]+.*)$/\1{{.Address}}\3/' /etc/rsyslog.d/*-juju*.conf
 `)
 
 // setAgentAddressScript generates an ssh script argument to update state addresses
@@ -404,46 +474,31 @@ func runMachineUpdate(m *state.Machine, sshArg string) error {
 	if addr == "" {
 		return fmt.Errorf("no appropriate public address found")
 	}
-	return ssh(addr, sshArg)
+	return runViaSsh(addr, sshArg)
 }
 
-func ssh(addr string, script string) error {
-	args := []string{
-		"-l", "ubuntu",
-		"-T",
-		"-o", "StrictHostKeyChecking no",
-		"-o", "PasswordAuthentication no",
-		addr,
-		"sudo -n bash -c " + utils.ShQuote(script),
-	}
-	cmd := exec.Command("ssh", args...)
-	logger.Debugf("ssh command: %s %q", cmd.Path, cmd.Args)
-	data, err := cmd.CombinedOutput()
+func runViaSsh(addr string, script string) error {
+	// This is taken from cmd/juju/ssh.go there is no other clear way to set user
+	userAddr := "ubuntu@" + addr
+	cmd := ssh.Command(userAddr, []string{"sudo", "-n", "bash", "-c " + utils.ShQuote(script)}, nil)
+	var stderrBuf bytes.Buffer
+	var stdoutBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	cmd.Stdout = &stdoutBuf
+	err := cmd.Run()
 	if err != nil {
-		return fmt.Errorf("ssh command failed: %v (%q)", err, data)
+		return fmt.Errorf("ssh command failed: %v (%q)", err, stderrBuf.String())
 	}
-	progress("ssh command succeeded: %q", data)
+	progress("ssh command succedded: %q", stdoutBuf.String())
 	return nil
 }
 
-func scp(file, host, destFile string) error {
-	cmd := exec.Command(
-		"scp",
-		"-B",
-		"-q",
-		"-o", "StrictHostKeyChecking no",
-		"-o", "PasswordAuthentication no",
-		file,
-		"ubuntu@"+host+":"+destFile)
-	logger.Debugf("scp command: %s %q", cmd.Path, cmd.Args)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		return nil
+func sendViaScp(file, host, destFile string) error {
+	err := ssh.Copy([]string{file, "ubuntu@" + host + ":" + destFile}, nil)
+	if err != nil {
+		return fmt.Errorf("scp command failed: %v", err)
 	}
-	if _, ok := err.(*exec.ExitError); ok {
-		return fmt.Errorf("scp failed: %s", out)
-	}
-	return err
+	return nil
 }
 
 func mustParseTemplate(templ string) *template.Template {

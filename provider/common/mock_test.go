@@ -10,15 +10,17 @@ import (
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/cloudinit"
 	"launchpad.net/juju-core/environs/config"
+	"launchpad.net/juju-core/environs/network"
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/storage"
 	"launchpad.net/juju-core/instance"
+	"launchpad.net/juju-core/provider/common"
 	"launchpad.net/juju-core/tools"
 )
 
 type allInstancesFunc func() ([]instance.Instance, error)
-type startInstanceFunc func(constraints.Value, tools.List, *cloudinit.MachineConfig) (instance.Instance, *instance.HardwareCharacteristics, error)
-type stopInstancesFunc func([]instance.Instance) error
+type startInstanceFunc func(string, constraints.Value, []string, []string, tools.List, *cloudinit.MachineConfig) (instance.Instance, *instance.HardwareCharacteristics, []network.Info, error)
+type stopInstancesFunc func([]instance.Id) error
 type getToolsSourcesFunc func() ([]simplestreams.DataSource, error)
 type configFunc func() *config.Config
 type setConfigFunc func(*config.Config) error
@@ -38,6 +40,10 @@ func (*mockEnviron) Name() string {
 	return "mock environment"
 }
 
+func (*mockEnviron) SupportedArchitectures() ([]string, error) {
+	return []string{"amd64", "arm64"}, nil
+}
+
 func (env *mockEnviron) Storage() storage.Storage {
 	return env.storage
 }
@@ -45,16 +51,18 @@ func (env *mockEnviron) Storage() storage.Storage {
 func (env *mockEnviron) AllInstances() ([]instance.Instance, error) {
 	return env.allInstances()
 }
-func (env *mockEnviron) StartInstance(
-	cons constraints.Value, possibleTools tools.List, mcfg *cloudinit.MachineConfig,
-) (
-	instance.Instance, *instance.HardwareCharacteristics, error,
-) {
-	return env.startInstance(cons, possibleTools, mcfg)
+func (env *mockEnviron) StartInstance(args environs.StartInstanceParams) (instance.Instance, *instance.HardwareCharacteristics, []network.Info, error) {
+	return env.startInstance(
+		args.Placement,
+		args.Constraints,
+		args.MachineConfig.IncludeNetworks,
+		args.MachineConfig.ExcludeNetworks,
+		args.Tools,
+		args.MachineConfig)
 }
 
-func (env *mockEnviron) StopInstances(instances []instance.Instance) error {
-	return env.stopInstances(instances)
+func (env *mockEnviron) StopInstances(ids ...instance.Id) error {
+	return env.stopInstances(ids)
 }
 
 func (env *mockEnviron) Config() *config.Config {
@@ -76,13 +84,34 @@ func (env *mockEnviron) GetToolsSources() ([]simplestreams.DataSource, error) {
 	return []simplestreams.DataSource{datasource}, nil
 }
 
+func (env *mockEnviron) GetImageSources() ([]simplestreams.DataSource, error) {
+	datasource := storage.NewStorageSimpleStreamsDataSource("test cloud storage", env.Storage(), storage.BaseImagesPath)
+	return []simplestreams.DataSource{datasource}, nil
+}
+
 type mockInstance struct {
 	id                string
+	addresses         []instance.Address
+	addressesErr      error
+	dnsName           string
+	dnsNameErr        error
 	instance.Instance // stub out other methods with panics
 }
 
 func (inst *mockInstance) Id() instance.Id {
 	return instance.Id(inst.id)
+}
+
+func (inst *mockInstance) Addresses() ([]instance.Address, error) {
+	return inst.addresses, inst.addressesErr
+}
+
+func (inst *mockInstance) DNSName() (string, error) {
+	return inst.dnsName, inst.dnsNameErr
+}
+
+func (inst *mockInstance) WaitDNSName() (string, error) {
+	return common.WaitDNSName(inst)
 }
 
 type mockStorage struct {

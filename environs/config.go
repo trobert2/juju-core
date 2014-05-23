@@ -9,11 +9,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"launchpad.net/goyaml"
 
 	"launchpad.net/juju-core/environs/config"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/juju/osenv"
 )
 
@@ -98,6 +98,14 @@ func (envs *Environs) Config(name string) (*config.Config, error) {
 		)
 	}
 
+	// lxc-use-clone has been renamed to lxc-clone
+	if _, ok := attrs["lxc-use-clone"]; ok {
+		logger.Warningf(
+			"Config attribute \"lxc-use-clone\" has been renamed to \"lxc-clone\".\n" +
+				"Please update your environment configuration.",
+		)
+	}
+
 	cfg, err := config.New(config.UseDefaults, attrs)
 	if err != nil {
 		return nil, err
@@ -135,13 +143,13 @@ func RegisterProvider(name string, p EnvironProvider, alias ...string) {
 }
 
 // Provider returns the previously registered provider with the given type.
-func Provider(typ string) (EnvironProvider, error) {
-	if alias, ok := providerAliases[typ]; ok {
-		typ = alias
+func Provider(providerType string) (EnvironProvider, error) {
+	if alias, ok := providerAliases[providerType]; ok {
+		providerType = alias
 	}
-	p, ok := providers[typ]
+	p, ok := providers[providerType]
 	if !ok {
-		return nil, fmt.Errorf("no registered provider for %q", typ)
+		return nil, fmt.Errorf("no registered provider for %q", providerType)
 	}
 	return p, nil
 }

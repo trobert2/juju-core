@@ -32,12 +32,30 @@ func (st *State) getEntity(tag string) (*params.AgentGetEntitiesResult, error) {
 		return nil, err
 	}
 	if len(results.Entities) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Entities))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Entities))
 	}
 	if err := results.Entities[0].Error; err != nil {
 		return nil, err
 	}
 	return &results.Entities[0], nil
+}
+
+func (st *State) StateServingInfo() (params.StateServingInfo, error) {
+	var results params.StateServingInfo
+	err := st.caller.Call("Agent", "", "StateServingInfo", nil, &results)
+	return results, err
+}
+
+// IsMaster reports whether the connected machine
+// agent lives at the same network address as the primary
+// mongo server for the replica set.
+// This call will return an error if the connected
+// agent is not a machine agent with environment-manager
+// privileges.
+func (st *State) IsMaster() (bool, error) {
+	var results params.IsMasterResult
+	err := st.caller.Call("Agent", "", "IsMaster", nil, &results)
+	return results.Master, err
 }
 
 type Entity struct {
@@ -85,8 +103,8 @@ func (m *Entity) ContainerType() instance.ContainerType {
 // SetPassword sets the password associated with the agent's entity.
 func (m *Entity) SetPassword(password string) error {
 	var results params.ErrorResults
-	args := params.PasswordChanges{
-		Changes: []params.PasswordChange{{
+	args := params.EntityPasswords{
+		Changes: []params.EntityPassword{{
 			Tag:      m.tag,
 			Password: password,
 		}},

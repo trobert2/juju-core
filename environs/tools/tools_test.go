@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs"
@@ -16,19 +18,17 @@ import (
 	"launchpad.net/juju-core/environs/configstore"
 	envtesting "launchpad.net/juju-core/environs/testing"
 	envtools "launchpad.net/juju-core/environs/tools"
-	ttesting "launchpad.net/juju-core/environs/tools/testing"
-	"launchpad.net/juju-core/errors"
+	toolstesting "launchpad.net/juju-core/environs/tools/testing"
 	"launchpad.net/juju-core/provider/dummy"
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	coretesting "launchpad.net/juju-core/testing"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/version"
 )
 
 type SimpleStreamsToolsSuite struct {
 	env environs.Environ
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 	envtesting.ToolsFixture
 	origCurrentVersion version.Binary
 	customToolsDir     string
@@ -40,14 +40,14 @@ func setupToolsTests() {
 }
 
 func (s *SimpleStreamsToolsSuite) SetUpSuite(c *gc.C) {
-	s.LoggingSuite.SetUpSuite(c)
+	s.BaseSuite.SetUpSuite(c)
 	s.customToolsDir = c.MkDir()
 	s.publicToolsDir = c.MkDir()
 }
 
 func (s *SimpleStreamsToolsSuite) SetUpTest(c *gc.C) {
 	s.ToolsFixture.DefaultBaseURL = "file://" + s.publicToolsDir
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	s.ToolsFixture.SetUpTest(c)
 	s.origCurrentVersion = version.Current
 	s.reset(c, nil)
@@ -57,7 +57,7 @@ func (s *SimpleStreamsToolsSuite) TearDownTest(c *gc.C) {
 	dummy.Reset()
 	version.Current = s.origCurrentVersion
 	s.ToolsFixture.TearDownTest(c)
-	s.LoggingSuite.TearDownTest(c)
+	s.BaseSuite.TearDownTest(c)
 }
 
 func (s *SimpleStreamsToolsSuite) reset(c *gc.C, attrs map[string]interface{}) {
@@ -82,11 +82,11 @@ func (s *SimpleStreamsToolsSuite) removeTools(c *gc.C) {
 }
 
 func (s *SimpleStreamsToolsSuite) uploadCustom(c *gc.C, verses ...version.Binary) map[version.Binary]string {
-	return ttesting.UploadToDirectory(c, s.customToolsDir, verses...)
+	return toolstesting.UploadToDirectory(c, s.customToolsDir, verses...)
 }
 
 func (s *SimpleStreamsToolsSuite) uploadPublic(c *gc.C, verses ...version.Binary) map[version.Binary]string {
-	return ttesting.UploadToDirectory(c, s.publicToolsDir, verses...)
+	return toolstesting.UploadToDirectory(c, s.publicToolsDir, verses...)
 }
 
 func (s *SimpleStreamsToolsSuite) resetEnv(c *gc.C, attrs map[string]interface{}) {
@@ -163,7 +163,7 @@ func (s *SimpleStreamsToolsSuite) TestFindTools(c *gc.C) {
 			if len(actual) > 0 {
 				c.Logf(actual.String())
 			}
-			c.Check(err, jc.Satisfies, errors.IsNotFoundError)
+			c.Check(err, jc.Satisfies, errors.IsNotFound)
 			continue
 		}
 		expect := map[version.Binary]string{}
@@ -180,7 +180,7 @@ func (s *SimpleStreamsToolsSuite) TestFindTools(c *gc.C) {
 
 func (s *SimpleStreamsToolsSuite) TestFindToolsInControlBucket(c *gc.C) {
 	s.reset(c, nil)
-	custom := ttesting.UploadToStorage(c, s.env.Storage(), envtesting.V110p...)
+	custom := toolstesting.UploadToStorage(c, s.env.Storage(), envtesting.V110p...)
 	s.uploadPublic(c, envtesting.VAll...)
 	actual, err := envtools.FindTools(s.env, 1, 1, coretools.Filter{}, envtools.DoNotAllowRetry)
 	c.Assert(err, gc.IsNil)
@@ -197,7 +197,7 @@ func (s *SimpleStreamsToolsSuite) TestFindToolsFiltering(c *gc.C) {
 	defer loggo.RemoveWriter("filter-tester")
 	_, err := envtools.FindTools(
 		s.env, 1, -1, coretools.Filter{Number: version.Number{Major: 1, Minor: 2, Patch: 3}}, envtools.DoNotAllowRetry)
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 	// This is slightly overly prescriptive, but feel free to change or add
 	// messages. This still helps to ensure that all log messages are
 	// properly formed.
@@ -240,11 +240,11 @@ func (s *SimpleStreamsToolsSuite) TestFindBootstrapTools(c *gc.C) {
 			Arch:    &test.Arch,
 		}
 		actual, err := envtools.FindBootstrapTools(s.env, params)
-		if test.Err != nil {
+		if test.Err != "" {
 			if len(actual) > 0 {
 				c.Logf(actual.String())
 			}
-			c.Check(err, jc.Satisfies, errors.IsNotFoundError)
+			c.Check(err, jc.Satisfies, errors.IsNotFound)
 			continue
 		}
 		expect := map[version.Binary]string{}
@@ -328,7 +328,7 @@ func (s *SimpleStreamsToolsSuite) TestFindInstanceTools(c *gc.C) {
 			if len(actual) > 0 {
 				c.Logf(actual.String())
 			}
-			c.Check(err, jc.Satisfies, errors.IsNotFoundError)
+			c.Check(err, jc.Satisfies, errors.IsNotFound)
 			continue
 		}
 		expect := map[version.Binary]string{}
@@ -392,7 +392,7 @@ func (s *SimpleStreamsToolsSuite) TestFindExactTools(c *gc.C) {
 				c.Check(actual.URL, gc.DeepEquals, public[actual.Version])
 			}
 		} else {
-			c.Check(err, jc.Satisfies, errors.IsNotFoundError)
+			c.Check(err, jc.Satisfies, errors.IsNotFound)
 		}
 	}
 }

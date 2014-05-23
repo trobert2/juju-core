@@ -6,18 +6,18 @@ package common_test
 import (
 	stderrors "errors"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/apiserver/common"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
 type errorsSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var _ = gc.Suite(&errorsSuite{})
@@ -75,6 +75,10 @@ var errorTransformTests = []struct {
 	code:       params.CodeNotProvisioned,
 	helperFunc: params.IsCodeNotProvisioned,
 }, {
+	err:        errors.AlreadyExistsf("blah"),
+	code:       params.CodeAlreadyExists,
+	helperFunc: params.IsCodeAlreadyExists,
+}, {
 	err:        common.ErrUnknownWatcher,
 	code:       params.CodeNotFound,
 	helperFunc: params.IsCodeNotFound,
@@ -90,6 +94,10 @@ var errorTransformTests = []struct {
 	err:        &state.HasAssignedUnitsError{"42", []string{"a"}},
 	code:       params.CodeHasAssignedUnits,
 	helperFunc: params.IsCodeHasAssignedUnits,
+}, {
+	err:        common.ErrTryAgain,
+	code:       params.CodeTryAgain,
+	helperFunc: params.IsCodeTryAgain,
 }, {
 	err:  stderrors.New("an error"),
 	code: "",

@@ -35,13 +35,19 @@ var marshalTestCases = []struct {
 	about: "MachineInfo Delta",
 	value: params.Delta{
 		Entity: &params.MachineInfo{
-			Id:         "Benji",
-			InstanceId: "Shazam",
-			Status:     "error",
-			StatusInfo: "foo",
+			Id:                      "Benji",
+			InstanceId:              "Shazam",
+			Status:                  "error",
+			StatusInfo:              "foo",
+			Life:                    params.Alive,
+			Series:                  "trusty",
+			SupportedContainers:     []instance.ContainerType{instance.LXC},
+			Jobs:                    []params.MachineJob{state.JobManageEnviron.ToParams()},
+			Addresses:               []instance.Address{},
+			HardwareCharacteristics: &instance.HardwareCharacteristics{},
 		},
 	},
-	json: `["machine","change",{"Id":"Benji","InstanceId":"Shazam","Status":"error","StatusInfo":"foo","StatusData":null}]`,
+	json: `["machine","change",{"Id":"Benji","InstanceId":"Shazam","Status":"error","StatusInfo":"foo","StatusData":null,"Life":"alive","Series":"trusty","SupportedContainers":["lxc"],"SupportedContainersKnown":false,"Jobs":["JobManageEnviron"],"Addresses":[],"HardwareCharacteristics":{}}]`,
 }, {
 	about: "ServiceInfo Delta",
 	value: params.Delta{
@@ -49,17 +55,17 @@ var marshalTestCases = []struct {
 			Name:        "Benji",
 			Exposed:     true,
 			CharmURL:    "cs:quantal/name",
-			Life:        params.Life(state.Dying.String()),
+			Life:        params.Dying,
 			OwnerTag:    "test-owner",
 			MinUnits:    42,
-			Constraints: constraints.MustParse("arch=arm mem=1024M"),
+			Constraints: constraints.MustParse("arch=armhf mem=1024M"),
 			Config: charm.Settings{
 				"hello": "goodbye",
 				"foo":   false,
 			},
 		},
 	},
-	json: `["service","change",{"CharmURL": "cs:quantal/name","Name":"Benji","Exposed":true,"Life":"dying","OwnerTag":"test-owner","MinUnits":42,"Constraints":{"arch":"arm", "mem": 1024},"Config": {"hello":"goodbye","foo":false}}]`,
+	json: `["service","change",{"CharmURL": "cs:quantal/name","Name":"Benji","Exposed":true,"Life":"dying","OwnerTag":"test-owner","MinUnits":42,"Constraints":{"arch":"armhf", "mem": 1024},"Config": {"hello":"goodbye","foo":false}}]`,
 }, {
 	about: "UnitInfo Delta",
 	value: params.Delta{

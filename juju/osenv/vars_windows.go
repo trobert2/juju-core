@@ -9,16 +9,6 @@ import (
 	"path/filepath"
 )
 
-var (
-	TempDir    = WinTempDir
-    LibDir     = WinLibDir
-    LogDir     = WinLogDir
-    DataDir    = WinDataDir
-    JujuRun    = path.Join(WinBinDir, "juju-run.exe")
-    SocketType = "tcp"
-    MustReboot = 1001
-)
-
 // Home returns the os-specific home path as specified in the environment
 func Home() string {
 	return path.Join(os.Getenv("HOMEDRIVE"), os.Getenv("HOMEPATH"))
@@ -34,3 +24,13 @@ func SetHome(s string) error {
 	}
 	return os.Setenv("HOMEPATH", s[len(v):])
 }
+
+var (
+	TempDir    = WinTempDir
+    LibDir     = WinLibDir
+    LogDir     = WinLogDir
+    DataDir    = WinDataDir
+    JujuRun    = path.Join(WinBinDir, "juju-run.exe")
+    SocketType = "tcp"
+    MustReboot = 1001
+)

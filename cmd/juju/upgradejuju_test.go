@@ -11,22 +11,25 @@ import (
 	"io/ioutil"
 	"strings"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
+	"launchpad.net/juju-core/cmd/envcmd"
+	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/environs/filestorage"
 	"launchpad.net/juju-core/environs/storage"
 	"launchpad.net/juju-core/environs/sync"
 	envtesting "launchpad.net/juju-core/environs/testing"
 	envtools "launchpad.net/juju-core/environs/tools"
+	toolstesting "launchpad.net/juju-core/environs/tools/testing"
 	"launchpad.net/juju-core/juju/testing"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/version"
 )
 
 type UpgradeJujuSuite struct {
 	testing.JujuConnSuite
+	toolsDir string
 }
 
 var _ = gc.Suite(&UpgradeJujuSuite{})
@@ -165,7 +168,7 @@ var upgradeJujuTests = []struct {
 	currentVersion: "3.0.0-quantal-amd64",
 	agentVersion:   "3.0.0",
 	args:           []string{"--version", "3.2.0"},
-	expectErr:      "no matching tools available",
+	expectErr:      "no tools available",
 }, {
 	about:          "specified version, no matching major version",
 	tools:          []string{"4.2.0-quantal-amd64"},
@@ -225,14 +228,14 @@ var upgradeJujuTests = []struct {
 	agentVersion:   "2.0.0",
 	args:           []string{"--upload-tools"},
 	expectVersion:  "2.2.0.1",
-	expectUploaded: []string{"2.2.0.1-quantal-amd64", "2.2.0.1-precise-amd64", "2.2.0.1-raring-amd64"},
+	expectUploaded: []string{"2.2.0.1-quantal-amd64", "2.2.0.1-%LTS%-amd64", "2.2.0.1-raring-amd64"},
 }, {
 	about:          "upload with explicit version",
 	currentVersion: "2.2.0-quantal-amd64",
 	agentVersion:   "2.0.0",
 	args:           []string{"--upload-tools", "--version", "2.7.3"},
 	expectVersion:  "2.7.3.1",
-	expectUploaded: []string{"2.7.3.1-quantal-amd64", "2.7.3.1-precise-amd64", "2.7.3.1-raring-amd64"},
+	expectUploaded: []string{"2.7.3.1-quantal-amd64", "2.7.3.1-%LTS%-amd64", "2.7.3.1-raring-amd64"},
 }, {
 	about:          "upload with explicit series",
 	currentVersion: "2.2.0-quantal-amd64",
@@ -246,7 +249,7 @@ var upgradeJujuTests = []struct {
 	agentVersion:   "2.0.0",
 	args:           []string{"--upload-tools"},
 	expectVersion:  "2.1.0.1",
-	expectUploaded: []string{"2.1.0.1-quantal-amd64", "2.1.0.1-precise-amd64", "2.1.0.1-raring-amd64"},
+	expectUploaded: []string{"2.1.0.1-quantal-amd64", "2.1.0.1-%LTS%-amd64", "2.1.0.1-raring-amd64"},
 }, {
 	about:          "upload bumps version when necessary",
 	tools:          []string{"2.4.6-quantal-amd64", "2.4.8-quantal-amd64"},
@@ -254,7 +257,7 @@ var upgradeJujuTests = []struct {
 	agentVersion:   "2.4.0",
 	args:           []string{"--upload-tools"},
 	expectVersion:  "2.4.6.1",
-	expectUploaded: []string{"2.4.6.1-quantal-amd64", "2.4.6.1-precise-amd64", "2.4.6.1-raring-amd64"},
+	expectUploaded: []string{"2.4.6.1-quantal-amd64", "2.4.6.1-%LTS%-amd64", "2.4.6.1-raring-amd64"},
 }, {
 	about:          "upload re-bumps version when necessary",
 	tools:          []string{"2.4.6-quantal-amd64", "2.4.6.2-saucy-i386", "2.4.8-quantal-amd64"},
@@ -262,7 +265,7 @@ var upgradeJujuTests = []struct {
 	agentVersion:   "2.4.6.2",
 	args:           []string{"--upload-tools"},
 	expectVersion:  "2.4.6.3",
-	expectUploaded: []string{"2.4.6.3-quantal-amd64", "2.4.6.3-precise-amd64", "2.4.6.3-raring-amd64"},
+	expectUploaded: []string{"2.4.6.3-quantal-amd64", "2.4.6.3-%LTS%-amd64", "2.4.6.3-raring-amd64"},
 }, {
 	about:          "upload with explicit version bumps when necessary",
 	currentVersion: "2.2.0-quantal-amd64",
@@ -270,35 +273,10 @@ var upgradeJujuTests = []struct {
 	agentVersion:   "2.0.0",
 	args:           []string{"--upload-tools", "--version", "2.7.3"},
 	expectVersion:  "2.7.3.2",
-	expectUploaded: []string{"2.7.3.2-quantal-amd64", "2.7.3.2-precise-amd64", "2.7.3.2-raring-amd64"},
+	expectUploaded: []string{"2.7.3.2-quantal-amd64", "2.7.3.2-%LTS%-amd64", "2.7.3.2-raring-amd64"},
 }}
 
-// mockUploadTools simulates the effect of tools.Upload, but skips the time-
-// consuming build from source.
-// TODO(fwereade) better factor agent/tools such that build logic is
-// exposed and can itself be neatly mocked?
-func mockUploadTools(stor storage.Storage, forceVersion *version.Number, series ...string) (*coretools.Tools, error) {
-	vers := version.Current
-	if forceVersion != nil {
-		vers.Number = *forceVersion
-	}
-	versions := []version.Binary{vers}
-	for _, series := range series {
-		if series != version.Current.Series {
-			newVers := vers
-			newVers.Series = series
-			versions = append(versions, newVers)
-		}
-	}
-	agentTools, err := envtesting.UploadFakeToolsVersions(stor, versions...)
-	if err != nil {
-		return nil, err
-	}
-	return agentTools[0], nil
-}
-
 func (s *UpgradeJujuSuite) TestUpgradeJuju(c *gc.C) {
-	s.PatchValue(&sync.Upload, mockUploadTools)
 	oldVersion := version.Current
 	defer func() {
 		version.Current = oldVersion
@@ -311,7 +289,7 @@ func (s *UpgradeJujuSuite) TestUpgradeJuju(c *gc.C) {
 		// Set up apparent CLI version and initialize the command.
 		version.Current = version.MustParseBinary(test.currentVersion)
 		com := &UpgradeJujuCommand{}
-		if err := coretesting.InitCommand(com, test.args); err != nil {
+		if err := coretesting.InitCommand(envcmd.Wrap(com), test.args); err != nil {
 			if test.expectInitErr != "" {
 				c.Check(err, gc.ErrorMatches, test.expectInitErr)
 			} else {
@@ -321,25 +299,24 @@ func (s *UpgradeJujuSuite) TestUpgradeJuju(c *gc.C) {
 		}
 
 		// Set up state and environ, and run the command.
-		oldcfg, err := s.State.EnvironConfig()
-		c.Assert(err, gc.IsNil)
 		toolsDir := c.MkDir()
-		cfg, err := oldcfg.Apply(map[string]interface{}{
+		updateAttrs := map[string]interface{}{
 			"agent-version":      test.agentVersion,
 			"tools-metadata-url": "file://" + toolsDir,
-		})
-		c.Assert(err, gc.IsNil)
-		err = s.State.SetEnvironConfig(cfg, oldcfg)
+		}
+		err := s.State.UpdateEnvironConfig(updateAttrs, nil, nil)
 		c.Assert(err, gc.IsNil)
 		versions := make([]version.Binary, len(test.tools))
 		for i, v := range test.tools {
 			versions[i] = version.MustParseBinary(v)
-
 		}
-		envtesting.MustUploadFakeToolsVersions(s.Conn.Environ.Storage(), versions...)
-		stor, err := filestorage.NewFileStorageWriter(toolsDir)
-		c.Assert(err, gc.IsNil)
-		envtesting.MustUploadFakeToolsVersions(stor, versions...)
+		if len(versions) > 0 {
+			envtesting.MustUploadFakeToolsVersions(s.Conn.Environ.Storage(), versions...)
+			stor, err := filestorage.NewFileStorageWriter(toolsDir)
+			c.Assert(err, gc.IsNil)
+			envtesting.MustUploadFakeToolsVersions(stor, versions...)
+		}
+
 		err = com.Run(coretesting.Context(c))
 		if test.expectErr != "" {
 			c.Check(err, gc.ErrorMatches, test.expectErr)
@@ -349,13 +326,16 @@ func (s *UpgradeJujuSuite) TestUpgradeJuju(c *gc.C) {
 		}
 
 		// Check expected changes to environ/state.
-		cfg, err = s.State.EnvironConfig()
+		cfg, err := s.State.EnvironConfig()
 		c.Check(err, gc.IsNil)
 		agentVersion, ok := cfg.AgentVersion()
 		c.Check(ok, gc.Equals, true)
 		c.Check(agentVersion, gc.Equals, version.MustParse(test.expectVersion))
 
 		for _, uploaded := range test.expectUploaded {
+			// Substitute latest LTS for placeholder in expected series for uploaded tools
+			uploaded = strings.Replace(uploaded, "%LTS%", config.LatestLtsSeries(), 1)
+
 			vers := version.MustParseBinary(uploaded)
 			r, err := storage.Get(s.Conn.Environ.Storage(), envtools.StorageName(vers))
 			if !c.Check(err, gc.IsNil) {
@@ -364,7 +344,9 @@ func (s *UpgradeJujuSuite) TestUpgradeJuju(c *gc.C) {
 			data, err := ioutil.ReadAll(r)
 			r.Close()
 			c.Check(err, gc.IsNil)
-			checkToolsContent(c, data, "jujud contents "+uploaded)
+			expectContent := version.Current
+			expectContent.Number = agentVersion
+			checkToolsContent(c, data, "jujud contents "+expectContent.String())
 		}
 	}
 }
@@ -402,15 +384,13 @@ func checkToolsContent(c *gc.C, data []byte, uploaded string) {
 func (s *UpgradeJujuSuite) Reset(c *gc.C) {
 	s.JujuConnSuite.Reset(c)
 	envtesting.RemoveTools(c, s.Conn.Environ.Storage())
-	oldcfg, err := s.State.EnvironConfig()
-	c.Assert(err, gc.IsNil)
-	cfg, err := oldcfg.Apply(map[string]interface{}{
+	updateAttrs := map[string]interface{}{
 		"default-series": "raring",
 		"agent-version":  "1.2.3",
-	})
+	}
+	err := s.State.UpdateEnvironConfig(updateAttrs, nil, nil)
 	c.Assert(err, gc.IsNil)
-	err = s.State.SetEnvironConfig(cfg, oldcfg)
-	c.Assert(err, gc.IsNil)
+	s.PatchValue(&sync.BuildToolsTarball, toolstesting.GetMockBuildTools(c))
 }
 
 func (s *UpgradeJujuSuite) TestUpgradeJujuWithRealUpload(c *gc.C) {

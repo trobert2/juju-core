@@ -6,11 +6,11 @@ package state_test
 import (
 	"fmt"
 
+	"github.com/juju/errors"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/state"
-	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/version"
 )
@@ -43,7 +43,7 @@ func testAgentTools(c *gc.C, obj tooler, agent string) {
 	// object starts with zero'd tools.
 	t, err := obj.AgentTools()
 	c.Assert(t, gc.IsNil)
-	c.Assert(err, jc.Satisfies, errors.IsNotFoundError)
+	c.Assert(err, jc.Satisfies, errors.IsNotFound)
 
 	err = obj.SetAgentVersion(version.Binary{})
 	c.Assert(err, gc.ErrorMatches, fmt.Sprintf("cannot set agent version for %s: empty series or arch", agent))

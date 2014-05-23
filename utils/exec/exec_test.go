@@ -4,15 +4,15 @@
 package exec_test
 
 import (
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/utils/exec"
 )
 
 type execSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var _ = gc.Suite(&execSuite{})

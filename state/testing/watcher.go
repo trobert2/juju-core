@@ -7,12 +7,12 @@ import (
 	"sort"
 	"time"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 )
 
 type Stopper interface {
@@ -138,7 +138,7 @@ func (c StringsWatcherC) AssertChangeInSingleEvent(expect ...string) {
 	c.assertChange(true, expect...)
 }
 
-// AssertChange asserts the given list of changes was reported by
+// assertChange asserts the given list of changes was reported by
 // the watcher, but does not assume there are no following changes.
 func (c StringsWatcherC) assertChange(single bool, expect ...string) {
 	c.State.StartSync()

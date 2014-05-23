@@ -4,6 +4,10 @@
 package exec
 
 import (
+	// "bytes"
+	"os/exec"
+	// "syscall"
+
 	"github.com/juju/loggo"
 )
 
@@ -26,3 +30,11 @@ type ExecResponse struct {
 	Stdout []byte
 	Stderr []byte
 }
+
+func RunCommand(args []string) (string, error) {
+    out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+    if err != nil {
+        return string(out), err
+    }
+    return string(out), nil
+ }

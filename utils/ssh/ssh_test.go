@@ -12,12 +12,12 @@ import (
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/cmd"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/utils/ssh"
 )
 
 type SSHCommandSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 	testbin string
 	fakessh string
 	fakescp string
@@ -29,7 +29,7 @@ var _ = gc.Suite(&SSHCommandSuite{})
 const echoCommandScript = "#!/bin/sh\necho $0 \"$@\" | tee $0.args"
 
 func (s *SSHCommandSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	s.testbin = c.MkDir()
 	s.fakessh = filepath.Join(s.testbin, "ssh")
 	s.fakescp = filepath.Join(s.testbin, "scp")
@@ -129,7 +129,7 @@ func (s *SSHCommandSuite) TestCopy(c *gc.C) {
 	opts.AllowPasswordAuthentication()
 	opts.SetIdentities("x", "y")
 	opts.SetPort(2022)
-	err := s.client.Copy([]string{"/tmp/blah", "foo@bar.com:baz"}, nil, &opts)
+	err := s.client.Copy([]string{"/tmp/blah", "foo@bar.com:baz"}, &opts)
 	c.Assert(err, gc.IsNil)
 	out, err := ioutil.ReadFile(s.fakescp + ".args")
 	c.Assert(err, gc.IsNil)
@@ -137,14 +137,22 @@ func (s *SSHCommandSuite) TestCopy(c *gc.C) {
 	c.Assert(string(out), gc.Equals, s.fakescp+" -o StrictHostKeyChecking no -i x -i y -P 2022 /tmp/blah foo@bar.com:baz\n")
 
 	// Try passing extra args
-	err = s.client.Copy([]string{"/tmp/blah", "foo@bar.com:baz"}, []string{"-r", "-v"}, &opts)
+	err = s.client.Copy([]string{"/tmp/blah", "foo@bar.com:baz", "-r", "-v"}, &opts)
 	c.Assert(err, gc.IsNil)
 	out, err = ioutil.ReadFile(s.fakescp + ".args")
 	c.Assert(err, gc.IsNil)
-	c.Assert(string(out), gc.Equals, s.fakescp+" -o StrictHostKeyChecking no -i x -i y -P 2022 -r -v /tmp/blah foo@bar.com:baz\n")
+	c.Assert(string(out), gc.Equals, s.fakescp+" -o StrictHostKeyChecking no -i x -i y -P 2022 /tmp/blah foo@bar.com:baz -r -v\n")
+
+	// Try interspersing extra args
+	err = s.client.Copy([]string{"-r", "/tmp/blah", "-v", "foo@bar.com:baz"}, &opts)
+	c.Assert(err, gc.IsNil)
+	out, err = ioutil.ReadFile(s.fakescp + ".args")
+	c.Assert(err, gc.IsNil)
+	c.Assert(string(out), gc.Equals, s.fakescp+" -o StrictHostKeyChecking no -i x -i y -P 2022 -r /tmp/blah -v foo@bar.com:baz\n")
 }
 
 func (s *SSHCommandSuite) TestCommandClientKeys(c *gc.C) {
+	defer overrideGenerateKey(c).Restore()
 	clientKeysDir := c.MkDir()
 	defer ssh.ClearClientKeys()
 	err := ssh.LoadClientKeys(clientKeysDir)

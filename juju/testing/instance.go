@@ -10,6 +10,8 @@ import (
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
+	"launchpad.net/juju-core/environs/config"
+	"launchpad.net/juju-core/environs/network"
 	"launchpad.net/juju-core/environs/tools"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/names"
@@ -26,7 +28,7 @@ func FakeStateInfo(machineId string) *state.Info {
 		Addrs:    []string{"0.1.2.3:1234"},
 		Tag:      names.MachineTag(machineId),
 		Password: "unimportant",
-		CACert:   []byte(testing.CACert),
+		CACert:   testing.CACert,
 	}
 }
 
@@ -38,7 +40,7 @@ func FakeAPIInfo(machineId string) *api.Info {
 		Addrs:    []string{"0.1.2.3:1234"},
 		Tag:      names.MachineTag(machineId),
 		Password: "unimportant",
-		CACert:   []byte(testing.CACert),
+		CACert:   testing.CACert,
 	}
 }
 
@@ -49,7 +51,7 @@ func AssertStartInstance(
 ) (
 	instance.Instance, *instance.HardwareCharacteristics,
 ) {
-	inst, hc, err := StartInstance(env, machineId)
+	inst, hc, _, err := StartInstance(env, machineId)
 	c.Assert(err, gc.IsNil)
 	return inst, hc
 }
@@ -59,7 +61,7 @@ func AssertStartInstance(
 func StartInstance(
 	env environs.Environ, machineId string,
 ) (
-	instance.Instance, *instance.HardwareCharacteristics, error,
+	instance.Instance, *instance.HardwareCharacteristics, []network.Info, error,
 ) {
 	return StartInstanceWithConstraints(env, machineId, constraints.Value{})
 }
@@ -72,7 +74,7 @@ func AssertStartInstanceWithConstraints(
 ) (
 	instance.Instance, *instance.HardwareCharacteristics,
 ) {
-	inst, hc, err := StartInstanceWithConstraints(env, machineId, cons)
+	inst, hc, _, err := StartInstanceWithConstraints(env, machineId, cons)
 	c.Assert(err, gc.IsNil)
 	return inst, hc
 }
@@ -83,20 +85,54 @@ func AssertStartInstanceWithConstraints(
 func StartInstanceWithConstraints(
 	env environs.Environ, machineId string, cons constraints.Value,
 ) (
-	instance.Instance, *instance.HardwareCharacteristics, error,
+	instance.Instance, *instance.HardwareCharacteristics, []network.Info, error,
 ) {
-	series := env.Config().DefaultSeries()
+	return StartInstanceWithConstraintsAndNetworks(env, machineId, cons, nil, nil)
+}
+
+// AssertStartInstanceWithNetworks is a test helper function that starts an
+// instance with the given networks, and a plausible but invalid
+// configuration, and returns the result of Environ.StartInstance.
+func AssertStartInstanceWithNetworks(
+	c *gc.C, env environs.Environ, machineId string, cons constraints.Value,
+	includeNetworks, excludeNetworks []string,
+) (
+	instance.Instance, *instance.HardwareCharacteristics,
+) {
+	inst, hc, _, err := StartInstanceWithConstraintsAndNetworks(
+		env, machineId, cons, includeNetworks, excludeNetworks)
+	c.Assert(err, gc.IsNil)
+	return inst, hc
+}
+
+// StartInstanceWithConstraintsAndNetworks is a test helper function that
+// starts an instance with the given networks, and a plausible but invalid
+// configuration, and returns the result of Environ.StartInstance.
+func StartInstanceWithConstraintsAndNetworks(
+	env environs.Environ, machineId string, cons constraints.Value,
+	includeNetworks, excludeNetworks []string,
+) (
+	instance.Instance, *instance.HardwareCharacteristics, []network.Info, error,
+) {
+	series := config.PreferredSeries(env.Config())
 	agentVersion, ok := env.Config().AgentVersion()
 	if !ok {
-		return nil, nil, fmt.Errorf("missing agent version in environment config")
+		return nil, nil, nil, fmt.Errorf("missing agent version in environment config")
 	}
 	possibleTools, err := tools.FindInstanceTools(env, agentVersion, series, cons.Arch)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	machineNonce := "fake_nonce"
 	stateInfo := FakeStateInfo(machineId)
 	apiInfo := FakeAPIInfo(machineId)
-	machineConfig := environs.NewMachineConfig(machineId, machineNonce, "", stateInfo, apiInfo)
-	return env.StartInstance(cons, possibleTools, machineConfig)
+	machineConfig := environs.NewMachineConfig(
+		machineId, machineNonce, "",
+		includeNetworks, excludeNetworks,
+		stateInfo, apiInfo)
+	return env.StartInstance(environs.StartInstanceParams{
+		Constraints:   cons,
+		Tools:         possibleTools,
+		MachineConfig: machineConfig,
+	})
 }

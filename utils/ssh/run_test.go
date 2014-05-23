@@ -7,16 +7,15 @@ import (
 	"io/ioutil"
 	"path/filepath"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/utils/ssh"
 )
 
 type ExecuteSSHCommandSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 	testbin string
 	fakessh string
 }
@@ -24,7 +23,7 @@ type ExecuteSSHCommandSuite struct {
 var _ = gc.Suite(&ExecuteSSHCommandSuite{})
 
 func (s *ExecuteSSHCommandSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	s.testbin = c.MkDir()
 	s.fakessh = filepath.Join(s.testbin, "ssh")
 	s.PatchEnvPathPrepend(s.testbin)

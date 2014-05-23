@@ -114,7 +114,6 @@ func NewServer(getCmd CmdGetter, socketPath string) (*Server, error) {
 	if err := server.Register(&Jujuc{getCmd: getCmd}); err != nil {
 		return nil, err
 	}
-
 	listener, err := net.Listen(osenv.SocketType, socketPath)
 	if err != nil {
 		return nil, err

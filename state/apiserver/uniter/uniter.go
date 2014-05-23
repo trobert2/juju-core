@@ -8,8 +8,9 @@ package uniter
 import (
 	"fmt"
 
+	"github.com/juju/errors"
+
 	"launchpad.net/juju-core/charm"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api/params"
@@ -60,7 +61,7 @@ func NewUniterAPI(st *state.State, resources *common.Resources, authorizer commo
 		StatusSetter:       common.NewStatusSetter(st, accessUnit),
 		DeadEnsurer:        common.NewDeadEnsurer(st, accessUnit),
 		AgentEntityWatcher: common.NewAgentEntityWatcher(st, resources, accessUnitOrService),
-		APIAddresser:       common.NewAPIAddresser(st),
+		APIAddresser:       common.NewAPIAddresser(st, resources),
 		EnvironWatcher:     common.NewEnvironWatcher(st, resources, getCanWatch, getCanReadSecrets),
 
 		st:            st,
@@ -115,29 +116,6 @@ func (u *UniterAPI) PublicAddress(args params.Entities) (params.StringResults, e
 	return result, nil
 }
 
-// SetPublicAddress sets the public address of each of the given units.
-func (u *UniterAPI) SetPublicAddress(args params.SetEntityAddresses) (params.ErrorResults, error) {
-	result := params.ErrorResults{
-		Results: make([]params.ErrorResult, len(args.Entities)),
-	}
-	canAccess, err := u.accessUnit()
-	if err != nil {
-		return params.ErrorResults{}, err
-	}
-	for i, entity := range args.Entities {
-		err := common.ErrPerm
-		if canAccess(entity.Tag) {
-			var unit *state.Unit
-			unit, err = u.getUnit(entity.Tag)
-			if err == nil {
-				err = unit.SetPublicAddress(entity.Address)
-			}
-		}
-		result.Results[i].Error = common.ServerError(err)
-	}
-	return result, nil
-}
-
 // PrivateAddress returns the private address for each given unit, if set.
 func (u *UniterAPI) PrivateAddress(args params.Entities) (params.StringResults, error) {
 	result := params.StringResults{
@@ -159,29 +137,6 @@ func (u *UniterAPI) PrivateAddress(args params.Entities) (params.StringResults, 
 				} else {
 					err = common.NoAddressSetError(entity.Tag, "private")
 				}
-			}
-		}
-		result.Results[i].Error = common.ServerError(err)
-	}
-	return result, nil
-}
-
-// SetPrivateAddress sets the private address of each of the given units.
-func (u *UniterAPI) SetPrivateAddress(args params.SetEntityAddresses) (params.ErrorResults, error) {
-	result := params.ErrorResults{
-		Results: make([]params.ErrorResult, len(args.Entities)),
-	}
-	canAccess, err := u.accessUnit()
-	if err != nil {
-		return params.ErrorResults{}, err
-	}
-	for i, entity := range args.Entities {
-		err := common.ErrPerm
-		if canAccess(entity.Tag) {
-			var unit *state.Unit
-			unit, err = u.getUnit(entity.Tag)
-			if err == nil {
-				err = unit.SetPrivateAddress(entity.Address)
 			}
 		}
 		result.Results[i].Error = common.ServerError(err)
@@ -586,7 +541,7 @@ func (u *UniterAPI) CharmArchiveURL(args params.CharmURLs) (params.CharmArchiveU
 		} else {
 			var sch *state.Charm
 			sch, err = u.st.Charm(curl)
-			if errors.IsNotFoundError(err) {
+			if errors.IsNotFound(err) {
 				err = common.ErrPerm
 			}
 			if err == nil {
@@ -612,7 +567,7 @@ func (u *UniterAPI) CharmArchiveSha256(args params.CharmURLs) (params.StringResu
 		} else {
 			var sch *state.Charm
 			sch, err = u.st.Charm(curl)
-			if errors.IsNotFoundError(err) {
+			if errors.IsNotFound(err) {
 				err = common.ErrPerm
 			}
 			if err == nil {
@@ -630,7 +585,7 @@ func (u *UniterAPI) getRelationAndUnit(canAccess common.AuthFunc, relTag, unitTa
 		return nil, nil, common.ErrPerm
 	}
 	rel, err := u.st.KeyRelation(key)
-	if errors.IsNotFoundError(err) {
+	if errors.IsNotFound(err) {
 		return nil, nil, common.ErrPerm
 	} else if err != nil {
 		return nil, nil, err
@@ -673,7 +628,7 @@ func (u *UniterAPI) getOneRelation(canAccess common.AuthFunc, relTag, unitTag st
 func (u *UniterAPI) getOneRelationById(relId int) (params.RelationResult, error) {
 	nothing := params.RelationResult{}
 	rel, err := u.st.Relation(relId)
-	if errors.IsNotFoundError(err) {
+	if errors.IsNotFound(err) {
 		return nothing, common.ErrPerm
 	} else if err != nil {
 		return nothing, err
@@ -733,6 +688,46 @@ func (u *UniterAPI) RelationById(args params.RelationIds) (params.RelationResult
 		relParams, err := u.getOneRelationById(relId)
 		if err == nil {
 			result.Results[i] = relParams
+		}
+		result.Results[i].Error = common.ServerError(err)
+	}
+	return result, nil
+}
+
+func relationsInScopeTags(unit *state.Unit) ([]string, error) {
+	relations, err := unit.RelationsInScope()
+	if err != nil {
+		return nil, err
+	}
+	tags := make([]string, len(relations))
+	for i, relation := range relations {
+		tags[i] = relation.Tag()
+	}
+	return tags, nil
+}
+
+// JoinedRelations returns the tags of all relations for which each supplied unit
+// has entered scope. It should be called RelationsInScope, but it's not convenient
+// to make that change until we have versioned APIs.
+func (u *UniterAPI) JoinedRelations(args params.Entities) (params.StringsResults, error) {
+	result := params.StringsResults{
+		Results: make([]params.StringsResult, len(args.Entities)),
+	}
+	if len(args.Entities) == 0 {
+		return result, nil
+	}
+	canRead, err := u.accessUnit()
+	if err != nil {
+		return params.StringsResults{}, err
+	}
+	for i, entity := range args.Entities {
+		err := common.ErrPerm
+		if canRead(entity.Tag) {
+			var unit *state.Unit
+			unit, err = u.getUnit(entity.Tag)
+			if err == nil {
+				result.Results[i].Result, err = relationsInScopeTags(unit)
+			}
 		}
 		result.Results[i].Error = common.ServerError(err)
 	}

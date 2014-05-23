@@ -13,7 +13,8 @@ import (
 
 	"launchpad.net/juju-core/environs/jujutest"
 	"launchpad.net/juju-core/environs/simplestreams"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
+	"launchpad.net/juju-core/version/ubuntu"
 )
 
 var PrivateKeyPassphrase = "12345"
@@ -480,7 +481,7 @@ var testRoundTripper *jujutest.ProxyRoundTripper
 
 func init() {
 	testRoundTripper = &jujutest.ProxyRoundTripper{}
-	simplestreams.RegisterProtocol("test", testRoundTripper)
+	testRoundTripper.RegisterForScheme("test")
 }
 
 type TestDataSuite struct{}
@@ -505,7 +506,7 @@ func AssertExpectedSources(c *gc.C, obtained []simplestreams.DataSource, baseURL
 }
 
 type LocalLiveSimplestreamsSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 	Source          simplestreams.DataSource
 	RequireSigned   bool
 	DataType        string
@@ -513,11 +514,11 @@ type LocalLiveSimplestreamsSuite struct {
 }
 
 func (s *LocalLiveSimplestreamsSuite) SetUpSuite(c *gc.C) {
-	s.LoggingSuite.SetUpSuite(c)
+	s.BaseSuite.SetUpSuite(c)
 }
 
 func (s *LocalLiveSimplestreamsSuite) TearDownSuite(c *gc.C) {
-	s.LoggingSuite.TearDownSuite(c)
+	s.BaseSuite.TearDownSuite(c)
 }
 
 const (
@@ -535,7 +536,7 @@ func NewTestConstraint(params simplestreams.LookupParams) *testConstraint {
 }
 
 func (tc *testConstraint) Ids() ([]string, error) {
-	version, err := simplestreams.SeriesVersion(tc.Series[0])
+	version, err := ubuntu.SeriesVersion(tc.Series[0])
 	if err != nil {
 		return nil, err
 	}
@@ -554,7 +555,7 @@ func init() {
 type TestItem struct {
 	Id          string `json:"id"`
 	Storage     string `json:"root_store"`
-	VType       string `json:"virt"`
+	VirtType    string `json:"virt"`
 	Arch        string `json:"arch"`
 	RegionAlias string `json:"crsn"`
 	RegionName  string `json:"region"`

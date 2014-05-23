@@ -10,13 +10,13 @@ import (
 
 	"launchpad.net/juju-core/environs/imagemetadata"
 	"launchpad.net/juju-core/environs/simplestreams"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
 var _ = gc.Suite(&marshalSuite{})
 
 type marshalSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var expectedIndex = `{
@@ -53,7 +53,8 @@ var expectedProducts = `{
                 "19700101": {
                     "items": {
                         "abcd": {
-                            "id": "abcd"
+                            "id": "abcd",
+                            "virt": "virt"
                         }
                     }
                 }
@@ -103,9 +104,10 @@ var imageMetadataForTesting = []*imagemetadata.ImageMetadata{
 		Arch:    "arm",
 	},
 	&imagemetadata.ImageMetadata{
-		Id:      "abcd",
-		Version: "12.04",
-		Arch:    "amd64",
+		Id:       "abcd",
+		Version:  "12.04",
+		Arch:     "amd64",
+		VirtType: "virt",
 	},
 }
 

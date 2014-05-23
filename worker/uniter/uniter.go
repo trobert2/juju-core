@@ -7,25 +7,35 @@ import (
 	stderrors "errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
+
+	"runtime"
+	osExec "os/exec"
 
 	"github.com/juju/loggo"
 	"launchpad.net/tomb"
 
+	"launchpad.net/juju-core/agent/tools"
 	corecharm "launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/charm/hooks"
+	// "launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/api/uniter"
 	apiwatcher "launchpad.net/juju-core/state/api/watcher"
 	"launchpad.net/juju-core/state/watcher"
+	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/utils/fslock"
+	"launchpad.net/juju-core/worker"
 	"launchpad.net/juju-core/worker/uniter/charm"
 	"launchpad.net/juju-core/worker/uniter/hook"
+	// "launchpad.net/juju-core/worker/uniter/jujuc"
 	"launchpad.net/juju-core/worker/uniter/relation"
 )
 
@@ -35,7 +45,6 @@ const (
 	// These work fine for linux, but should we need to work with windows
 	// workloads in the future, we'll need to move these into a file that is
 	// compiled conditionally for different targets and use tcp (most likely).
-
 	// gsamfira: On Windows this file will be a text file we will use it to store
 	// the TCP port nr until we implement RPC over named pipes
 	RunListenerFile = "run.socket"
@@ -53,7 +62,7 @@ type UniterExecutionObserver interface {
 // implement the actual *behaviour* of the unit agent; that responsibility is
 // delegated to Mode values, which are expected to react to events and direct
 // the uniter's responses to them.
-type Uniter struct { 
+type Uniter struct {
 	tomb          tomb.Tomb
 	st            *uniter.State
 	f             *filter
@@ -68,14 +77,13 @@ type Uniter struct {
 	baseDir      string
 	toolsDir     string
 	relationsDir string
-	charm        *charm.GitDir
+	charmPath    string
 	deployer     charm.Deployer
 	s            *State
 	sf           *StateFile
 	rand         *rand.Rand
 	hookLock     *fslock.Lock
 	runListener  *RunListener
-	tcpSock      string
 
 	proxy      osenv.ProxySettings
 	proxyMutex sync.Mutex
@@ -89,10 +97,11 @@ type Uniter struct {
 // NewUniter creates a new Uniter which will install, run, and upgrade
 // a charm on behalf of the unit with the given unitTag, by executing
 // hooks and operations provoked by changes in st.
-func NewUniter(st *uniter.State, unitTag string, dataDir string) *Uniter {
+func NewUniter(st *uniter.State, unitTag string, dataDir string, hookLock *fslock.Lock) *Uniter {
 	u := &Uniter{
-		st:      st,
-		dataDir: dataDir,
+		st:       st,
+		dataDir:  dataDir,
+		hookLock: hookLock,
 	}
 	go func() {
 		defer u.tomb.Done()
@@ -102,8 +111,11 @@ func NewUniter(st *uniter.State, unitTag string, dataDir string) *Uniter {
 }
 
 func (u *Uniter) loop(unitTag string) (err error) {
-	if err = u.init(unitTag); err != nil {
-		return err
+	if err := u.init(unitTag); err != nil {
+		if err == worker.ErrTerminateAgent {
+			return err
+		}
+		return fmt.Errorf("failed to initialize uniter for %q: %v", unitTag, err)
 	}
 	defer u.runListener.Close()
 	logger.Infof("unit %q started", u.unit)
@@ -126,7 +138,7 @@ func (u *Uniter) loop(unitTag string) (err error) {
 	}()
 
 	// Run modes until we encounter an error.
-	mode := ModeInit
+	mode := ModeContinue
 	for err == nil {
 		select {
 		case <-u.tomb.Dying():
@@ -140,11 +152,6 @@ func (u *Uniter) loop(unitTag string) (err error) {
 }
 
 func (u *Uniter) setupLocks() (err error) {
-	lockDir := filepath.Join(u.dataDir, "locks")
-	u.hookLock, err = fslock.NewLock(lockDir, "uniter-hook-execution")
-	if err != nil {
-		return err
-	}
 	if message := u.hookLock.Message(); u.hookLock.IsLocked() && message != "" {
 		// Look to see if it was us that held the lock before.  If it was, we
 		// should be safe enough to break it, as it is likely that we died
@@ -155,6 +162,81 @@ func (u *Uniter) setupLocks() (err error) {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func (u *Uniter) init(unitTag string) (err error) {
+	u.unit, err = u.st.Unit(unitTag)
+	if err != nil {
+		return err
+	}
+	if u.unit.Life() == params.Dead {
+		// If we started up already dead, we should not progress further. If we
+		// become Dead immediately after starting up, we may well complete any
+		// operations in progress before detecting it; but that race is fundamental
+		// and inescapable, whereas this one is not.
+		return worker.ErrTerminateAgent
+	}
+	if err = u.setupLocks(); err != nil {
+		return err
+	}
+	u.toolsDir = tools.ToolsDir(u.dataDir, unitTag)
+	if err := EnsureJujucSymlinks(u.toolsDir); err != nil {
+		return err
+	}
+	u.baseDir = filepath.Join(u.dataDir, "agents", unitTag)
+	u.relationsDir = filepath.Join(u.baseDir, "state", "relations")
+	if err := os.MkdirAll(u.relationsDir, 0755); err != nil {
+		return err
+	}
+	u.service, err = u.st.Service(u.unit.ServiceTag())
+	if err != nil {
+		return err
+	}
+	var env *uniter.Environment
+	env, err = u.st.Environment()
+	if err != nil {
+		return err
+	}
+	u.uuid = env.UUID()
+	u.envName = env.Name()
+
+	u.relationers = map[int]*Relationer{}
+	u.relationHooks = make(chan hook.Info)
+	u.charmPath = filepath.Join(u.baseDir, "charm")
+	deployerPath := filepath.Join(u.baseDir, "state", "deployer")
+	bundles := charm.NewBundlesDir(filepath.Join(u.baseDir, "state", "bundles"))
+	u.deployer, err = charm.NewDeployer(u.charmPath, deployerPath, bundles)
+	if err != nil {
+		return fmt.Errorf("cannot create deployer: %v", err)
+	}
+	u.sf = NewStateFile(filepath.Join(u.baseDir, "state", "uniter"))
+	u.rand = rand.New(rand.NewSource(time.Now().Unix()))
+
+	// If we start trying to listen for juju-run commands before we have valid
+	// relation state, surprising things will come to pass.
+	if err := u.restoreRelations(); err != nil {
+		return err
+	}
+	runListenerSocketPath := filepath.Join(u.baseDir, RunListenerFile)
+	if runtime.GOOS == "windows" {
+		//TODO: gsamfira: This is a bit hacky. Would prefer implementing
+		//named pipes on windows
+		tmpPath, err := utils.WriteSocketFile(runListenerSocketPath)
+		if err != nil {
+			return err
+		}
+		runListenerSocketPath = tmpPath
+	}
+	logger.Debugf("starting juju-run listener on :%s", runListenerSocketPath)
+	u.runListener, err = NewRunListener(u, runListenerSocketPath)
+	if err != nil {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		// The socket needs to have permissions 777 in order for other users to use it.
+		return os.Chmod(runListenerSocketPath, 0777)
 	}
 	return nil
 }
@@ -324,7 +406,7 @@ func (u *Uniter) RunCommands(commands string) (results *exec.ExecResponse, err e
 	}
 	defer srv.Close()
 
-	result, err := hctx.RunCommands(commands, u.charm.Path(), u.toolsDir, socketPath)
+	result, err := hctx.RunCommands(commands, u.charmPath, u.toolsDir, socketPath)
 	if result != nil {
 		logger.Tracef("run commands: rc=%v\nstdout:\n%sstderr:\n%s", result.Code, result.Stdout, result.Stderr)
 	}
@@ -354,6 +436,79 @@ func (u *Uniter) notifyHookFailed(hook string, hctx *HookContext) {
 	}
 }
 
+// runHook executes the supplied hook.Info in an appropriate hook context. If
+// the hook itself fails to execute, it returns errHookFailed.
+func (u *Uniter) runHook(hi hook.Info) (err error) {
+	// Prepare context.
+	if err = hi.Validate(); err != nil {
+		return err
+	}
+
+	hookName := string(hi.Kind)
+	relationId := -1
+	if hi.Kind.IsRelation() {
+		relationId = hi.RelationId
+		if hookName, err = u.relationers[relationId].PrepareHook(hi); err != nil {
+			return err
+		}
+	}
+	hctxId := fmt.Sprintf("%s:%s:%d", u.unit.Name(), hookName, u.rand.Int63())
+
+	lockMessage := fmt.Sprintf("%s: running hook %q", u.unit.Name(), hookName)
+	if err = u.acquireHookLock(lockMessage); err != nil {
+		return err
+	}
+	defer u.hookLock.Unlock()
+
+	hctx, err := u.getHookContext(hctxId, relationId, hi.RemoteUnit)
+	if err != nil {
+		return err
+	}
+	srv, socketPath, err := u.startJujucServer(hctx)
+	if err != nil {
+		return err
+	}
+	defer srv.Close()
+
+	// Run the hook.
+	if err := u.writeState(RunHook, Pending, &hi, nil); err != nil {
+		return err
+	}
+	logger.Infof("running %q hook", hookName)
+	ranHook := true
+	err = hctx.RunHook(hookName, u.charmPath, u.toolsDir, socketPath)
+	if RebootRequiredError(err){
+		logger.Infof("hook %q requested a reboot", hookName)
+		if err := u.writeState(RunHook, Queued, &hi, nil); err != nil {
+			return err
+		}
+		time := 5
+		logger.Infof("rebooting system in %q seconds", time)
+		errReboot := utils.Reboot(time)
+		if eeReboot, ok := errReboot.(*osExec.Error); ok && eeReboot != nil {
+			logger.Infof("Reboot returned error: %q", eeReboot.Err)
+		}
+		logger.Infof("Stopping uniter due to reboot")
+		u.Stop()
+	}
+	if IsMissingHookError(err) {
+		ranHook = false
+	} else if err != nil {
+		logger.Errorf("hook failed: %s", err)
+		u.notifyHookFailed(hookName, hctx)
+		return errHookFailed
+	}
+	if err := u.writeState(RunHook, Done, &hi, nil); err != nil {
+		return err
+	}
+	if ranHook {
+		logger.Infof("ran %q hook", hookName)
+		u.notifyHookCompleted(hookName, hctx)
+	} else {
+		logger.Infof("skipped %q hook (missing)", hookName)
+	}
+	return u.commitHook(hi)
+}
 
 // commitHook ensures that state is consistent with the supplied hook, and
 // that the fact of the hook's completion is persisted.
@@ -389,35 +544,69 @@ func (u *Uniter) currentHookName() string {
 	return hookName
 }
 
-// restoreRelations reconciles the supplied relation state dirs with the
+// getJoinedRelations finds out what relations the unit is *really* part of,
+// working around the fact that pre-1.19 (1.18.1?) unit agents don't write a
+// state dir for a relation until a remote unit joins.
+func (u *Uniter) getJoinedRelations() (map[int]*uniter.Relation, error) {
+	var joinedRelationTags []string
+	for {
+		var err error
+		joinedRelationTags, err = u.unit.JoinedRelations()
+		if err == nil {
+			break
+		}
+		if params.IsCodeNotImplemented(err) {
+			logger.Infof("waiting for state server to be upgraded")
+			select {
+			case <-u.tomb.Dying():
+				return nil, tomb.ErrDying
+			case <-time.After(15 * time.Second):
+				continue
+			}
+		}
+		return nil, err
+	}
+	joinedRelations := make(map[int]*uniter.Relation)
+	for _, tag := range joinedRelationTags {
+		relation, err := u.st.Relation(tag)
+		if err != nil {
+			return nil, err
+		}
+		joinedRelations[relation.Id()] = relation
+	}
+	return joinedRelations, nil
+}
+
+// restoreRelations reconciles the local relation state dirs with the
 // remote state of the corresponding relations.
 func (u *Uniter) restoreRelations() error {
-	// TODO(dimitern): Get these from state, not from disk.
-	dirs, err := relation.ReadAllStateDirs(u.relationsDir)
+	joinedRelations, err := u.getJoinedRelations()
 	if err != nil {
 		return err
 	}
-	for id, dir := range dirs {
-		remove := false
-		rel, err := u.st.RelationById(id)
-		if params.IsCodeNotFoundOrCodeUnauthorized(err) {
-			remove = true
-		} else if err != nil {
-			return err
-		}
-		err = u.addRelation(rel, dir)
-		if params.IsCodeCannotEnterScope(err) {
-			remove = true
-		} else if err != nil {
-			return err
-		}
-		if remove {
-			// If the previous execution was interrupted in the process of
-			// joining or departing the relation, the directory will be empty
-			// and the state is sane.
-			if err := dir.Remove(); err != nil {
-				return fmt.Errorf("cannot synchronize relation state: %v", err)
+	knownDirs, err := relation.ReadAllStateDirs(u.relationsDir)
+	if err != nil {
+		return err
+	}
+	for id, dir := range knownDirs {
+		if rel, ok := joinedRelations[id]; ok {
+			if err := u.addRelation(rel, dir); err != nil {
+				return err
 			}
+		} else if err := dir.Remove(); err != nil {
+			return err
+		}
+	}
+	for id, rel := range joinedRelations {
+		if _, ok := knownDirs[id]; ok {
+			continue
+		}
+		dir, err := relation.ReadStateDir(u.relationsDir, id)
+		if err != nil {
+			return err
+		}
+		if err := u.addRelation(rel, dir); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -455,8 +644,8 @@ func (u *Uniter) updateRelations(ids []int) (added []*Relationer, err error) {
 		if rel.Life() != params.Alive {
 			continue
 		}
-		// Make sure we ignore relations not implemented by the unit's charm
-		ch, err := corecharm.ReadDir(u.charm.Path())
+		// Make sure we ignore relations not implemented by the unit's charm.
+		ch, err := corecharm.ReadDir(u.charmPath)
 		if err != nil {
 			return nil, err
 		}
@@ -540,6 +729,16 @@ func (u *Uniter) addRelation(rel *uniter.Relation, dir *relation.StateDir) error
 			return nil
 		}
 	}
+}
+
+// fixDeployer replaces the uniter's git-based charm deployer with a manifest-
+// based one, if necessary. It should not be called unless the existing charm
+// deployment is known to be in a stable state.
+func (u *Uniter) fixDeployer() error {
+	if err := charm.FixDeployer(&u.deployer); err != nil {
+		return fmt.Errorf("cannot convert git deployment to manifest deployment: %v", err)
+	}
+	return nil
 }
 
 // updatePackageProxy updates the package proxy settings from the

@@ -16,6 +16,28 @@ import (
 	"launchpad.net/juju-core/version"
 )
 
+// Entity identifies a single entity.
+type Entity struct {
+	Tag string
+}
+
+// Entities identifies multiple entities.
+type Entities struct {
+	Entities []Entity
+}
+
+// EntityPasswords holds the parameters for making a SetPasswords call.
+type EntityPasswords struct {
+	Changes []EntityPassword
+}
+
+// EntityPassword specifies a password change for the entity
+// with the given tag.
+type EntityPassword struct {
+	Tag      string
+	Password string
+}
+
 // ErrorResults holds the results of calling a bulk operation which
 // returns no data, only an error result. The order and
 // number of elements matches the operations specified in the request.
@@ -28,7 +50,7 @@ type ErrorResults struct {
 // of a bulk operation on a single value.
 func (result ErrorResults) OneError() error {
 	if n := len(result.Results); n != 1 {
-		return fmt.Errorf("expected one result, got %d", n)
+		return fmt.Errorf("expected 1 result, got %d", n)
 	}
 	if err := result.Results[0].Error; err != nil {
 		return err
@@ -70,6 +92,10 @@ type AddMachineParams struct {
 	Constraints constraints.Value
 	Jobs        []MachineJob
 
+	// If Placement is non-nil, it contains a placement directive
+	// that will be used to decide how to instantiate the machine.
+	Placement *instance.Placement
+
 	// If ParentId is non-empty, it specifies the id of the
 	// parent machine within which the new machine will
 	// be created. In that case, ContainerType must also be
@@ -95,7 +121,8 @@ type AddMachineParams struct {
 	Addrs                   []instance.Address
 }
 
-// AddMachines holds the parameters for making the AddMachines call.
+// AddMachines holds the parameters for making the
+// AddMachinesWithPlacement call.
 type AddMachines struct {
 	MachineParams []AddMachineParams
 }
@@ -127,6 +154,10 @@ type ServiceDeploy struct {
 	ConfigYAML    string // Takes precedence over config if both are present.
 	Constraints   constraints.Value
 	ToMachineSpec string
+	// The following fields are supported from 1.17.7 onwards and
+	// ignored before that.
+	IncludeNetworks []string
+	ExcludeNetworks []string
 }
 
 // ServiceUpdate holds the parameters for making the ServiceUpdate call.
@@ -214,6 +245,16 @@ type PublicAddressResults struct {
 	PublicAddress string
 }
 
+// PrivateAddress holds parameters for the PrivateAddress call.
+type PrivateAddress struct {
+	Target string
+}
+
+// PrivateAddressResults holds results of the PrivateAddress call.
+type PrivateAddressResults struct {
+	PrivateAddress string
+}
+
 // Resolved holds parameters for the Resolved call.
 type Resolved struct {
 	UnitName string
@@ -294,6 +335,22 @@ type CharmInfo struct {
 	CharmURL string
 }
 
+// ResolveCharms stores charm references for a ResolveCharms call.
+type ResolveCharms struct {
+	References []charm.Reference
+}
+
+// ResolveCharmResult holds the result of resolving a charm reference to a URL, or any error that occurred.
+type ResolveCharmResult struct {
+	URL   *charm.URL `json:",omitempty"`
+	Error string     `json:",omitempty"`
+}
+
+// ResolveCharmResults holds results of the ResolveCharms call.
+type ResolveCharmResults struct {
+	URLs []ResolveCharmResult
+}
+
 // AllWatcherId holds the id of an AllWatcher.
 type AllWatcherId struct {
 	AllWatcherId string
@@ -323,6 +380,12 @@ type ListSSHKeys struct {
 type ModifyUserSSHKeys struct {
 	User string
 	Keys []string
+}
+
+// ModifyUser stores the parameters used for a UserManager.Add|Remove call
+type ModifyUser struct {
+	Tag      string
+	Password string
 }
 
 // MarshalJSON implements json.Marshaler.
@@ -421,14 +484,41 @@ type EntityId struct {
 	Id   interface{}
 }
 
+// StateServingInfo holds information needed by a state
+// server.
+type StateServingInfo struct {
+	APIPort    int
+	StatePort  int
+	Cert       string
+	PrivateKey string
+	// this will be passed as the KeyFile argument to MongoDB
+	SharedSecret   string
+	SystemIdentity string
+}
+
+// IsMasterResult holds the result of an IsMaster API call.
+type IsMasterResult struct {
+	// Master reports whether the connected agent
+	// lives on the same instance as the mongo replica
+	// set master.
+	Master bool
+}
+
 // MachineInfo holds the information about a Machine
 // that is watched by StateWatcher.
 type MachineInfo struct {
-	Id         string `bson:"_id"`
-	InstanceId string
-	Status     Status
-	StatusInfo string
-	StatusData StatusData
+	Id                       string `bson:"_id"`
+	InstanceId               string
+	Status                   Status
+	StatusInfo               string
+	StatusData               StatusData
+	Life                     Life
+	Series                   string
+	SupportedContainers      []instance.ContainerType
+	SupportedContainersKnown bool
+	HardwareCharacteristics  *instance.HardwareCharacteristics `json:",omitempty"`
+	Jobs                     []MachineJob
+	Addresses                []instance.Address
 }
 
 func (i *MachineInfo) EntityId() EntityId {
@@ -507,6 +597,18 @@ func (i *AnnotationInfo) EntityId() EntityId {
 	}
 }
 
+// ContainerManagerConfigParams contains the parameters for the
+// ContainerManagerConfig provisioner API call.
+type ContainerManagerConfigParams struct {
+	Type instance.ContainerType
+}
+
+// ContainerManagerConfig contains information from the environment config
+// that is needed for configuring the container manager.
+type ContainerManagerConfig struct {
+	ManagerConfig map[string]string
+}
+
 // ContainerConfig contains information from the environment config that is
 // needed for container cloud-init.
 type ContainerConfig struct {
@@ -550,6 +652,12 @@ type EnvironmentSet struct {
 	Config map[string]interface{}
 }
 
+// EnvironmentUnset contains the arguments for EnvironmentUnset client API
+// call.
+type EnvironmentUnset struct {
+	Keys []string
+}
+
 // SetEnvironAgentVersion contains the arguments for
 // SetEnvironAgentVersion client API call.
 type SetEnvironAgentVersion struct {
@@ -571,4 +679,39 @@ type StatusParams struct {
 // SetRsyslogCertParams holds parameters for the SetRsyslogCert call.
 type SetRsyslogCertParams struct {
 	CACert []byte
+}
+
+// DistributionGroupResult contains the result of
+// the DistributionGroup provisioner API call.
+type DistributionGroupResult struct {
+	Error  *Error
+	Result []instance.Id
+}
+
+// DistributionGroupResults is the bulk form of
+// DistributionGroupResult.
+type DistributionGroupResults struct {
+	Results []DistributionGroupResult
+}
+
+// APIHostPortsResult holds the result of an APIHostPorts
+// call. Each element in the top level slice holds
+// the addresses for one API server.
+type APIHostPortsResult struct {
+	Servers [][]instance.HostPort
+}
+
+// LoginResult holds the result of a Login call.
+type LoginResult struct {
+	Servers [][]instance.HostPort
+}
+
+// EnsureAvailability contains arguments for
+// the EnsureAvailability client API call.
+type EnsureAvailability struct {
+	NumStateServers int
+	Constraints     constraints.Value
+	// Series is the series to associate with new state server machines.
+	// If this is empty, then the environment's default series is used.
+	Series string
 }

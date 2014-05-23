@@ -11,16 +11,19 @@ import (
 	"launchpad.net/gnuflag"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/configstore"
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/tools"
+	"launchpad.net/juju-core/juju/arch"
+	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
 )
 
 // ValidateToolsMetadataCommand
 type ValidateToolsMetadataCommand struct {
-	cmd.EnvCommandBase
+	envcmd.EnvCommandBase
 	out          cmd.Output
 	providerType string
 	metadataDir  string
@@ -100,7 +103,6 @@ func (c *ValidateToolsMetadataCommand) Info() *cmd.Info {
 }
 
 func (c *ValidateToolsMetadataCommand) SetFlags(f *gnuflag.FlagSet) {
-	c.EnvCommandBase.SetFlags(f)
 	c.out.AddFlags(f, "smart", cmd.DefaultFormatters)
 	f.StringVar(&c.providerType, "p", "", "the provider type eg ec2, openstack")
 	f.StringVar(&c.metadataDir, "d", "", "directory where metadata files are found")
@@ -132,7 +134,7 @@ func (c *ValidateToolsMetadataCommand) Init(args []string) error {
 			return err
 		}
 	}
-	return c.EnvCommandBase.Init(args)
+	return cmd.CheckEmpty(args)
 }
 
 func (c *ValidateToolsMetadataCommand) Run(context *cmd.Context) error {
@@ -162,7 +164,7 @@ func (c *ValidateToolsMetadataCommand) Run(context *cmd.Context) error {
 				return err
 			}
 			params = &simplestreams.MetadataLookupParams{
-				Architectures: []string{"amd64", "arm", "i386", "arm64", "ppc64"},
+				Architectures: arch.AllSupportedArches,
 			}
 		}
 	} else {
@@ -198,7 +200,7 @@ func (c *ValidateToolsMetadataCommand) Run(context *cmd.Context) error {
 			return err
 		}
 		params.Sources = []simplestreams.DataSource{simplestreams.NewURLDataSource(
-			"local metadata directory", toolsURL, simplestreams.VerifySSLHostnames),
+			"local metadata directory", toolsURL, utils.VerifySSLHostnames),
 		}
 	}
 

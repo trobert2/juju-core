@@ -5,39 +5,39 @@ package manual
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"net"
 	"path"
 	"strings"
 	"sync"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 
+	"launchpad.net/juju-core/agent"
+	"launchpad.net/juju-core/agent/mongo"
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs"
-	"launchpad.net/juju-core/environs/cloudinit"
 	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/environs/httpstorage"
 	"launchpad.net/juju-core/environs/manual"
+	"launchpad.net/juju-core/environs/network"
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/sshstorage"
 	"launchpad.net/juju-core/environs/storage"
 	envtools "launchpad.net/juju-core/environs/tools"
 	"launchpad.net/juju-core/instance"
+	"launchpad.net/juju-core/juju/arch"
 	"launchpad.net/juju-core/provider/common"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
-	"launchpad.net/juju-core/tools"
+	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/utils/ssh"
 	"launchpad.net/juju-core/worker/localstorage"
 	"launchpad.net/juju-core/worker/terminationworker"
 )
 
 const (
-	// TODO(axw) make this configurable?
-	dataDir = "/var/lib/juju"
-
 	// storageSubdir is the subdirectory of
 	// dataDir in which storage will be located.
 	storageSubdir = "storage"
@@ -51,6 +51,8 @@ const (
 var logger = loggo.GetLogger("juju.provider.manual")
 
 type manualEnviron struct {
+	common.SupportsUnitPlacementPolicy
+
 	cfg                 *environConfig
 	cfgmutex            sync.Mutex
 	storage             storage.Storage
@@ -63,11 +65,11 @@ var _ envtools.SupportsCustomSources = (*manualEnviron)(nil)
 var errNoStartInstance = errors.New("manual provider cannot start instances")
 var errNoStopInstance = errors.New("manual provider cannot stop instances")
 
-func (*manualEnviron) StartInstance(constraints.Value, tools.List, *cloudinit.MachineConfig) (instance.Instance, *instance.HardwareCharacteristics, error) {
-	return nil, nil, errNoStartInstance
+func (*manualEnviron) StartInstance(args environs.StartInstanceParams) (instance.Instance, *instance.HardwareCharacteristics, []network.Info, error) {
+	return nil, nil, nil, errNoStartInstance
 }
 
-func (*manualEnviron) StopInstances([]instance.Instance) error {
+func (*manualEnviron) StopInstances(...instance.Id) error {
 	return errNoStopInstance
 }
 
@@ -90,7 +92,17 @@ func (e *manualEnviron) Name() string {
 	return e.envConfig().Name()
 }
 
-func (e *manualEnviron) Bootstrap(ctx environs.BootstrapContext, cons constraints.Value) error {
+// SupportedArchitectures is specified on the EnvironCapability interface.
+func (e *manualEnviron) SupportedArchitectures() ([]string, error) {
+	return arch.AllSupportedArches, nil
+}
+
+// SupportNetworks is specified on the EnvironCapability interface.
+func (e *manualEnviron) SupportNetworks() bool {
+	return false
+}
+
+func (e *manualEnviron) Bootstrap(ctx environs.BootstrapContext, args environs.BootstrapParams) error {
 	// Set "use-sshstorage" to false, so agents know not to use sshstorage.
 	cfg, err := e.Config().Apply(map[string]interface{}{"use-sshstorage": false})
 	if err != nil {
@@ -100,19 +112,20 @@ func (e *manualEnviron) Bootstrap(ctx environs.BootstrapContext, cons constraint
 		return err
 	}
 	envConfig := e.envConfig()
+	// TODO(axw) consider how we can use placement to override bootstrap-host.
 	host := envConfig.bootstrapHost()
 	hc, series, err := manual.DetectSeriesAndHardwareCharacteristics(host)
 	if err != nil {
 		return err
 	}
-	selectedTools, err := common.EnsureBootstrapTools(e, series, hc.Arch)
+	selectedTools, err := common.EnsureBootstrapTools(ctx, e, series, hc.Arch)
 	if err != nil {
 		return err
 	}
 	return manual.Bootstrap(manual.BootstrapArgs{
 		Context:                 ctx,
 		Host:                    host,
-		DataDir:                 dataDir,
+		DataDir:                 agent.DefaultDataDir,
 		Environ:                 e,
 		PossibleTools:           selectedTools,
 		Series:                  series,
@@ -141,7 +154,7 @@ func (e *manualEnviron) SetConfig(cfg *config.Config) error {
 		var stor storage.Storage
 		if envConfig.useSSHStorage() {
 			storageDir := e.StorageDir()
-			storageTmpdir := path.Join(dataDir, storageTmpSubdir)
+			storageTmpdir := path.Join(agent.DefaultDataDir, storageTmpSubdir)
 			stor, err = newSSHStorage("ubuntu@"+e.cfg.bootstrapHost(), storageDir, storageTmpdir)
 			if err != nil {
 				return fmt.Errorf("initialising SSH storage failed: %v", err)
@@ -187,7 +200,15 @@ func (e *manualEnviron) Instances(ids []instance.Id) (instances []instance.Insta
 	return instances, err
 }
 
+// AllocateAddress requests a new address to be allocated for the
+// given instance on the given network. This is not supported on the
+// manual provider.
+func (*manualEnviron) AllocateAddress(_ instance.Id, _ network.Id) (instance.Address, error) {
+	return instance.Address{}, errors.NotSupportedf("AllocateAddress")
+}
+
 var newSSHStorage = func(sshHost, storageDir, storageTmpdir string) (storage.Storage, error) {
+	logger.Debugf("using ssh storage at host %q dir %q", sshHost, storageDir)
 	return sshstorage.NewSSHStorage(sshstorage.NewSSHStorageParams{
 		Host:       sshHost,
 		StorageDir: storageDir,
@@ -210,18 +231,35 @@ func (e *manualEnviron) Storage() storage.Storage {
 	return e.storage
 }
 
-var runSSHCommand = func(host string, command []string) (stderr string, err error) {
+var runSSHCommand = func(host string, command []string, stdin string) (stderr string, err error) {
 	cmd := ssh.Command(host, command, nil)
 	var stderrBuf bytes.Buffer
+	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Stderr = &stderrBuf
 	err = cmd.Run()
 	return stderrBuf.String(), err
 }
 
 func (e *manualEnviron) Destroy() error {
+	script := `
+set -x
+pkill -%d jujud && exit
+stop %s
+rm -f /etc/init/juju*
+rm -f /etc/rsyslog.d/*juju*
+rm -fr %s %s
+exit 0
+`
+	script = fmt.Sprintf(
+		script,
+		terminationworker.TerminationSignal,
+		mongo.ServiceName(""),
+		utils.ShQuote(agent.DefaultDataDir),
+		utils.ShQuote(agent.DefaultLogDir),
+	)
 	stderr, err := runSSHCommand(
 		"ubuntu@"+e.envConfig().bootstrapHost(),
-		[]string{"sudo", "pkill", fmt.Sprintf("-%d", terminationworker.TerminationSignal), "jujud"},
+		[]string{"sudo", "/bin/bash"}, script,
 	)
 	if err != nil {
 		if stderr := strings.TrimSpace(stderr); len(stderr) > 0 {
@@ -231,8 +269,21 @@ func (e *manualEnviron) Destroy() error {
 	return err
 }
 
-func (*manualEnviron) PrecheckInstance(series string, cons constraints.Value) error {
+func (*manualEnviron) PrecheckInstance(series string, _ constraints.Value, placement string) error {
 	return errors.New(`use "juju add-machine ssh:[user@]<host>" to provision machines`)
+}
+
+var unsupportedConstraints = []string{
+	constraints.CpuPower,
+	constraints.InstanceType,
+	constraints.Tags,
+}
+
+// ConstraintsValidator is defined on the Environs interface.
+func (e *manualEnviron) ConstraintsValidator() (constraints.Validator, error) {
+	validator := constraints.NewValidator()
+	validator.RegisterUnsupported(unsupportedConstraints)
+	return validator, nil
 }
 
 func (e *manualEnviron) OpenPorts(ports []instance.Port) error {
@@ -256,7 +307,7 @@ func (e *manualEnviron) StorageAddr() string {
 }
 
 func (e *manualEnviron) StorageDir() string {
-	return path.Join(dataDir, storageSubdir)
+	return path.Join(agent.DefaultDataDir, storageSubdir)
 }
 
 func (e *manualEnviron) SharedStorageAddr() string {
@@ -267,18 +318,18 @@ func (e *manualEnviron) SharedStorageDir() string {
 	return ""
 }
 
-func (e *manualEnviron) StorageCACert() []byte {
-	if bytes, ok := e.envConfig().CACert(); ok {
-		return bytes
+func (e *manualEnviron) StorageCACert() string {
+	if cert, ok := e.envConfig().CACert(); ok {
+		return cert
 	}
-	return nil
+	return ""
 }
 
-func (e *manualEnviron) StorageCAKey() []byte {
-	if bytes, ok := e.envConfig().CAPrivateKey(); ok {
-		return bytes
+func (e *manualEnviron) StorageCAKey() string {
+	if key, ok := e.envConfig().CAPrivateKey(); ok {
+		return key
 	}
-	return nil
+	return ""
 }
 
 func (e *manualEnviron) StorageHostnames() []string {

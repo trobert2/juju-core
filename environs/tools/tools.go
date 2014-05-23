@@ -6,13 +6,15 @@ package tools
 import (
 	"fmt"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/simplestreams"
-	"launchpad.net/juju-core/errors"
+	"launchpad.net/juju-core/juju/arch"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/version"
+	"launchpad.net/juju-core/version/ubuntu"
 )
 
 var logger = loggo.GetLogger("juju.environs.tools")
@@ -42,7 +44,7 @@ func makeToolsConstraint(cloudSpec simplestreams.CloudSpec, majorVersion, minorV
 		toolsConstraint.Arches = []string{filter.Arch}
 	} else {
 		logger.Debugf("no architecture specified when finding tools, looking for any")
-		toolsConstraint.Arches = []string{"amd64", "i386", "arm", "arm64", "ppc64"}
+		toolsConstraint.Arches = arch.AllSupportedArches
 	}
 	// The old tools search allowed finding tools without needing to specify a series.
 	// The simplestreams metadata is keyed off series, so series must be specified in
@@ -53,7 +55,7 @@ func makeToolsConstraint(cloudSpec simplestreams.CloudSpec, majorVersion, minorV
 		seriesToSearch = []string{filter.Series}
 	} else {
 		logger.Debugf("no series specified when finding tools, looking for any")
-		seriesToSearch = simplestreams.SupportedSeries()
+		seriesToSearch = ubuntu.SupportedSeries()
 	}
 	toolsConstraint.Series = seriesToSearch
 	return toolsConstraint, nil
@@ -119,7 +121,7 @@ func FindToolsForCloud(sources []simplestreams.DataSource, cloudSpec simplestrea
 	}
 	toolsMetadata, _, err := Fetch(sources, simplestreams.DefaultIndexPath, toolsConstraint, false)
 	if err != nil {
-		if errors.IsNotFoundError(err) {
+		if errors.IsNotFound(err) {
 			err = ErrNoTools
 		}
 		return nil, err
@@ -232,7 +234,7 @@ func FindExactTools(cloudInst environs.ConfigGetter,
 	return availableTools[0], nil
 }
 
-// CheckToolsSeries verifies that all the given possible tools are for the
+// checkToolsSeries verifies that all the given possible tools are for the
 // given OS series.
 func checkToolsSeries(toolsList coretools.List, series string) error {
 	toolsSeries := toolsList.AllSeries()
@@ -255,6 +257,6 @@ func isToolsError(err error) bool {
 
 func convertToolsError(err *error) {
 	if isToolsError(*err) {
-		*err = errors.NewNotFoundError(*err, "")
+		*err = errors.NewNotFound(*err, "")
 	}
 }

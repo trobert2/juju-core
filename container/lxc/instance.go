@@ -6,9 +6,9 @@ package lxc
 import (
 	"fmt"
 
+	"github.com/juju/errors"
 	"launchpad.net/golxc"
 
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 )
 
@@ -36,7 +36,7 @@ func (*lxcInstance) Refresh() error {
 }
 
 func (lxc *lxcInstance) Addresses() ([]instance.Address, error) {
-	return nil, errors.NewNotImplementedError("lxcInstance.Addresses")
+	return nil, errors.NotImplementedf("lxcInstance.Addresses")
 }
 
 // DNSName implements instance.Instance.DNSName.

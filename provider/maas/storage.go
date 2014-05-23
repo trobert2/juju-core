@@ -14,10 +14,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/juju/errors"
 	"launchpad.net/gomaasapi"
 
 	"launchpad.net/juju-core/environs/storage"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/utils"
 )
 
@@ -68,11 +68,12 @@ func (stor *maasStorage) addressFileObject(name string) gomaasapi.MAASObject {
 	return stor.maasClientUnlocked.GetSubObject(name)
 }
 
-// retrieveFileObject retrieves the information of the named file, including
-// its download URL and its contents, as a MAASObject.
+// retrieveFileObject retrieves the information of the named file,
+// including its download URL and its contents, as a MAASObject.
 //
 // This may return many different errors, but specifically, it returns
-// an error that satisfies errors.IsNotFoundError if the file did not exist.
+// an error that satisfies errors.IsNotFound if the file did not
+// exist.
 //
 // The function takes out a lock on the storage object.
 func (stor *maasStorage) retrieveFileObject(name string) (gomaasapi.MAASObject, error) {
@@ -178,7 +179,7 @@ func (stor *maasStorage) URL(name string) (string, error) {
 	return fullURL.String(), nil
 }
 
-// ConsistencyStrategy is specified in the StorageReader interface.
+// DefaultConsistencyStrategy is specified in the StorageReader interface.
 func (stor *maasStorage) DefaultConsistencyStrategy() utils.AttemptStrategy {
 	// This storage backend has immediate consistency, so there's no
 	// need to wait.  One attempt should do.

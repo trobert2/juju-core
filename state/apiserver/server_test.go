@@ -8,6 +8,7 @@ import (
 	stdtesting "testing"
 	"time"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	jujutesting "launchpad.net/juju-core/juju/testing"
@@ -17,7 +18,6 @@ import (
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/apiserver"
 	coretesting "launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/utils"
 )
 
@@ -36,7 +36,10 @@ var _ = gc.Suite(&serverSuite{})
 func (s *serverSuite) TestStop(c *gc.C) {
 	// Start our own instance of the server so we have
 	// a handle on it to stop it.
-	srv, err := apiserver.NewServer(s.State, "localhost:0", []byte(coretesting.ServerCert), []byte(coretesting.ServerKey), "")
+	srv, err := apiserver.NewServer(
+		s.State, "localhost:0",
+		[]byte(coretesting.ServerCert), []byte(coretesting.ServerKey),
+		"", "")
 	c.Assert(err, gc.IsNil)
 	defer srv.Stop()
 
@@ -56,7 +59,7 @@ func (s *serverSuite) TestStop(c *gc.C) {
 		Password: password,
 		Nonce:    "fake_nonce",
 		Addrs:    []string{srv.Addr()},
-		CACert:   []byte(coretesting.CACert),
+		CACert:   coretesting.CACert,
 	}
 	st, err := api.Open(apiInfo, fastDialOpts)
 	c.Assert(err, gc.IsNil)

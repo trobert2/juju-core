@@ -8,6 +8,7 @@ import (
 	"launchpad.net/gnuflag"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd/envcmd"
 	"launchpad.net/juju-core/environs/filestorage"
 	"launchpad.net/juju-core/environs/sync"
 	"launchpad.net/juju-core/version"
@@ -18,7 +19,7 @@ var syncTools = sync.SyncTools
 // SyncToolsCommand copies all the tools from the us-east-1 bucket to the local
 // bucket.
 type SyncToolsCommand struct {
-	cmd.EnvCommandBase
+	envcmd.EnvCommandBase
 	allVersions  bool
 	versionStr   string
 	majorVersion int
@@ -51,7 +52,6 @@ the local cloud.
 }
 
 func (c *SyncToolsCommand) SetFlags(f *gnuflag.FlagSet) {
-	c.EnvCommandBase.SetFlags(f)
 	f.BoolVar(&c.allVersions, "all", false, "copy all versions, not just the latest")
 	f.StringVar(&c.versionStr, "version", "", "copy a specific major[.minor] version")
 	f.BoolVar(&c.dryRun, "dry-run", false, "don't copy, just print what would be copied")

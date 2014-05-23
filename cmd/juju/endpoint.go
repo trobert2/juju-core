@@ -7,14 +7,15 @@ import (
 	"launchpad.net/gnuflag"
 
 	"launchpad.net/juju-core/cmd"
-	"launchpad.net/juju-core/environs"
-	"launchpad.net/juju-core/environs/configstore"
+	"launchpad.net/juju-core/cmd/envcmd"
+	"launchpad.net/juju-core/juju"
 )
 
 // EndpointCommand returns the API endpoints
 type EndpointCommand struct {
-	cmd.EnvCommandBase
-	out cmd.Output
+	envcmd.EnvCommandBase
+	out     cmd.Output
+	refresh bool
 }
 
 const endpointDoc = `
@@ -36,28 +37,16 @@ func (c *EndpointCommand) Info() *cmd.Info {
 	}
 }
 
-func (c *EndpointCommand) Init(args []string) error {
-	return cmd.CheckEmpty(args)
-}
-
 func (c *EndpointCommand) SetFlags(f *gnuflag.FlagSet) {
-	c.EnvCommandBase.SetFlags(f)
 	c.out.AddFlags(f, "smart", cmd.DefaultFormatters)
+	f.BoolVar(&c.refresh, "refresh", false, "connect to the API to ensure up-to-date endpoint locations")
 }
 
 // Print out the addresses of the API server endpoints.
 func (c *EndpointCommand) Run(ctx *cmd.Context) error {
-	store, err := configstore.Default()
+	apiendpoint, err := juju.APIEndpointForEnv(c.EnvName, c.refresh)
 	if err != nil {
 		return err
 	}
-	environ, err := environs.NewFromName(c.EnvName, store)
-	if err != nil {
-		return err
-	}
-	_, api_info, err := environ.StateInfo()
-	if err != nil {
-		return err
-	}
-	return c.out.Write(ctx, api_info.Addrs)
+	return c.out.Write(ctx, apiendpoint.Addresses)
 }

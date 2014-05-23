@@ -9,15 +9,15 @@ import (
 	"path/filepath"
 
 	"github.com/juju/loggo"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/upgrades"
 )
 
 type ensureLockDirSuite struct {
-	testing.FakeHomeSuite
+	testing.FakeJujuHomeSuite
 	bin     string
 	home    string
 	datadir string
@@ -34,7 +34,7 @@ echo $@ | tee $0.args
 `
 
 func (s *ensureLockDirSuite) SetUpTest(c *gc.C) {
-	s.FakeHomeSuite.SetUpTest(c)
+	s.FakeJujuHomeSuite.SetUpTest(c)
 
 	s.bin = c.MkDir()
 	s.PatchEnvPathPrepend(s.bin)

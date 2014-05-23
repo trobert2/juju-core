@@ -56,6 +56,7 @@ var optionTypeCheckers = map[string]schema.Checker{
 	"int":     schema.Int(),
 	"float":   schema.Float(),
 	"boolean": schema.Bool(),
+	"password": schema.String(),
 }
 
 // parse returns an appropriately-typed value for the supplied string, or
@@ -71,6 +72,8 @@ func (option Option) parse(name, str string) (_ interface{}, err error) {
 		return strconv.ParseFloat(str, 64)
 	case "boolean":
 		return strconv.ParseBool(str)
+	case "password":
+		return str, nil
 	}
 	panic(fmt.Errorf("option %q has unknown type %q", name, option.Type))
 }
@@ -101,7 +104,7 @@ func ReadConfig(r io.Reader) (*Config, error) {
 	}
 	for name, option := range config.Options {
 		switch option.Type {
-		case "string", "int", "float", "boolean":
+		case "string", "int", "float", "boolean", "password":
 		case "":
 			// Missing type is valid in python.
 			option.Type = "string"

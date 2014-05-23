@@ -19,6 +19,9 @@ import (
 
 // Options is a client-implementation independent SSH options set.
 type Options struct {
+	// proxyCommand specifies the command to
+	// execute to proxy SSH traffic through.
+	proxyCommand []string
 	// ssh server port; zero means use the default (22)
 	port int
 	// no PTY forced by default
@@ -29,6 +32,11 @@ type Options struct {
 	// to use when attempting to login. A client implementaton may attempt
 	// with additional identities, but must give preference to these
 	identities []string
+}
+
+// SetProxyCommand sets a command to execute to proxy traffic through.
+func (o *Options) SetProxyCommand(command ...string) {
+	o.proxyCommand = append([]string{}, command...)
 }
 
 // SetPort sets the SSH server port to connect to.
@@ -73,7 +81,7 @@ type Client interface {
 	// Paths are specified in the scp format, [[user@]host:]path. If
 	// any extra arguments are specified in extraArgs, they are passed
 	// verbatim.
-	Copy(targets, extraArgs []string, options *Options) error
+	Copy(args []string, options *Options) error
 }
 
 // Cmd represents a command to be (or being) executed
@@ -228,7 +236,7 @@ func Command(host string, command []string, options *Options) *Cmd {
 }
 
 // Copy is a short-cut for DefaultClient.Copy.
-func Copy(targets, extraArgs []string, options *Options) error {
+func Copy(args []string, options *Options) error {
 	logger.Debugf("using %s ssh client", chosenClient)
-	return DefaultClient.Copy(targets, extraArgs, options)
+	return DefaultClient.Copy(args, options)
 }

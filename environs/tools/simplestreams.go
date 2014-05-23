@@ -13,15 +13,18 @@ import (
 	"hash"
 	"io"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/juju/errors"
+
 	"launchpad.net/juju-core/environs/simplestreams"
 	"launchpad.net/juju-core/environs/storage"
-	"launchpad.net/juju-core/errors"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils/set"
 	"launchpad.net/juju-core/version"
+	"launchpad.net/juju-core/version/ubuntu"
 )
 
 func init() {
@@ -116,7 +119,7 @@ func NewGeneralToolsConstraint(majorVersion, minorVersion int, released bool, pa
 func (tc *ToolsConstraint) Ids() ([]string, error) {
 	var allIds []string
 	for _, series := range tc.Series {
-		version, err := simplestreams.SeriesVersion(series)
+		version, err := ubuntu.SeriesVersion(series)
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +159,7 @@ func (t *ToolsMetadata) binary() version.Binary {
 }
 
 func (t *ToolsMetadata) productId() (string, error) {
-	seriesVersion, err := simplestreams.SeriesVersion(t.Release)
+	seriesVersion, err := ubuntu.SeriesVersion(t.Release)
 	if err != nil {
 		return "", err
 	}
@@ -186,8 +189,23 @@ func Fetch(
 	for i, md := range items {
 		metadata[i] = md.(*ToolsMetadata)
 	}
+	// Sorting the metadata is not strictly necessary, but it ensures consistent ordering for
+	// all compilers, and it just makes it easier to look at the data.
+	Sort(metadata)
 	return metadata, resolveInfo, nil
 }
+
+// Sort sorts a slice of ToolsMetadata in ascending order of their version
+// in order to ensure the results of Fetch are ordered deterministically.
+func Sort(metadata []*ToolsMetadata) {
+	sort.Sort(byVersion(metadata))
+}
+
+type byVersion []*ToolsMetadata
+
+func (b byVersion) Len() int           { return len(b) }
+func (b byVersion) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
+func (b byVersion) Less(i, j int) bool { return b[i].binary().String() < b[j].binary().String() }
 
 // appendMatchingTools updates matchingTools with tools metadata records from tools which belong to the
 // specified series. If a tools record already exists in matchingTools, it is not overwritten.
@@ -308,6 +326,7 @@ func MergeMetadata(tmlist1, tmlist2 []*ToolsMetadata) ([]*ToolsMetadata, error) 
 	for _, metadata := range merged {
 		list = append(list, metadata)
 	}
+	Sort(list)
 	return list, nil
 }
 
@@ -320,7 +339,7 @@ func ReadMetadata(store storage.StorageReader) ([]*ToolsMetadata, error) {
 	}
 	metadata, _, err := Fetch(
 		[]simplestreams.DataSource{dataSource}, simplestreams.DefaultIndexPath, toolsConstraint, false)
-	if err != nil && !errors.IsNotFoundError(err) {
+	if err != nil && !errors.IsNotFound(err) {
 		return nil, err
 	}
 	return metadata, nil

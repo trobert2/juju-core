@@ -16,6 +16,10 @@ type State struct {
 	caller base.Caller
 }
 
+func (st *State) call(method string, params, result interface{}) error {
+	return st.caller.Call("Logger", "", method, params, result)
+}
+
 // NewState returns a version of the state that provides functionality
 // required by the logger worker.
 func NewState(caller base.Caller) *State {
@@ -29,14 +33,14 @@ func (st *State) LoggingConfig(agentTag string) (string, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: agentTag}},
 	}
-	err := st.caller.Call("Logger", "", "LoggingConfig", args, &results)
+	err := st.call("LoggingConfig", args, &results)
 	if err != nil {
 		// TODO: Not directly tested
 		return "", err
 	}
 	if len(results.Results) != 1 {
 		// TODO: Not directly tested
-		return "", fmt.Errorf("expected one result, got %d", len(results.Results))
+		return "", fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if err := result.Error; err != nil {
@@ -52,14 +56,14 @@ func (st *State) WatchLoggingConfig(agentTag string) (watcher.NotifyWatcher, err
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: agentTag}},
 	}
-	err := st.caller.Call("Logger", "", "WatchLoggingConfig", args, &results)
+	err := st.call("WatchLoggingConfig", args, &results)
 	if err != nil {
 		// TODO: Not directly tested
 		return nil, err
 	}
 	if len(results.Results) != 1 {
 		// TODO: Not directly tested
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {

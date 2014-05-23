@@ -16,12 +16,11 @@ import (
 	"launchpad.net/juju-core/state/api"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/tools"
 )
 
 type customDataSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var _ = gc.Suite(&customDataSuite{})
@@ -38,13 +37,13 @@ func makeMachineConfig(c *gc.C) *cloudinit.MachineConfig {
 		CloudInitOutputLog: environs.CloudInitOutputLog,
 		Tools:              &tools.Tools{URL: "file://" + c.MkDir()},
 		StateInfo: &state.Info{
-			CACert:   []byte(testing.CACert),
+			CACert:   testing.CACert,
 			Addrs:    []string{"127.0.0.1:123"},
 			Tag:      names.MachineTag(machineID),
 			Password: "password",
 		},
 		APIInfo: &api.Info{
-			CACert: []byte(testing.CACert),
+			CACert: testing.CACert,
 			Addrs:  []string{"127.0.0.1:123"},
 			Tag:    names.MachineTag(machineID),
 		},
@@ -73,7 +72,7 @@ func (*customDataSuite) TestMakeCustomDataEncodesUserData(c *gc.C) {
 
 	data, err := base64.StdEncoding.DecodeString(encodedData)
 	c.Assert(err, gc.IsNil)
-	reference, err := environs.ComposeUserData(cfg)
+	reference, err := environs.ComposeUserData(cfg, nil)
 	c.Assert(err, gc.IsNil)
 	c.Check(data, gc.DeepEquals, reference)
 }

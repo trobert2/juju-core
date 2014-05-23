@@ -9,12 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/juju/errors"
 	"github.com/juju/loggo"
 	"labix.org/v2/mgo"
+	"labix.org/v2/mgo/bson"
 	"launchpad.net/tomb"
 
 	"launchpad.net/juju-core/environs/config"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/state/api/params"
@@ -141,7 +142,7 @@ type lifecycleWatcher struct {
 	// coll is the collection holding all interesting entities.
 	coll *mgo.Collection
 	// members is used to select the initial set of interesting entities.
-	members D
+	members bson.D
 	// filter is used to exclude events not affecting interesting entities.
 	filter func(interface{}) bool
 	// life holds the most recent known life states of interesting entities.
@@ -157,7 +158,7 @@ func (st *State) WatchServices() StringsWatcher {
 // WatchUnits returns a StringsWatcher that notifies of changes to the
 // lifecycles of units of s.
 func (s *Service) WatchUnits() StringsWatcher {
-	members := D{{"service", s.doc.Name}}
+	members := bson.D{{"service", s.doc.Name}}
 	prefix := s.doc.Name + "/"
 	filter := func(id interface{}) bool {
 		return strings.HasPrefix(id.(string), prefix)
@@ -168,7 +169,7 @@ func (s *Service) WatchUnits() StringsWatcher {
 // WatchRelations returns a StringsWatcher that notifies of changes to the
 // lifecycles of relations involving s.
 func (s *Service) WatchRelations() StringsWatcher {
-	members := D{{"endpoints.servicename", s.doc.Name}}
+	members := bson.D{{"endpoints.servicename", s.doc.Name}}
 	prefix := s.doc.Name + ":"
 	infix := " " + prefix
 	filter := func(key interface{}) bool {
@@ -181,9 +182,9 @@ func (s *Service) WatchRelations() StringsWatcher {
 // WatchEnvironMachines returns a StringsWatcher that notifies of changes to
 // the lifecycles of the machines (but not containers) in the environment.
 func (st *State) WatchEnvironMachines() StringsWatcher {
-	members := D{{"$or", []D{
+	members := bson.D{{"$or", []bson.D{
 		{{"containertype", ""}},
-		{{"containertype", D{{"$exists", false}}}},
+		{{"containertype", bson.D{{"$exists", false}}}},
 	}}}
 	filter := func(id interface{}) bool {
 		return !strings.Contains(id.(string), "/")
@@ -206,7 +207,7 @@ func (m *Machine) WatchAllContainers() StringsWatcher {
 }
 
 func (m *Machine) containersWatcher(isChildRegexp string) StringsWatcher {
-	members := D{{"_id", D{{"$regex", isChildRegexp}}}}
+	members := bson.D{{"_id", bson.D{{"$regex", isChildRegexp}}}}
 	compiled := regexp.MustCompile(isChildRegexp)
 	filter := func(key interface{}) bool {
 		return compiled.MatchString(key.(string))
@@ -214,7 +215,7 @@ func (m *Machine) containersWatcher(isChildRegexp string) StringsWatcher {
 	return newLifecycleWatcher(m.st, m.st.machines, members, filter)
 }
 
-func newLifecycleWatcher(st *State, coll *mgo.Collection, members D, filter func(key interface{}) bool) StringsWatcher {
+func newLifecycleWatcher(st *State, coll *mgo.Collection, members bson.D, filter func(key interface{}) bool) StringsWatcher {
 	w := &lifecycleWatcher{
 		commonWatcher: commonWatcher{st: st},
 		coll:          coll,
@@ -236,7 +237,7 @@ type lifeDoc struct {
 	Life Life
 }
 
-var lifeFields = D{{"_id", 1}, {"life", 1}}
+var lifeFields = bson.D{{"_id", 1}, {"life", 1}}
 
 // Changes returns the event channel for the LifecycleWatcher.
 func (w *lifecycleWatcher) Changes() <-chan []string {
@@ -276,7 +277,7 @@ func (w *lifecycleWatcher) merge(ids *set.Strings, updates map[interface{}]bool)
 	// exist are ignored (we'll hear about them in the next set of updates --
 	// all that's actually happened in that situation is that the watcher
 	// events have lagged a little behind reality).
-	iter := w.coll.Find(D{{"_id", D{{"$in", changed}}}}).Select(lifeFields).Iter()
+	iter := w.coll.Find(bson.D{{"_id", bson.D{{"$in", changed}}}}).Select(lifeFields).Iter()
 	var doc lifeDoc
 	for iter.Next(&doc) {
 		latest[doc.Id] = doc.Life
@@ -351,7 +352,6 @@ func (w *lifecycleWatcher) loop() error {
 			out = nil
 		}
 	}
-	return nil
 }
 
 // minUnitsWatcher notifies about MinUnits changes of the services requiring
@@ -442,21 +442,60 @@ func (w *minUnitsWatcher) loop() (err error) {
 			serviceNames = new(set.Strings)
 		}
 	}
-	return nil
 }
 
 func (w *minUnitsWatcher) Changes() <-chan []string {
 	return w.out
 }
 
-// RelationScopeWatcher observes changes to the set of units
-// in a particular relation scope.
-type RelationScopeWatcher struct {
-	commonWatcher
-	prefix     string
-	ignore     string
-	knownUnits set.Strings
-	out        chan *RelationScopeChange
+// scopeInfo holds a RelationScopeWatcher's last-delivered state, and any
+// known but undelivered changes thereto.
+type scopeInfo struct {
+	base map[string]bool
+	diff map[string]bool
+}
+
+func (info *scopeInfo) add(name string) {
+	if info.base[name] {
+		delete(info.diff, name)
+	} else {
+		info.diff[name] = true
+	}
+}
+
+func (info *scopeInfo) remove(name string) {
+	if info.base[name] {
+		info.diff[name] = false
+	} else {
+		delete(info.diff, name)
+	}
+}
+
+func (info *scopeInfo) commit() {
+	for name, change := range info.diff {
+		if change {
+			info.base[name] = true
+		} else {
+			delete(info.base, name)
+		}
+	}
+	info.diff = map[string]bool{}
+}
+
+func (info *scopeInfo) hasChanges() bool {
+	return len(info.diff) > 0
+}
+
+func (info *scopeInfo) changes() *RelationScopeChange {
+	ch := &RelationScopeChange{}
+	for name, change := range info.diff {
+		if change {
+			ch.Entered = append(ch.Entered, name)
+		} else {
+			ch.Left = append(ch.Left, name)
+		}
+	}
+	return ch
 }
 
 var _ Watcher = (*RelationScopeWatcher)(nil)
@@ -466,6 +505,15 @@ var _ Watcher = (*RelationScopeWatcher)(nil)
 type RelationScopeChange struct {
 	Entered []string
 	Left    []string
+}
+
+// RelationScopeWatcher observes changes to the set of units
+// in a particular relation scope.
+type RelationScopeWatcher struct {
+	commonWatcher
+	prefix string
+	ignore string
+	out    chan *RelationScopeChange
 }
 
 func newRelationScopeWatcher(st *State, scope, ignore string) *RelationScopeWatcher {
@@ -490,58 +538,75 @@ func (w *RelationScopeWatcher) Changes() <-chan *RelationScopeChange {
 	return w.out
 }
 
-func (changes *RelationScopeChange) isEmpty() bool {
-	return len(changes.Entered)+len(changes.Left) == 0
+// initialInfo returns an uncommitted scopeInfo with the current set of units.
+func (w *RelationScopeWatcher) initialInfo() (info *scopeInfo, err error) {
+	docs := []relationScopeDoc{}
+	sel := bson.D{
+		{"_id", bson.D{{"$regex", "^" + w.prefix}}},
+		{"departing", bson.D{{"$ne", true}}},
+	}
+	if err = w.st.relationScopes.Find(sel).All(&docs); err != nil {
+		return nil, err
+	}
+	info = &scopeInfo{
+		base: map[string]bool{},
+		diff: map[string]bool{},
+	}
+	for _, doc := range docs {
+		if name := doc.unitName(); name != w.ignore {
+			info.add(name)
+		}
+	}
+	return info, nil
 }
 
-func (w *RelationScopeWatcher) mergeChange(changes *RelationScopeChange, ch watcher.Change) (err error) {
-	doc := &relationScopeDoc{ch.Id.(string)}
-	if !strings.HasPrefix(doc.Key, w.prefix) {
-		return nil
-	}
-	name := doc.unitName()
-	if name == w.ignore {
-		return nil
-	}
-	if ch.Revno == -1 {
-		if w.knownUnits.Contains(name) {
-			changes.Left = append(changes.Left, name)
-			w.knownUnits.Remove(name)
+// mergeChanges updates info with the contents of the changes in ids. False
+// values are always treated as removed; true values cause the associated
+// document to be read, and whether it's treated as added or removed depends
+// on the value of the document's Departing field.
+func (w *RelationScopeWatcher) mergeChanges(info *scopeInfo, ids map[interface{}]bool) (err error) {
+	existIds := []string{}
+	for id_, exists := range ids {
+		id, ok := id_.(string)
+		if !ok {
+			logger.Warningf("ignoring bad relation scope id: %#v", id_)
+			continue
 		}
-		return nil
+		if exists {
+			existIds = append(existIds, id)
+		} else {
+			doc := &relationScopeDoc{Key: id}
+			info.remove(doc.unitName())
+		}
 	}
-	if !w.knownUnits.Contains(name) {
-		changes.Entered = append(changes.Entered, name)
-		w.knownUnits.Add(name)
+	docs := []relationScopeDoc{}
+	sel := bson.D{{"_id", bson.D{{"$in", existIds}}}}
+	if err := w.st.relationScopes.Find(sel).All(&docs); err != nil {
+		return err
+	}
+	for _, doc := range docs {
+		name := doc.unitName()
+		if doc.Departing {
+			info.remove(name)
+		} else if name != w.ignore {
+			info.add(name)
+		}
 	}
 	return nil
 }
 
-func (w *RelationScopeWatcher) getInitialEvent() (initial *RelationScopeChange, err error) {
-	changes := &RelationScopeChange{}
-	docs := []relationScopeDoc{}
-	sel := D{{"_id", D{{"$regex", "^" + w.prefix}}}}
-	err = w.st.relationScopes.Find(sel).All(&docs)
-	if err != nil {
-		return nil, err
-	}
-	for _, doc := range docs {
-		if name := doc.unitName(); name != w.ignore {
-			changes.Entered = append(changes.Entered, name)
-			w.knownUnits.Add(name)
-		}
-	}
-	return changes, nil
-}
-
 func (w *RelationScopeWatcher) loop() error {
-	ch := make(chan watcher.Change)
-	w.st.watcher.WatchCollection(w.st.relationScopes.Name, ch)
-	defer w.st.watcher.UnwatchCollection(w.st.relationScopes.Name, ch)
-	changes, err := w.getInitialEvent()
+	in := make(chan watcher.Change)
+	filter := func(key interface{}) bool {
+		return strings.HasPrefix(key.(string), w.prefix)
+	}
+	w.st.watcher.WatchCollectionWithFilter(w.st.relationScopes.Name, in, filter)
+	defer w.st.watcher.UnwatchCollection(w.st.relationScopes.Name, in)
+	info, err := w.initialInfo()
 	if err != nil {
 		return err
 	}
+	sent := false
 	out := w.out
 	for {
 		select {
@@ -549,19 +614,25 @@ func (w *RelationScopeWatcher) loop() error {
 			return stateWatcherDeadError(w.st.watcher.Err())
 		case <-w.tomb.Dying():
 			return tomb.ErrDying
-		case c := <-ch:
-			if err := w.mergeChange(changes, c); err != nil {
+		case ch := <-in:
+			latest, ok := collect(ch, in, w.tomb.Dying())
+			if !ok {
+				return tomb.ErrDying
+			}
+			if err := w.mergeChanges(info, latest); err != nil {
 				return err
 			}
-			if !changes.isEmpty() {
+			if info.hasChanges() {
 				out = w.out
+			} else if sent {
+				out = nil
 			}
-		case out <- changes:
-			changes = &RelationScopeChange{}
+		case out <- info.changes():
+			info.commit()
+			sent = true
 			out = nil
 		}
 	}
-	return nil
 }
 
 // relationUnitsWatcher sends notifications of units entering and leaving the
@@ -609,6 +680,15 @@ func emptyRelationUnitsChanges(changes *params.RelationUnitsChange) bool {
 	return len(changes.Changed)+len(changes.Departed) == 0
 }
 
+func setRelationUnitChangeVersion(changes *params.RelationUnitsChange, key string, revno int64) {
+	name := unitNameFromScopeKey(key)
+	settings := params.UnitSettings{Version: revno}
+	if changes.Changed == nil {
+		changes.Changed = map[string]params.UnitSettings{}
+	}
+	changes.Changed[name] = settings
+}
+
 // mergeSettings reads the relation settings node for the unit with the
 // supplied id, and sets a value in the Changed field keyed on the unit's
 // name. It returns the mgo/txn revision number of the settings node.
@@ -617,13 +697,7 @@ func (w *relationUnitsWatcher) mergeSettings(changes *params.RelationUnitsChange
 	if err != nil {
 		return -1, err
 	}
-	name := (&relationScopeDoc{key}).unitName()
-	settings := params.UnitSettings{Version: node.txnRevno}
-	if changes.Changed == nil {
-		changes.Changed = map[string]params.UnitSettings{name: settings}
-	} else {
-		changes.Changed[name] = settings
-	}
+	setRelationUnitChangeVersion(changes, key, node.txnRevno)
 	return node.txnRevno, nil
 }
 
@@ -698,9 +772,11 @@ func (w *relationUnitsWatcher) loop() (err error) {
 				out = nil
 			}
 		case c := <-w.updates:
-			if _, err = w.mergeSettings(&changes, c.Id.(string)); err != nil {
-				return err
+			id, ok := c.Id.(string)
+			if !ok {
+				logger.Warningf("ignoring bad relation scope id: %#v", c.Id)
 			}
+			setRelationUnitChangeVersion(&changes, id, c.Revno)
 			out = w.out
 		case out <- changes:
 			sentInitial = true
@@ -789,7 +865,7 @@ type lifeWatchDoc struct {
 }
 
 // lifeWatchFields specifies the fields of a lifeWatchDoc.
-var lifeWatchFields = D{{"_id", 1}, {"life", 1}, {"txn-revno", 1}}
+var lifeWatchFields = bson.D{{"_id", 1}, {"life", 1}, {"txn-revno", 1}}
 
 // initial returns every member of the tracked set.
 func (w *unitsWatcher) initial() ([]string, error) {
@@ -798,7 +874,7 @@ func (w *unitsWatcher) initial() ([]string, error) {
 		return nil, err
 	}
 	docs := []lifeWatchDoc{}
-	query := D{{"_id", D{{"$in", initial}}}}
+	query := bson.D{{"_id", bson.D{{"$in", initial}}}}
 	if err := w.st.units.Find(query).Select(lifeWatchFields).All(&docs); err != nil {
 		return nil, err
 	}
@@ -914,7 +990,6 @@ func (w *unitsWatcher) loop(coll, id string) error {
 			changes = nil
 		}
 	}
-	return nil
 }
 
 // EnvironConfigWatcher observes changes to the
@@ -978,7 +1053,6 @@ func (w *EnvironConfigWatcher) loop() (err error) {
 			out = nil
 		}
 	}
-	return nil
 }
 
 type settingsWatcher struct {
@@ -1018,7 +1092,7 @@ func (w *settingsWatcher) loop(key string) (err error) {
 	settings, err := readSettings(w.st, key)
 	if err == nil {
 		revno = settings.txnRevno
-	} else if !errors.IsNotFoundError(err) {
+	} else if !errors.IsNotFound(err) {
 		return err
 	}
 	w.st.watcher.Watch(w.st.settings.Name, key, revno, ch)
@@ -1043,7 +1117,6 @@ func (w *settingsWatcher) loop(key string) (err error) {
 			out = nil
 		}
 	}
-	return nil
 }
 
 // entityWatcher generates an event when a document in the db changes
@@ -1083,11 +1156,17 @@ func (e *Environment) Watch() NotifyWatcher {
 	return newEntityWatcher(e.st, e.st.environments, e.doc.UUID)
 }
 
-// WatchForEnvironConfigChanges return a NotifyWatcher waiting for the Environ
+// WatchForEnvironConfigChanges returns a NotifyWatcher waiting for the Environ
 // Config to change. This differs from WatchEnvironConfig in that the watcher
 // is a NotifyWatcher that does not give content during Changes()
 func (st *State) WatchForEnvironConfigChanges() NotifyWatcher {
 	return newEntityWatcher(st, st.settings, environGlobalKey)
+}
+
+// WatchAPIHostPorts returns a NotifyWatcher that notifies
+// when the set of API addresses changes.
+func (st *State) WatchAPIHostPorts() NotifyWatcher {
+	return newEntityWatcher(st, st.stateServers, apiHostPortsKey)
 }
 
 // WatchConfigSettings returns a watcher for observing changes to the
@@ -1122,7 +1201,7 @@ func (w *entityWatcher) Changes() <-chan struct{} {
 	return w.out
 }
 
-// getTxnRevo returns the transaction revision number of the
+// getTxnRevno returns the transaction revision number of the
 // given key in the given collection. It is useful to enable
 // a watcher.Watcher to be primed with the correct revision
 // id.
@@ -1130,7 +1209,7 @@ func getTxnRevno(coll *mgo.Collection, key string) (int64, error) {
 	doc := &struct {
 		TxnRevno int64 `bson:"txn-revno"`
 	}{}
-	fields := D{{"txn-revno", 1}}
+	fields := bson.D{{"txn-revno", 1}}
 	if err := coll.FindId(key).Select(fields).One(doc); err == mgo.ErrNotFound {
 		return -1, nil
 	} else if err != nil {
@@ -1163,7 +1242,6 @@ func (w *entityWatcher) loop(coll *mgo.Collection, key string) error {
 			out = nil
 		}
 	}
-	return nil
 }
 
 // machineUnitsWatcher notifies about assignments and lifecycle changes

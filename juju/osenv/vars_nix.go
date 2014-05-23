@@ -6,7 +6,7 @@ package osenv
 
 import (
 	"os"
-    "path"
+	"path"
 )
 
 // Home returns the os-specific home path as specified in the environment

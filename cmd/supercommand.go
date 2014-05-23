@@ -12,6 +12,7 @@ import (
 
 	"github.com/juju/loggo"
 	"launchpad.net/gnuflag"
+	"launchpad.net/juju-core/version"
 )
 
 var logger = loggo.GetLogger("juju.cmd")
@@ -45,6 +46,7 @@ type SuperCommandParams struct {
 	Doc             string
 	Log             *Log
 	MissingCallback MissingCallback
+	Aliases         []string
 }
 
 // NewSuperCommand creates and initializes a new `SuperCommand`, and returns
@@ -56,7 +58,9 @@ func NewSuperCommand(params SuperCommandParams) *SuperCommand {
 		Doc:             params.Doc,
 		Log:             params.Log,
 		usagePrefix:     params.UsagePrefix,
-		missingCallback: params.MissingCallback}
+		missingCallback: params.MissingCallback,
+		Aliases:         params.Aliases,
+	}
 	command.init()
 	return command
 }
@@ -71,6 +75,7 @@ type SuperCommand struct {
 	Purpose         string
 	Doc             string
 	Log             *Log
+	Aliases         []string
 	usagePrefix     string
 	subcmds         map[string]Command
 	commonflags     *gnuflag.FlagSet
@@ -183,6 +188,7 @@ func (c *SuperCommand) Info() *Info {
 		Args:    "<command> ...",
 		Purpose: c.Purpose,
 		Doc:     strings.Join(docParts, "\n\n"),
+		Aliases: c.Aliases,
 	}
 }
 
@@ -290,6 +296,11 @@ func (c *SuperCommand) Run(ctx *Context) error {
 		if err := c.Log.Start(ctx); err != nil {
 			return err
 		}
+	}
+	if c.usagePrefix == "" || c.usagePrefix == c.Name {
+		logger.Infof("running %s [%s %s]", c.Name, version.Current, version.Compiler)
+	} else {
+		logger.Infof("running %s %s [%s %s]", c.usagePrefix, c.Name, version.Current, version.Compiler)
 	}
 	err := c.subcmd.Run(ctx)
 	if err != nil && err != ErrSilent {

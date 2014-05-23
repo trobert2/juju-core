@@ -11,32 +11,28 @@ import (
 	"text/template"
 	"time"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 type PluginSuite struct {
-	testbase.LoggingSuite
+	testing.FakeJujuHomeSuite
 	oldPath string
-	home    *testing.FakeHome
 }
 
 var _ = gc.Suite(&PluginSuite{})
 
 func (suite *PluginSuite) SetUpTest(c *gc.C) {
-	suite.LoggingSuite.SetUpTest(c)
+	suite.FakeJujuHomeSuite.SetUpTest(c)
 	suite.oldPath = os.Getenv("PATH")
-	suite.home = testing.MakeSampleHome(c)
 	os.Setenv("PATH", "/bin:"+testing.HomePath())
 }
 
 func (suite *PluginSuite) TearDownTest(c *gc.C) {
-	suite.home.Restore()
 	os.Setenv("PATH", suite.oldPath)
-	suite.LoggingSuite.TearDownTest(c)
+	suite.FakeJujuHomeSuite.TearDownTest(c)
 }
 
 func (*PluginSuite) TestFindPlugins(c *gc.C) {

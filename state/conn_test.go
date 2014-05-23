@@ -6,14 +6,14 @@ package state_test
 import (
 	stdtesting "testing"
 
+	"github.com/juju/errors"
 	"labix.org/v2/mgo"
 	gc "launchpad.net/gocheck"
 
+	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs/config"
-	"launchpad.net/juju-core/errors"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 // TestPackage integrates the tests into gotest.
@@ -25,7 +25,7 @@ func TestPackage(t *stdtesting.T) {
 // test suites (StateSuite, CharmSuite, MachineSuite, etc).
 type ConnSuite struct {
 	testing.MgoSuite
-	testbase.LoggingSuite
+	testing.BaseSuite
 	annotations  *mgo.Collection
 	charms       *mgo.Collection
 	machines     *mgo.Collection
@@ -38,17 +38,17 @@ type ConnSuite struct {
 }
 
 func (cs *ConnSuite) SetUpSuite(c *gc.C) {
-	cs.LoggingSuite.SetUpSuite(c)
+	cs.BaseSuite.SetUpSuite(c)
 	cs.MgoSuite.SetUpSuite(c)
 }
 
 func (cs *ConnSuite) TearDownSuite(c *gc.C) {
 	cs.MgoSuite.TearDownSuite(c)
-	cs.LoggingSuite.TearDownSuite(c)
+	cs.BaseSuite.TearDownSuite(c)
 }
 
 func (cs *ConnSuite) SetUpTest(c *gc.C) {
-	cs.LoggingSuite.SetUpTest(c)
+	cs.BaseSuite.SetUpTest(c)
 	cs.MgoSuite.SetUpTest(c)
 	cs.policy = mockPolicy{}
 	cs.State = state.TestingInitialize(c, nil, &cs.policy)
@@ -59,13 +59,16 @@ func (cs *ConnSuite) SetUpTest(c *gc.C) {
 	cs.services = cs.MgoSuite.Session.DB("juju").C("services")
 	cs.units = cs.MgoSuite.Session.DB("juju").C("units")
 	cs.stateServers = cs.MgoSuite.Session.DB("juju").C("stateServers")
-	cs.State.AddUser("admin", "pass")
+	cs.State.AddUser(state.AdminUser, "pass")
 }
 
 func (cs *ConnSuite) TearDownTest(c *gc.C) {
-	cs.State.Close()
+	if cs.State != nil {
+		// If setup fails, we don't have a State yet
+		cs.State.Close()
+	}
 	cs.MgoSuite.TearDownTest(c)
-	cs.LoggingSuite.TearDownTest(c)
+	cs.BaseSuite.TearDownTest(c)
 }
 
 func (s *ConnSuite) AddTestingCharm(c *gc.C, name string) *state.Charm {
@@ -74,6 +77,10 @@ func (s *ConnSuite) AddTestingCharm(c *gc.C, name string) *state.Charm {
 
 func (s *ConnSuite) AddTestingService(c *gc.C, name string, ch *state.Charm) *state.Service {
 	return state.AddTestingService(c, s.State, name, ch)
+}
+
+func (s *ConnSuite) AddTestingServiceWithNetworks(c *gc.C, name string, ch *state.Charm, includeNetworks, excludeNetworks []string) *state.Service {
+	return state.AddTestingServiceWithNetworks(c, s.State, name, ch, includeNetworks, excludeNetworks)
 }
 
 func (s *ConnSuite) AddSeriesCharm(c *gc.C, name, series string) *state.Charm {
@@ -94,12 +101,36 @@ func (s *ConnSuite) AddMetaCharm(c *gc.C, name, metaYaml string, revsion int) *s
 }
 
 type mockPolicy struct {
-	getPrechecker func(*config.Config) (state.Prechecker, error)
+	getPrechecker           func(*config.Config) (state.Prechecker, error)
+	getConfigValidator      func(string) (state.ConfigValidator, error)
+	getEnvironCapability    func(*config.Config) (state.EnvironCapability, error)
+	getConstraintsValidator func(*config.Config) (constraints.Validator, error)
 }
 
 func (p *mockPolicy) Prechecker(cfg *config.Config) (state.Prechecker, error) {
 	if p.getPrechecker != nil {
 		return p.getPrechecker(cfg)
 	}
-	return nil, errors.NewNotImplementedError("Prechecker")
+	return nil, errors.NotImplementedf("Prechecker")
+}
+
+func (p *mockPolicy) ConfigValidator(providerType string) (state.ConfigValidator, error) {
+	if p.getConfigValidator != nil {
+		return p.getConfigValidator(providerType)
+	}
+	return nil, errors.NotImplementedf("ConfigValidator")
+}
+
+func (p *mockPolicy) EnvironCapability(cfg *config.Config) (state.EnvironCapability, error) {
+	if p.getEnvironCapability != nil {
+		return p.getEnvironCapability(cfg)
+	}
+	return nil, errors.NotImplementedf("EnvironCapability")
+}
+
+func (p *mockPolicy) ConstraintsValidator(cfg *config.Config) (constraints.Validator, error) {
+	if p.getConstraintsValidator != nil {
+		return p.getConstraintsValidator(cfg)
+	}
+	return nil, errors.NewNotImplemented(nil, "ConstraintsValidator")
 }

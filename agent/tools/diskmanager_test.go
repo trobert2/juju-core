@@ -6,13 +6,13 @@ package tools_test
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 
 	gc "launchpad.net/gocheck"
 
 	agenttools "launchpad.net/juju-core/agent/tools"
 	coretesting "launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/version"
 )
@@ -22,13 +22,13 @@ var _ = gc.Suite(&DiskManagerSuite{})
 var _ agenttools.ToolsManager = (*agenttools.DiskManager)(nil)
 
 type DiskManagerSuite struct {
-	testbase.LoggingSuite
+	coretesting.BaseSuite
 	dataDir string
 	manager agenttools.ToolsManager
 }
 
 func (s *DiskManagerSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
+	s.BaseSuite.SetUpTest(c)
 	s.dataDir = c.MkDir()
 	s.manager = agenttools.NewDiskManager(s.dataDir)
 }
@@ -101,4 +101,9 @@ func (s *DiskManagerSuite) assertToolsContents(c *gc.C, t *coretools.Tools, file
 	gotTools, err := s.manager.ReadTools(t.Version)
 	c.Assert(err, gc.IsNil)
 	c.Assert(*gotTools, gc.Equals, *t)
+	// Make sure that the tools directory is readable by the ubuntu user (for
+	// juju-run)
+	info, err := os.Stat(dir)
+	c.Assert(err, gc.IsNil)
+	c.Assert(info.Mode().Perm(), gc.Equals, os.FileMode(0755))
 }

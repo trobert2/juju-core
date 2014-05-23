@@ -6,18 +6,18 @@ package rpc_test
 import (
 	"reflect"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/rpc/rpcreflect"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 )
 
 // We test rpcreflect in this package, so that the
 // tests can all share the same testing Root type.
 
 type reflectSuite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var _ = gc.Suite(&reflectSuite{})

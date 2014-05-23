@@ -6,12 +6,12 @@ package upgrades_test
 import (
 	gc "launchpad.net/gocheck"
 
-	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/upgrades"
 )
 
 type steps118Suite struct {
-	testbase.LoggingSuite
+	testing.BaseSuite
 }
 
 var _ = gc.Suite(&steps118Suite{})
@@ -21,7 +21,9 @@ var expectedSteps = []string{
 	"generate system ssh key",
 	"update rsyslog port",
 	"install rsyslog-gnutls",
-	"remove deprecated attribute values",
+	"remove deprecated environment config settings",
+	"migrate local provider agent config",
+	"make /home/ubuntu/.profile source .juju-proxy file",
 }
 
 func (s *steps118Suite) TestUpgradeOperationsContent(c *gc.C) {

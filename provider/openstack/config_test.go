@@ -8,19 +8,17 @@ import (
 	"time"
 
 	"github.com/juju/loggo"
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
-	"launchpad.net/juju-core/testing/testbase"
 )
 
 type ConfigSuite struct {
-	testbase.LoggingSuite
-	savedVars   map[string]string
-	oldJujuHome *testing.FakeHome
+	testing.BaseSuite
+	savedVars map[string]string
 }
 
 // Ensure any environment variables a user may have set locally are reset.
@@ -171,8 +169,7 @@ func (t configTest) check(c *gc.C) {
 }
 
 func (s *ConfigSuite) SetUpTest(c *gc.C) {
-	s.LoggingSuite.SetUpTest(c)
-	s.oldJujuHome = testing.MakeEmptyFakeHome(c)
+	s.BaseSuite.SetUpTest(c)
 	s.savedVars = make(map[string]string)
 	for v, val := range envVars {
 		s.savedVars[v] = os.Getenv(v)
@@ -184,8 +181,7 @@ func (s *ConfigSuite) TearDownTest(c *gc.C) {
 	for k, v := range s.savedVars {
 		os.Setenv(k, v)
 	}
-	s.oldJujuHome.Restore()
-	s.LoggingSuite.TearDownTest(c)
+	s.BaseSuite.TearDownTest(c)
 }
 
 var configTests = []configTest{

@@ -24,12 +24,12 @@ func (m *Machine) WatchUnits() (watcher.StringsWatcher, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: m.tag}},
 	}
-	err := m.st.caller.Call("Deployer", "", "WatchUnits", args, &results)
+	err := m.st.call("WatchUnits", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {

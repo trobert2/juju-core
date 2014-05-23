@@ -14,14 +14,14 @@ import (
 	"strconv"
 	"syscall"
 
+	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 	"launchpad.net/goyaml"
 
 	"launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/testing"
-	jc "launchpad.net/juju-core/testing/checkers"
 	"launchpad.net/juju-core/utils/set"
-    "launchpad.net/juju-core/utils"
+	"launchpad.net/juju-core/utils"
 )
 
 type BundleSuite struct {

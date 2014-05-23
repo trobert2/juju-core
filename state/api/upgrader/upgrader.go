@@ -10,12 +10,17 @@ import (
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/api/watcher"
 	"launchpad.net/juju-core/tools"
+	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
 )
 
 // State provides access to an upgrader worker's view of the state.
 type State struct {
 	caller base.Caller
+}
+
+func (st *State) call(method string, params, result interface{}) error {
+	return st.caller.Call("Upgrader", "", method, params, result)
 }
 
 // NewState returns a version of the state that provides functionality
@@ -35,7 +40,7 @@ func (st *State) SetVersion(tag string, v version.Binary) error {
 			Tools: &params.Version{v},
 		}},
 	}
-	err := st.caller.Call("Upgrader", "", "SetTools", args, &results)
+	err := st.call("SetTools", args, &results)
 	if err != nil {
 		// TODO: Not directly tested
 		return err
@@ -48,14 +53,14 @@ func (st *State) DesiredVersion(tag string) (version.Number, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: tag}},
 	}
-	err := st.caller.Call("Upgrader", "", "DesiredVersion", args, &results)
+	err := st.call("DesiredVersion", args, &results)
 	if err != nil {
 		// TODO: Not directly tested
 		return version.Number{}, err
 	}
 	if len(results.Results) != 1 {
 		// TODO: Not directly tested
-		return version.Number{}, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return version.Number{}, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if err := result.Error; err != nil {
@@ -70,25 +75,29 @@ func (st *State) DesiredVersion(tag string) (version.Number, error) {
 
 // Tools returns the agent tools that should run on the given entity,
 // along with a flag whether to disable SSL hostname verification.
-func (st *State) Tools(tag string) (*tools.Tools, bool, error) {
+func (st *State) Tools(tag string) (*tools.Tools, utils.SSLHostnameVerification, error) {
 	var results params.ToolsResults
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: tag}},
 	}
-	err := st.caller.Call("Upgrader", "", "Tools", args, &results)
+	err := st.call("Tools", args, &results)
 	if err != nil {
 		// TODO: Not directly tested
 		return nil, false, err
 	}
 	if len(results.Results) != 1 {
 		// TODO: Not directly tested
-		return nil, false, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, false, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if err := result.Error; err != nil {
 		return nil, false, err
 	}
-	return result.Tools, result.DisableSSLHostnameVerification, nil
+	hostnameVerification := utils.VerifySSLHostnames
+	if result.DisableSSLHostnameVerification {
+		hostnameVerification = utils.NoVerifySSLHostnames
+	}
+	return result.Tools, hostnameVerification, nil
 }
 
 func (st *State) WatchAPIVersion(agentTag string) (watcher.NotifyWatcher, error) {
@@ -96,14 +105,14 @@ func (st *State) WatchAPIVersion(agentTag string) (watcher.NotifyWatcher, error)
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: agentTag}},
 	}
-	err := st.caller.Call("Upgrader", "", "WatchAPIVersion", args, &results)
+	err := st.call("WatchAPIVersion", args, &results)
 	if err != nil {
 		// TODO: Not directly tested
 		return nil, err
 	}
 	if len(results.Results) != 1 {
 		// TODO: Not directly tested
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {

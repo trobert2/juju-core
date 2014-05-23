@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/juju/errors"
 	"labix.org/v2/mgo"
+	"labix.org/v2/mgo/bson"
 	"labix.org/v2/mgo/txn"
-
-	"launchpad.net/juju-core/errors"
 )
 
 // See: http://docs.mongodb.org/manual/faq/developers/#faq-dollar-sign-escaping
@@ -167,7 +167,7 @@ func (c *Settings) Write() ([]ItemChange, error) {
 		C:      c.st.settings.Name,
 		Id:     c.key,
 		Assert: txn.DocExists,
-		Update: D{
+		Update: bson.D{
 			{"$set", updates},
 			{"$unset", deletions},
 		},
@@ -317,7 +317,7 @@ func replaceSettingsOp(st *State, key string, values map[string]interface{}) (tx
 	}
 	newValues := copyMap(values, escapeReplacer.Replace)
 	op := s.assertUnchangedOp()
-	op.Update = D{
+	op.Update = bson.D{
 		{"$set", newValues},
 		{"$unset", deletes},
 	}
@@ -335,6 +335,6 @@ func (s *Settings) assertUnchangedOp() txn.Op {
 	return txn.Op{
 		C:      s.st.settings.Name,
 		Id:     s.key,
-		Assert: D{{"txn-revno", s.txnRevno}},
+		Assert: bson.D{{"txn-revno", s.txnRevno}},
 	}
 }

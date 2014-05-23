@@ -42,12 +42,12 @@ func (s *Service) Watch() (watcher.NotifyWatcher, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: s.tag}},
 	}
-	err := s.st.caller.Call("Uniter", "", "Watch", args, &results)
+	err := s.st.call("Watch", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -64,12 +64,12 @@ func (s *Service) WatchRelations() (watcher.StringsWatcher, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: s.tag}},
 	}
-	err := s.st.caller.Call("Uniter", "", "WatchServiceRelations", args, &results)
+	err := s.st.call("WatchServiceRelations", args, &results)
 	if err != nil {
 		return nil, err
 	}
 	if len(results.Results) != 1 {
-		return nil, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -106,12 +106,12 @@ func (s *Service) CharmURL() (*charm.URL, bool, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: s.tag}},
 	}
-	err := s.st.caller.Call("Uniter", "", "CharmURL", args, &results)
+	err := s.st.call("CharmURL", args, &results)
 	if err != nil {
 		return nil, false, err
 	}
 	if len(results.Results) != 1 {
-		return nil, false, fmt.Errorf("expected one result, got %d", len(results.Results))
+		return nil, false, fmt.Errorf("expected 1 result, got %d", len(results.Results))
 	}
 	result := results.Results[0]
 	if result.Error != nil {
@@ -134,7 +134,7 @@ func (s *Service) GetOwnerTag() (string, error) {
 	args := params.Entities{
 		Entities: []params.Entity{{Tag: s.tag}},
 	}
-	err := s.st.caller.Call("Uniter", "", "GetOwnerTag", args, &result)
+	err := s.st.call("GetOwnerTag", args, &result)
 	if err != nil {
 		return "", err
 	}

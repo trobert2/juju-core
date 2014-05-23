@@ -14,6 +14,7 @@ import (
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/testing/testbase"
+	"launchpad.net/juju-core/version"
 )
 
 func initDefenestrate(args []string) (*cmd.SuperCommand, *TestCommand, error) {
@@ -86,11 +87,11 @@ func (s *SuperCommandSuite) TestRegisterAlias(c *gc.C) {
     help - show help on a command or other topic`)
 }
 
-var commandsDoc = `commands:
+func (s *SuperCommandSuite) TestInfo(c *gc.C) {
+	commandsDoc := `commands:
     flapbabble - flapbabble the juju
     flip       - flip the juju`
 
-func (s *SuperCommandSuite) TestInfo(c *gc.C) {
 	jc := cmd.NewSuperCommand(cmd.SuperCommandParams{
 		Name:    "jujutest",
 		Purpose: "to be purposeful",
@@ -173,13 +174,46 @@ func (s *SuperCommandSuite) TestVersionFlag(c *gc.C) {
 }
 
 func (s *SuperCommandSuite) TestLogging(c *gc.C) {
-	jc := cmd.NewSuperCommand(cmd.SuperCommandParams{Name: "jujutest", Log: &cmd.Log{}})
-	jc.Register(&TestCommand{Name: "blah"})
-	ctx := testing.Context(c)
-	code := cmd.Main(jc, ctx, []string{"blah", "--option", "error", "--debug"})
-	c.Assert(code, gc.Equals, 1)
-	c.Assert(bufferString(ctx.Stderr), gc.Matches, `^.* ERROR .* BAM!
-`)
+	s.PatchValue(&version.Current, version.Binary{
+		Number: version.Number{1, 2, 3, 4},
+		Series: "plan9",
+		Arch:   "mips",
+	})
+	s.PatchValue(&version.Compiler, "llgo")
+
+	loggingTests := []struct {
+		usagePrefix, name string
+		pattern           string
+	}{
+		{"juju", "juju", `^.* running juju \[1.2.3.4-plan9-mips llgo\]
+.* ERROR .* BAM!
+`},
+		{"something", "else", `^.* running something else \[1.2.3.4-plan9-mips llgo\]
+.* ERROR .* BAM!
+`},
+		{"", "juju", `^.* running juju \[1.2.3.4-plan9-mips llgo\]
+.* ERROR .* BAM!
+`},
+		{"", "myapp", `^.* running myapp \[1.2.3.4-plan9-mips llgo\]
+.* ERROR .* BAM!
+`},
+		{"same", "same", `^.* running same \[1.2.3.4-plan9-mips llgo\]
+.* ERROR .* BAM!
+`},
+	}
+
+	for _, test := range loggingTests {
+		jc := cmd.NewSuperCommand(cmd.SuperCommandParams{
+			UsagePrefix: test.usagePrefix,
+			Name:        test.name,
+			Log:         &cmd.Log{},
+		})
+		jc.Register(&TestCommand{Name: "blah"})
+		ctx := testing.Context(c)
+		code := cmd.Main(jc, ctx, []string{"blah", "--option", "error", "--debug"})
+		c.Assert(code, gc.Equals, 1)
+		c.Assert(bufferString(ctx.Stderr), gc.Matches, test.pattern)
+	}
 }
 
 func (s *SuperCommandSuite) TestDescription(c *gc.C) {
@@ -262,4 +296,27 @@ func (s *SuperCommandSuite) TestMissingCallbackContextWiredIn(c *gc.C) {
 	c.Assert(code, gc.Equals, 0)
 	c.Assert(testing.Stdout(ctx), gc.Equals, "this is std out")
 	c.Assert(testing.Stderr(ctx), gc.Equals, "this is std err")
+}
+
+func (s *SuperCommandSuite) TestSupercommandAliases(c *gc.C) {
+	jc := cmd.NewSuperCommand(cmd.SuperCommandParams{
+		Name:        "jujutest",
+		UsagePrefix: "juju",
+	})
+	sub := cmd.NewSuperCommand(cmd.SuperCommandParams{
+		Name:        "jubar",
+		UsagePrefix: "juju jujutest",
+		Aliases:     []string{"jubaz", "jubing"},
+	})
+	info := sub.Info()
+	c.Check(info.Aliases, gc.DeepEquals, []string{"jubaz", "jubing"})
+	jc.Register(sub)
+	for _, name := range []string{"jubar", "jubaz", "jubing"} {
+		c.Logf("testing command name %q", name)
+		ctx := testing.Context(c)
+		code := cmd.Main(jc, ctx, []string{name, "--help"})
+		c.Assert(code, gc.Equals, 0)
+		stripped := strings.Replace(bufferString(ctx.Stdout), "\n", "", -1)
+		c.Assert(stripped, gc.Matches, ".*usage: juju jujutest jubar.*aliases: jubaz, jubing")
+	}
 }

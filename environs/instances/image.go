@@ -5,9 +5,11 @@ package instances
 
 import (
 	"fmt"
+	"sort"
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs/imagemetadata"
+	"launchpad.net/juju-core/juju/arch"
 )
 
 // InstanceConstraint constrains the possible instances that may be
@@ -43,6 +45,8 @@ func (ic *InstanceConstraint) String() string {
 type InstanceSpec struct {
 	InstanceType InstanceType
 	Image        Image
+	// order is used to sort InstanceSpec based on the input InstanceTypes.
+	order int
 }
 
 // FindInstanceSpec returns an InstanceSpec satisfying the supplied InstanceConstraint.
@@ -51,22 +55,48 @@ type InstanceSpec struct {
 // which instances can be run. The InstanceConstraint is used to filter allInstanceTypes and then a suitable image
 // compatible with the matching instance types is returned.
 func FindInstanceSpec(possibleImages []Image, ic *InstanceConstraint, allInstanceTypes []InstanceType) (*InstanceSpec, error) {
-	matchingTypes, err := getMatchingInstanceTypes(ic, allInstanceTypes)
-	if err != nil {
-		return nil, err
+	if len(possibleImages) == 0 {
+		return nil, fmt.Errorf("no %q images in %s with arches %s",
+			ic.Series, ic.Region, ic.Arches)
 	}
 
+	var matchingTypes []InstanceType
+	if ic.Constraints.HasInstanceType() {
+		for _, itype := range allInstanceTypes {
+			if itype.Name == *ic.Constraints.InstanceType {
+				matchingTypes = append(matchingTypes, itype)
+				break
+			}
+		}
+		if len(matchingTypes) == 0 {
+			return nil, fmt.Errorf("invalid instance type %q", *ic.Constraints.InstanceType)
+		}
+	} else {
+		var err error
+		matchingTypes, err = getMatchingInstanceTypes(ic, allInstanceTypes)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(matchingTypes) == 0 {
+		return nil, fmt.Errorf("no instance types found matching constraint: %s", ic)
+	}
+
+	specs := []*InstanceSpec{}
 	for _, itype := range matchingTypes {
 		for _, image := range possibleImages {
 			if image.match(itype) {
-				return &InstanceSpec{itype, image}, nil
+				specs = append(specs, &InstanceSpec{
+					InstanceType: itype,
+					Image:        image,
+					order:        len(specs),
+				})
 			}
 		}
 	}
-
-	if len(possibleImages) == 0 || len(matchingTypes) == 0 {
-		return nil, fmt.Errorf("no %q images in %s with arches %s",
-			ic.Series, ic.Region, ic.Arches)
+	if len(specs) > 0 {
+		sort.Sort(byArch(specs))
+		return specs[0], nil
 	}
 
 	names := make([]string, len(matchingTypes))
@@ -76,19 +106,54 @@ func FindInstanceSpec(possibleImages []Image, ic *InstanceConstraint, allInstanc
 	return nil, fmt.Errorf("no %q images in %s matching instance types %v", ic.Series, ic.Region, names)
 }
 
+// byArch sorts InstanceSpecs first by descending word-size, then
+// alphabetically by name, and choose the first spec in the sequence.
+type byArch []*InstanceSpec
+
+func (a byArch) Len() int {
+	return len(a)
+}
+
+func (a byArch) Less(i, j int) bool {
+	iArchName := a[i].Image.Arch
+	jArchName := a[j].Image.Arch
+	iArch := arch.Info[iArchName]
+	jArch := arch.Info[jArchName]
+	// Wider word-size first.
+	switch {
+	case iArch.WordSize > jArch.WordSize:
+		return true
+	case iArch.WordSize < jArch.WordSize:
+		return false
+	}
+	// Alphabetically by arch name.
+	switch {
+	case iArchName < jArchName:
+		return true
+	case iArchName > jArchName:
+		return false
+	}
+	// If word-size and name the same, keep stable.
+	return a[i].order < a[j].order
+}
+
+func (a byArch) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+}
+
 // Image holds the attributes that vary amongst relevant images for
 // a given series in a given region.
 type Image struct {
 	Id   string
 	Arch string
 	// The type of virtualisation supported by this image.
-	VType string
+	VirtType string
 }
 
 // match returns true if the image can run on the supplied instance type.
 func (image Image) match(itype InstanceType) bool {
 	// The virtualisation type is optional.
-	if itype.VType != nil && image.VType != *itype.VType {
+	if itype.VirtType != nil && image.VirtType != *itype.VirtType {
 		return false
 	}
 	for _, arch := range itype.Arches {
@@ -106,9 +171,9 @@ func ImageMetadataToImages(inputs []*imagemetadata.ImageMetadata) []Image {
 	result := make([]Image, len(inputs))
 	for index, input := range inputs {
 		result[index] = Image{
-			Id:    input.Id,
-			VType: input.VType,
-			Arch:  input.Arch,
+			Id:       input.Id,
+			VirtType: input.VirtType,
+			Arch:     input.Arch,
 		}
 	}
 	return result

@@ -9,6 +9,7 @@ import (
 
 	"launchpad.net/juju-core/constraints"
 	"launchpad.net/juju-core/environs/config"
+	"launchpad.net/juju-core/environs/network"
 	"launchpad.net/juju-core/environs/storage"
 	"launchpad.net/juju-core/instance"
 	"launchpad.net/juju-core/state"
@@ -49,12 +50,6 @@ type EnvironProvider interface {
 	// which are considered sensitive. All of the values of these secret
 	// attributes need to be strings.
 	SecretAttrs(cfg *config.Config) (map[string]string, error)
-
-	// PublicAddress returns this machine's public host name.
-	PublicAddress() (string, error)
-
-	// PrivateAddress returns this machine's private host name.
-	PrivateAddress() (string, error)
 }
 
 // EnvironStorage implements storage access for an environment
@@ -63,12 +58,23 @@ type EnvironStorage interface {
 	Storage() storage.Storage
 }
 
-// ConfigGetter implements access to an environments configuration.
+// ConfigGetter implements access to an environment's configuration.
 type ConfigGetter interface {
 	// Config returns the configuration data with which the Environ was created.
 	// Note that this is not necessarily current; the canonical location
 	// for the configuration data is stored in the state.
 	Config() *config.Config
+}
+
+// BootstrapParams holds the parameters for bootstrapping an environment.
+type BootstrapParams struct {
+	// Constraints are used to choose the initial instance specification,
+	// and will be stored in the new environment's state.
+	Constraints constraints.Value
+
+	// Placement, if non-empty, holds an environment-specific placement
+	// directive used to choose the initial instance.
+	Placement string
 }
 
 // An Environ represents a juju environment as specified
@@ -97,13 +103,10 @@ type Environ interface {
 	// environment via the juju package, the password hash will be
 	// automatically replaced by the real password.
 	//
-	// The supplied constraints are used to choose the initial instance
-	// specification, and will be stored in the new environment's state.
-	//
 	// Bootstrap is responsible for selecting the appropriate tools,
 	// and setting the agent-version configuration attribute prior to
 	// bootstrapping the environment.
-	Bootstrap(ctx BootstrapContext, cons constraints.Value) error
+	Bootstrap(ctx BootstrapContext, params BootstrapParams) error
 
 	// StateInfo returns information on the state initialized
 	// by Bootstrap.
@@ -113,8 +116,19 @@ type Environ interface {
 	// instances.
 	InstanceBroker
 
+	// AllocateAddress requests a new address to be allocated for the
+	// given instance on the given network.
+	AllocateAddress(instId instance.Id, netId network.Id) (instance.Address, error)
+
 	// ConfigGetter allows the retrieval of the configuration data.
 	ConfigGetter
+
+	// EnvironCapability allows access to this environment's capabilities.
+	state.EnvironCapability
+
+	// ConstraintsValidator returns a Validator instance which
+	// is used to validate and merge constraints.
+	ConstraintsValidator() (constraints.Validator, error)
 
 	// SetConfig updates the Environ's configuration.
 	//
@@ -159,9 +173,7 @@ type Environ interface {
 	// Provider returns the EnvironProvider that created this Environ.
 	Provider() EnvironProvider
 
-	// TODO(axw) 2014-02-11 #pending-review
-	//     Embed state.Prechecker, and introduce an EnvironBase
-	//     that embeds a no-op prechecker implementation.
+	state.Prechecker
 }
 
 // BootstrapContext is an interface that is passed to
@@ -172,6 +184,8 @@ type BootstrapContext interface {
 	GetStdin() io.Reader
 	GetStdout() io.Writer
 	GetStderr() io.Writer
+	Infof(format string, params ...interface{})
+	Verbosef(format string, params ...interface{})
 
 	// InterruptNotify starts watching for interrupt signals
 	// on behalf of the caller, sending them to the supplied
