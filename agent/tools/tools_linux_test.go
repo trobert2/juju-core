@@ -167,51 +167,6 @@ func (t *ToolsSuite) TestReadToolsErrors(c *gc.C) {
 	c.Assert(err, gc.ErrorMatches, "invalid tools metadata in tools directory .*")
 }
 
-func (t *ToolsSuite) TestChangeAgentTools(c *gc.C) {
-	files := []*testing.TarFile{
-		testing.NewTarFile("jujuc", 0755, "juju executable"),
-		testing.NewTarFile("jujud", 0755, "jujuc executable"),
-	}
-	data, checksum := testing.TarGz(files...)
-	testTools := &coretest.Tools{
-		URL:     "http://foo/bar1",
-		Version: version.MustParseBinary("1.2.3-foo-bar"),
-		Size:    int64(len(data)),
-		SHA256:  checksum,
-	}
-	err := agenttools.UnpackTools(t.dataDir, testTools, bytes.NewReader(data))
-	c.Assert(err, gc.IsNil)
-
-	gotTools, err := agenttools.ChangeAgentTools(t.dataDir, "testagent", testTools.Version)
-	c.Assert(err, gc.IsNil)
-	c.Assert(*gotTools, gc.Equals, *testTools)
-
-	assertDirNames(c, t.toolsDir(), []string{"1.2.3-foo-bar", "testagent"})
-	assertDirNames(c, agenttools.ToolsDir(t.dataDir, "testagent"), []string{"jujuc", "jujud", toolsFile})
-
-	// Upgrade again to check that the link replacement logic works ok.
-	files2 := []*testing.TarFile{
-		testing.NewTarFile("foo", 0755, "foo content"),
-		testing.NewTarFile("bar", 0755, "bar content"),
-	}
-	data2, checksum2 := testing.TarGz(files2...)
-	tools2 := &coretest.Tools{
-		URL:     "http://foo/bar2",
-		Version: version.MustParseBinary("1.2.4-foo-bar"),
-		Size:    int64(len(data2)),
-		SHA256:  checksum2,
-	}
-	err = agenttools.UnpackTools(t.dataDir, tools2, bytes.NewReader(data2))
-	c.Assert(err, gc.IsNil)
-
-	gotTools, err = agenttools.ChangeAgentTools(t.dataDir, "testagent", tools2.Version)
-	c.Assert(err, gc.IsNil)
-	c.Assert(*gotTools, gc.Equals, *tools2)
-
-	assertDirNames(c, t.toolsDir(), []string{"1.2.3-foo-bar", "1.2.4-foo-bar", "testagent"})
-	assertDirNames(c, agenttools.ToolsDir(t.dataDir, "testagent"), []string{"foo", "bar", toolsFile})
-}
-
 func (t *ToolsSuite) TestSharedToolsDir(c *gc.C) {
 	dir := agenttools.SharedToolsDir("/var/lib/juju", version.MustParseBinary("1.2.3-precise-amd64"))
 	c.Assert(dir, gc.Equals, "/var/lib/juju/tools/1.2.3-precise-amd64")
