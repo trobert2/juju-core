@@ -1,12 +1,12 @@
 package tools
 
 import (
-    "fmt"
-    "os"
+	"fmt"
+	"os"
 
-    coretools "launchpad.net/juju-core/tools"
-    "launchpad.net/juju-core/version"
-//    "launchpad.net/juju-core/utils"
+	coretools "launchpad.net/juju-core/tools"
+	"launchpad.net/juju-core/version"
+	//    "launchpad.net/juju-core/utils"
 )
 
 // ChangeAgentTools atomically replaces the agent-specific symlink

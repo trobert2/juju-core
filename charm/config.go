@@ -52,10 +52,10 @@ func (option Option) validate(name string, value interface{}) (_ interface{}, er
 }
 
 var optionTypeCheckers = map[string]schema.Checker{
-	"string":  schema.String(),
-	"int":     schema.Int(),
-	"float":   schema.Float(),
-	"boolean": schema.Bool(),
+	"string":   schema.String(),
+	"int":      schema.Int(),
+	"float":    schema.Float(),
+	"boolean":  schema.Bool(),
 	"password": schema.String(),
 }
 

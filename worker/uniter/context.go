@@ -13,8 +13,8 @@ import (
 	"sort"
 	// "strings"
 	"sync"
-	"time"
 	"syscall"
+	"time"
 
 	"github.com/juju/loggo"
 
@@ -193,10 +193,10 @@ func (ctx *HookContext) RelationIds() []int {
 }
 
 func (ctx *HookContext) finalizeContext(process string, err error) error {
-	if err != nil{
+	if err != nil {
 		// gsamfira: We need this later to requeue the hook
 		logger.Infof("Checking if reboot is needed")
-		if RebootRequiredError(err){
+		if RebootRequiredError(err) {
 			logger.Infof("Error code is reboot code")
 			return err
 		}

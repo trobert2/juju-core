@@ -1,21 +1,21 @@
 package windows
 
 import (
-    "strconv"
+	"strconv"
 
-    "launchpad.net/juju-core/utils/exec"
+	"launchpad.net/juju-core/utils/exec"
 )
 
 func Reboot(when int) error {
-    cmd := []string{
-        "shutdown.exe",
-        "-r",
-        "-t",
-        strconv.Itoa(when),
-    }
-    _, err := exec.RunCommand(cmd)
-    if err != nil {
-        return err
-    }
-    return nil
+	cmd := []string{
+		"shutdown.exe",
+		"-r",
+		"-t",
+		strconv.Itoa(when),
+	}
+	_, err := exec.RunCommand(cmd)
+	if err != nil {
+		return err
+	}
+	return nil
 }

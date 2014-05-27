@@ -40,9 +40,9 @@ func (cfg *Config) RenderWin() ([]byte, error) {
 	header := "#ps1_sysnative\r\n"
 	script = append(script, header...)
 	for _, value := range winCmds.([]*command) {
-            script = append(script, value.literal...)
-            
-    }
+		script = append(script, value.literal...)
+
+	}
 	return script, nil
 }
 

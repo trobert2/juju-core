@@ -1,14 +1,14 @@
 package uniter
 
 import (
-    "fmt"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "strings"
-    "strconv"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 
-    "launchpad.net/juju-core/juju/osenv"
+	"launchpad.net/juju-core/juju/osenv"
 )
 
 // hookVars returns an os.Environ-style list of strings necessary to run a hook

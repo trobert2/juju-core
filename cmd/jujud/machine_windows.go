@@ -1,26 +1,26 @@
 package main
 
 import (
-    // "os"
-    "fmt"
-    // "path/filepath"
+	// "os"
+	"fmt"
+	// "path/filepath"
 
-    "launchpad.net/juju-core/agent"
-    "launchpad.net/juju-core/worker"
-    // "launchpad.net/juju-core/worker/authenticationworker"
-    "launchpad.net/juju-core/worker/charmrevisionworker"
-    "launchpad.net/juju-core/worker/deployer"
-    "launchpad.net/juju-core/worker/firewaller"
-    workerlogger "launchpad.net/juju-core/worker/logger"
-    // "launchpad.net/juju-core/worker/machineenvironmentworker"
-    "launchpad.net/juju-core/worker/machiner"
-    // "launchpad.net/juju-core/worker/rsyslog"
-    "launchpad.net/juju-core/worker/upgrader"
-    "launchpad.net/juju-core/worker/apiaddressupdater"
-    "launchpad.net/juju-core/state/api/params"
-    // "launchpad.net/juju-core/provider"
-    "launchpad.net/juju-core/worker/provisioner"
-    // "launchpad.net/juju-core/utils"
+	"launchpad.net/juju-core/agent"
+	"launchpad.net/juju-core/worker"
+	// "launchpad.net/juju-core/worker/authenticationworker"
+	"launchpad.net/juju-core/worker/charmrevisionworker"
+	"launchpad.net/juju-core/worker/deployer"
+	"launchpad.net/juju-core/worker/firewaller"
+	workerlogger "launchpad.net/juju-core/worker/logger"
+	// "launchpad.net/juju-core/worker/machineenvironmentworker"
+	"launchpad.net/juju-core/worker/machiner"
+	// "launchpad.net/juju-core/worker/rsyslog"
+	"launchpad.net/juju-core/state/api/params"
+	"launchpad.net/juju-core/worker/apiaddressupdater"
+	"launchpad.net/juju-core/worker/upgrader"
+	// "launchpad.net/juju-core/provider"
+	"launchpad.net/juju-core/worker/provisioner"
+	// "launchpad.net/juju-core/utils"
 )
 
 // APIWorker returns a Worker that connects to the API and starts any
@@ -57,17 +57,17 @@ func (a *MachineAgent) APIWorker() (worker.Worker, error) {
 	runner := newRunner(connectionIsFatal(st), moreImportant)
 	var singularRunner worker.Runner
 	/*
-	for _, job := range entity.Jobs() {
-		if job == params.JobManageEnviron {
-			rsyslogMode = rsyslog.RsyslogModeAccumulate
-			conn := singularAPIConn{st, st.Agent()}
-			singularRunner, err = newSingularRunner(runner, conn)
-			if err != nil {
-				return nil, fmt.Errorf("cannot make singular API Runner: %v", err)
+		for _, job := range entity.Jobs() {
+			if job == params.JobManageEnviron {
+				rsyslogMode = rsyslog.RsyslogModeAccumulate
+				conn := singularAPIConn{st, st.Agent()}
+				singularRunner, err = newSingularRunner(runner, conn)
+				if err != nil {
+					return nil, fmt.Errorf("cannot make singular API Runner: %v", err)
+				}
+				break
 			}
-			break
-		}
-	} */
+		} */
 
 	// Run the upgrader and the upgrade-steps worker without waiting for
 	// the upgrade steps to complete.
@@ -91,30 +91,30 @@ func (a *MachineAgent) APIWorker() (worker.Worker, error) {
 	})
 
 	// TODO: gsamfira: Port machineenvironmentworker to windows. Proxy settings can be written
-    // in the registry
+	// in the registry
 	/*
-	a.startWorkerAfterUpgrade(runner, "machineenvironmentworker", func() (worker.Worker, error) {
-		return machineenvironmentworker.NewMachineEnvironmentWorker(st.Environment(), agentConfig), nil
-	})
+		a.startWorkerAfterUpgrade(runner, "machineenvironmentworker", func() (worker.Worker, error) {
+			return machineenvironmentworker.NewMachineEnvironmentWorker(st.Environment(), agentConfig), nil
+		})
 	*/
 	// gsamfira: No syslog support on windows (yet)
 	/*
-	a.startWorkerAfterUpgrade(runner, "rsyslog", func() (worker.Worker, error) {
-		return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslogMode)
-	})
+		a.startWorkerAfterUpgrade(runner, "rsyslog", func() (worker.Worker, error) {
+			return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslogMode)
+		})
 	*/
 	// If not a local provider bootstrap machine, start the worker to
 	// manage SSH keys.
-	
+
 	// TODO: gsamfira: This will need to be ported at a later time to setup x509 keys for
-    // WinRm
+	// WinRm
 	/*
-	providerType := agentConfig.Value(agent.ProviderType)
-	if providerType != provider.Local || a.MachineId != bootstrapMachineId {
-		a.startWorkerAfterUpgrade(runner, "authenticationworker", func() (worker.Worker, error) {
-			return authenticationworker.NewWorker(st.KeyUpdater(), agentConfig), nil
-		})
-	}
+		providerType := agentConfig.Value(agent.ProviderType)
+		if providerType != provider.Local || a.MachineId != bootstrapMachineId {
+			a.startWorkerAfterUpgrade(runner, "authenticationworker", func() (worker.Worker, error) {
+				return authenticationworker.NewWorker(st.KeyUpdater(), agentConfig), nil
+			})
+		}
 	*/
 	// Perform the operations needed to set up hosting for containers.
 	if err := a.setupContainerSupport(runner, st, entity, agentConfig); err != nil {

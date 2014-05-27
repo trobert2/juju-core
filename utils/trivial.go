@@ -11,10 +11,10 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"unicode"
-	"runtime"
-	"strconv"	
 
 	"launchpad.net/goyaml"
 	"launchpad.net/juju-core/utils/exec"
@@ -33,13 +33,13 @@ func WriteYaml(path string, obj interface{}) error {
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS != "windows"{
+	if runtime.GOOS != "windows" {
 		defer f.Close()
 	}
 	if _, err = f.Write(data); err != nil {
 		return err
 	}
-	if runtime.GOOS == "windows"{
+	if runtime.GOOS == "windows" {
 		f.Close()
 	}
 	return ReplaceFile(prep, path)
@@ -150,18 +150,18 @@ func PathToWindows(filepath string) string {
 }
 
 func Reboot(when int) error {
-    cmd := []string{
-        "shutdown",
-        "-r",
-    }
+	cmd := []string{
+		"shutdown",
+		"-r",
+	}
 
-    if runtime.GOOS == "windows" {
-    	cmd = append(cmd, "-t")
-    }
-    cmd = append(cmd, strconv.Itoa(when))
-    _, err := exec.RunCommand(cmd)
-    if err != nil {
-        return err
-    }
-    return nil
+	if runtime.GOOS == "windows" {
+		cmd = append(cmd, "-t")
+	}
+	cmd = append(cmd, strconv.Itoa(when))
+	_, err := exec.RunCommand(cmd)
+	if err != nil {
+		return err
+	}
+	return nil
 }

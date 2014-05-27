@@ -1,5 +1,5 @@
 package windows
 
 var (
-    MUST_REBOOT = 1001
+	MUST_REBOOT = 1001
 )

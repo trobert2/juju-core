@@ -7,19 +7,19 @@ import (
 	"fmt"
 	"net/rpc"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
-	"path"
 
 	"launchpad.net/gnuflag"
 
 	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/names"
+	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/utils/fslock"
 	"launchpad.net/juju-core/worker/uniter"
-	"launchpad.net/juju-core/juju/osenv"
-	"launchpad.net/juju-core/utils"
 )
 
 var (
@@ -160,7 +160,7 @@ func (c *RunCommand) executeNoContext() (*exec.ExecResponse, error) {
 
 	runCmd := `[ -f "/home/ubuntu/.juju-proxy" ] && . "/home/ubuntu/.juju-proxy"` + "\n" + c.commands
 
-	if runtime.GOOS == "windows"{
+	if runtime.GOOS == "windows" {
 		runCmd = c.commands
 	}
 

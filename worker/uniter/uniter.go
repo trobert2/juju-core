@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"runtime"
 	osExec "os/exec"
+	"runtime"
 
 	"github.com/juju/loggo"
 	"launchpad.net/tomb"
@@ -477,7 +477,7 @@ func (u *Uniter) runHook(hi hook.Info) (err error) {
 	logger.Infof("running %q hook", hookName)
 	ranHook := true
 	err = hctx.RunHook(hookName, u.charmPath, u.toolsDir, socketPath)
-	if RebootRequiredError(err){
+	if RebootRequiredError(err) {
 		logger.Infof("hook %q requested a reboot", hookName)
 		if err := u.writeState(RunHook, Queued, &hi, nil); err != nil {
 			return err

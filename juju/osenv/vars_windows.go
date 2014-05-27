@@ -27,10 +27,10 @@ func SetHome(s string) error {
 
 var (
 	TempDir    = WinTempDir
-    LibDir     = WinLibDir
-    LogDir     = WinLogDir
-    DataDir    = WinDataDir
-    JujuRun    = path.Join(WinBinDir, "juju-run.exe")
-    SocketType = "tcp"
-    MustReboot = 1001
+	LibDir     = WinLibDir
+	LogDir     = WinLogDir
+	DataDir    = WinDataDir
+	JujuRun    = path.Join(WinBinDir, "juju-run.exe")
+	SocketType = "tcp"
+	MustReboot = 1001
 )

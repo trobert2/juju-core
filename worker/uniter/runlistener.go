@@ -10,11 +10,11 @@ import (
 	"net"
 	"net/rpc"
 	"os"
-	"sync"
 	"runtime"
+	"sync"
 
-	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/juju/osenv"
+	"launchpad.net/juju-core/utils/exec"
 )
 
 const JujuRunEndpoint = "JujuRunServer.RunCommands"

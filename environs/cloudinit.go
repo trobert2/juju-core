@@ -40,7 +40,7 @@ func NewMachineConfig(machineID, machineNonce, machineSeries string, includeNetw
 
 	localDataDir := DataDir
 	localLogDir := agent.DefaultLogDir
-	if len(machineSeries) > 3 && version.IsWindows(machineSeries){
+	if len(machineSeries) > 3 && version.IsWindows(machineSeries) {
 		localDataDir = osenv.WinDataDir
 		localLogDir = osenv.WinLogDir
 	}
@@ -193,9 +193,9 @@ func ComposeUserData(mcfg *cloudinit.MachineConfig, cloudcfg *coreCloudinit.Conf
 	}
 	var data []byte
 	var err error
-	if version.IsWindows(mcfg.Tools.Version.Series){
+	if version.IsWindows(mcfg.Tools.Version.Series) {
 		data, err = cloudcfg.RenderWin()
-	}else{
+	} else {
 		data, err = cloudcfg.Render()
 	}
 

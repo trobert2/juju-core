@@ -14,7 +14,7 @@ import (
 var logger = loggo.GetLogger("juju.ubuntu")
 
 var (
-	seriesVersionsMutex   sync.Mutex
+	seriesVersionsMutex sync.Mutex
 	// updatedseriesVersions bool
 )
 
@@ -24,10 +24,10 @@ var (
 // On non-Ubuntu systems, these values provide a nice fallback option.
 // Exported so tests can change the values to ensure the distro-info lookup works.
 var seriesVersions = map[string]string{
-	"win2012hv": "win2012hv",
+	"win2012hv":   "win2012hv",
 	"win2012hvr2": "win2012hvr2",
-	"win2012": "win2012",
-	"win2012r2": "win2012r2",
+	"win2012":     "win2012",
+	"win2012r2":   "win2012r2",
 }
 
 // SeriesVersion returns the version number for the specified Ubuntu series.

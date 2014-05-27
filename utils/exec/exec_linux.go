@@ -1,9 +1,9 @@
 package exec
 
 import (
-    "bytes"
-    "os/exec"
-    "syscall"
+	"bytes"
+	"os/exec"
+	"syscall"
 )
 
 // RunCommands executes the Commands specified in the RunParams using

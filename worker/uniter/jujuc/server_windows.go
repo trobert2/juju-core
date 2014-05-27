@@ -1,7 +1,7 @@
 package jujuc
 
 import (
-    "launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd"
 )
 
 // newCommands maps Command names to initializers.

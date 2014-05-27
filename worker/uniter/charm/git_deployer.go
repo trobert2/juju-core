@@ -8,8 +8,8 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"time"
 	"runtime"
+	"time"
 
 	"launchpad.net/juju-core/utils"
 )

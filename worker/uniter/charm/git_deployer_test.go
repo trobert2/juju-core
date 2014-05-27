@@ -12,8 +12,8 @@ import (
 
 	corecharm "launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/worker/uniter/charm"
 	"launchpad.net/juju-core/utils"
+	"launchpad.net/juju-core/worker/uniter/charm"
 )
 
 type GitDeployerSuite struct {

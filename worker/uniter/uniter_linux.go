@@ -1,14 +1,14 @@
 package uniter
 
 import (
-    //"math/rand"
-    //"os"
-    "path/filepath"
-    //"time"
-    "fmt"
+	//"math/rand"
+	//"os"
+	"path/filepath"
+	//"time"
+	"fmt"
 
-    "launchpad.net/juju-core/cmd"
-    "launchpad.net/juju-core/worker/uniter/jujuc"
+	"launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/worker/uniter/jujuc"
 )
 
 func (u *Uniter) startJujucServer(context *HookContext) (*jujuc.Server, string, error) {

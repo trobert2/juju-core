@@ -20,10 +20,10 @@ const (
 )
 
 var (
-    WinBaseDir = "C:/Juju"
-    WinTempDir = path.Join(WinBaseDir, "tmp")
-    WinLibDir  = path.Join(WinBaseDir, "lib")
-    WinLogDir  = path.Join(WinBaseDir, "log")
-    WinDataDir = path.Join(WinLibDir, "juju")
-    WinBinDir  = path.Join(WinBaseDir, "bin")
+	WinBaseDir = "C:/Juju"
+	WinTempDir = path.Join(WinBaseDir, "tmp")
+	WinLibDir  = path.Join(WinBaseDir, "lib")
+	WinLogDir  = path.Join(WinBaseDir, "log")
+	WinDataDir = path.Join(WinLibDir, "juju")
+	WinBinDir  = path.Join(WinBaseDir, "bin")
 )

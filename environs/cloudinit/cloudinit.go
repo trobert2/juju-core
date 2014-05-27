@@ -975,6 +975,7 @@ Param (
 "@
 
 `
+
 func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 	zipUrl := "https://www.cloudbase.it/downloads/7z920-x64.msi"
 	gitUrl := "https://www.cloudbase.it/downloads/Git-1.8.5.2-preview20131230.exe"
@@ -984,21 +985,21 @@ func WinConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 	c.AddPSScripts(
 		fmt.Sprintf(`%s`, winPowershellHelperFunctions),
 		fmt.Sprintf(`icacls "%s" /grant "jujud:(OI)(CI)(F)" /T`, utils.PathToWindows(osenv.WinBaseDir)),
-        fmt.Sprintf(`mkdir %s`, utils.PathToWindows(osenv.WinTempDir)),
-        fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`, 
-        	zipUrl, utils.PathToWindows(zipDst)),
+		fmt.Sprintf(`mkdir %s`, utils.PathToWindows(osenv.WinTempDir)),
+		fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`,
+			zipUrl, utils.PathToWindows(zipDst)),
 		fmt.Sprintf(`cmd.exe /C call msiexec.exe /i "%s" /qb`, utils.PathToWindows(zipDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install 7zip" }`),
-		fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`, 
-        	gitUrl, utils.PathToWindows(gitDst)),
+		fmt.Sprintf(`ExecRetry { (new-object System.Net.WebClient).DownloadFile("%s", "%s") }`,
+			gitUrl, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`cmd.exe /C call "%s" /SILENT`, utils.PathToWindows(gitDst)),
 		fmt.Sprintf(`if ($? -eq $false){ Throw "Failed to install Git" }`),
 		fmt.Sprintf(`mkdir "%s"`, utils.PathToWindows(osenv.WinBinDir)),
 		fmt.Sprintf(`%s`, winSetPasswdScript),
 		// fmt.Sprintf(`Start-Process -FilePath powershell.exe -LoadUserProfile -WorkingDirectory '/' -Wait -Credential $jujuCreds -ArgumentList "C:\juju\bin\save_pass.ps1 -pass $juju_passwd"`),
-        fmt.Sprintf(`Start-ProcessAsUser -Command $powershell -Arguments "-File C:\juju\bin\save_pass.ps1 $juju_passwd" -Credential $jujuCreds`),
+		fmt.Sprintf(`Start-ProcessAsUser -Command $powershell -Arguments "-File C:\juju\bin\save_pass.ps1 $juju_passwd" -Credential $jujuCreds`),
 		fmt.Sprintf(`mkdir "%s\locks"`, utils.PathToWindows(osenv.WinLibDir)),
-        fmt.Sprintf(`Start-ProcessAsUser -Command $cmdExe -Arguments '/C setx PATH "%%PATH%%;%%PROGRAMFILES(x86)%%\Git\cmd;C:\Juju\bin"' -Credential $jujuCreds`),
+		fmt.Sprintf(`Start-ProcessAsUser -Command $cmdExe -Arguments '/C setx PATH "%%PATH%%;%%PROGRAMFILES(x86)%%\Git\cmd;C:\Juju\bin"' -Credential $jujuCreds`),
 		// fmt.Sprintf(`Start-Process -FilePath cmd.exe -LoadUserProfile -WorkingDirectory '/' -Wait -Credential $jujuCreds -ArgumentList '/C call setx PATH "%%PATH%%;%%PROGRAMFILES(x86)%%\Git\cmd;C:\Juju\bin"'`),
 	)
 	noncefile := path.Join(cfg.DataDir, NonceFile)
@@ -1039,7 +1040,7 @@ func NixConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
 // but adds to the running time of initialisation due to lack of activity
 // between image bringup and start of agent installation.
 func ConfigureBasic(cfg *MachineConfig, c *cloudinit.Config) error {
-	if version.IsWindows(cfg.Tools.Version.Series){
+	if version.IsWindows(cfg.Tools.Version.Series) {
 		return WinConfigureBasic(cfg, c)
 	}
 	return NixConfigureBasic(cfg, c)
@@ -1072,7 +1073,7 @@ func AddAptCommands(proxy osenv.ProxySettings, c *cloudinit.Config) {
 }
 
 func ConfigureJuju(cfg *MachineConfig, c *cloudinit.Config) error {
-	if version.IsWindows(cfg.Tools.Version.Series){
+	if version.IsWindows(cfg.Tools.Version.Series) {
 		return WinConfigureJuju(cfg, c)
 	}
 	return NixConfigureJuju(cfg, c)
@@ -1293,9 +1294,9 @@ func (cfg *MachineConfig) addAgentInfo(c *cloudinit.Config, tag string) (agent.C
 	if err != nil {
 		return nil, errors.Annotate(err, "failed to write commands")
 	}
-	if version.IsWindows(series){
+	if version.IsWindows(series) {
 		c.AddPSScripts(cmds...)
-	}else{
+	} else {
 		c.AddScripts(cmds...)
 	}
 	return acfg, nil
@@ -1305,19 +1306,19 @@ func (cfg *MachineConfig) addAgentInfo(c *cloudinit.Config, tag string) (agent.C
 // based on the tag and machineId passed in.
 // TODO: gsamfira: find a better place for this
 func MachineAgentWindowsService(name, toolsDir, dataDir, logDir, tag, machineId string) []string {
-    jujuServiceWrapper := path.Join(toolsDir, "JujuService.exe")
-    logFile := path.Join(logDir, tag+".log")
-    jujud := path.Join(toolsDir, "jujud.exe")
+	jujuServiceWrapper := path.Join(toolsDir, "JujuService.exe")
+	logFile := path.Join(logDir, tag+".log")
+	jujud := path.Join(toolsDir, "jujud.exe")
 
-    serviceString := fmt.Sprintf(`"%s" "%s" "%s" machine --data-dir "%s" --machine-id "%s" --debug --log-file "%s"`,
-        utils.PathToWindows(jujuServiceWrapper), name, utils.PathToWindows(jujud), utils.PathToWindows(dataDir), machineId, utils.PathToWindows(logFile))
+	serviceString := fmt.Sprintf(`"%s" "%s" "%s" machine --data-dir "%s" --machine-id "%s" --debug --log-file "%s"`,
+		utils.PathToWindows(jujuServiceWrapper), name, utils.PathToWindows(jujud), utils.PathToWindows(dataDir), machineId, utils.PathToWindows(logFile))
 
-    cmd := []string{
-    	fmt.Sprintf(`New-Service -Credential $jujuCreds -Name '%s' -DisplayName 'Jujud machine agent' '%s'`, name, serviceString),
-        // fmt.Sprintf(`cmd.exe /C sc config %s start=delayed-auto`, name),
-    	fmt.Sprintf(`Start-Service %s`, name),
-    }
-    return cmd
+	cmd := []string{
+		fmt.Sprintf(`New-Service -Credential $jujuCreds -Name '%s' -DisplayName 'Jujud machine agent' '%s'`, name, serviceString),
+		fmt.Sprintf(`cmd.exe /C sc config %s start=delayed-auto`, name),
+		fmt.Sprintf(`Start-Service %s`, name),
+	}
+	return cmd
 }
 
 //TODO: gsamfira: add agent to startup

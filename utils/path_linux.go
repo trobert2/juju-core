@@ -1,14 +1,13 @@
 package utils
 
 import (
-    "os"
+	"os"
 )
 
-
 func Symlink(oldname, newname string) error {
-    return os.Symlink(oldname, newname)
+	return os.Symlink(oldname, newname)
 }
 
-func Readlink(link string) (string, error){
+func Readlink(link string) (string, error) {
 	return os.Readlink(link)
 }

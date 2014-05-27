@@ -76,7 +76,7 @@ func (d *BundlesDir) download(info BundleInfo, abort <-chan struct{}) (err error
 			// Renaming an open file is not possible on windows
 			if runtime.GOOS == "windows" {
 				st.File.Close()
-			}else{
+			} else {
 				defer st.File.Close()
 			}
 			if err != nil {

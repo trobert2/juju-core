@@ -9,9 +9,9 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
-	"runtime"
 
 	"github.com/juju/loggo"
 
@@ -20,8 +20,8 @@ import (
 	"launchpad.net/juju-core/worker/uniter/jujuc"
 
 	// Import the providers.
-	_ "launchpad.net/juju-core/provider/all"
 	"launchpad.net/juju-core/juju/osenv"
+	_ "launchpad.net/juju-core/provider/all"
 )
 
 var jujudDoc = `
