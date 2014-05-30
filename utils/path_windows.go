@@ -55,8 +55,8 @@ func Readlink(link string) (string, error) {
 		GetFinalPathNameByHandleW = kernel32.NewProc("GetFinalPathNameByHandleW")
 
 		nargs    uint32 = 4
-		buf_size int    = 512
-		buf      [512]byte
+		buf_size int    = 526
+		buf      [526]byte
 		target   string
 	)
 

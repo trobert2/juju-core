@@ -87,30 +87,12 @@ func join(basePath, path string) string {
 // Path field should use "/" as the path separator.
 type Dir struct {
 	Path string
+	// kept the filemod just to keep the same structure passed to the methods
 	Perm os.FileMode
 }
 
 func (d Dir) GetPath() string {
 	return d.Path
-}
-
-func (d Dir) Create(c *gc.C, basePath string) Entry {
-	path := join(basePath, d.Path)
-	err := os.MkdirAll(path, d.Perm)
-	c.Assert(err, gc.IsNil)
-	err = os.Chmod(path, d.Perm)
-	c.Assert(err, gc.IsNil)
-	return d
-}
-
-func (d Dir) Check(c *gc.C, basePath string) Entry {
-	fileInfo, err := os.Lstat(join(basePath, d.Path))
-	if !c.Check(err, gc.IsNil) {
-		return d
-	}
-	c.Check(fileInfo.Mode()&os.ModePerm, gc.Equals, d.Perm)
-	c.Check(fileInfo.Mode()&os.ModeType, gc.Equals, os.ModeDir)
-	return d
 }
 
 // File is an Entry that allows plain files to be created and verified. The
@@ -131,21 +113,6 @@ func (f File) Create(c *gc.C, basePath string) Entry {
 	return f
 }
 
-func (f File) Check(c *gc.C, basePath string) Entry {
-	path := join(basePath, f.Path)
-	fileInfo, err := os.Lstat(path)
-	if !c.Check(err, gc.IsNil) {
-		return f
-	}
-	mode := fileInfo.Mode()
-	c.Check(mode&os.ModeType, gc.Equals, os.FileMode(0))
-	c.Check(mode&os.ModePerm, gc.Equals, f.Perm)
-	data, err := ioutil.ReadFile(path)
-	c.Check(err, gc.IsNil)
-	c.Check(string(data), gc.Equals, f.Data)
-	return f
-}
-
 // Symlink is an Entry that allows symlinks to be created and verified. The
 // Path field should use "/" as the path separator.
 type Symlink struct {
@@ -155,12 +122,6 @@ type Symlink struct {
 
 func (s Symlink) GetPath() string {
 	return s.Path
-}
-
-func (s Symlink) Create(c *gc.C, basePath string) Entry {
-	err := os.Symlink(s.Link, join(basePath, s.Path))
-	c.Assert(err, gc.IsNil)
-	return s
 }
 
 func (s Symlink) Check(c *gc.C, basePath string) Entry {
