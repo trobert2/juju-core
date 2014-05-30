@@ -76,7 +76,7 @@ func (*execSuite) TestExecUnknownCommand(c *gc.C) {
 	)
 	c.Assert(err, gc.IsNil)
 	c.Assert(result.Stdout, gc.HasLen, 0)
-	c.Assert(string(result.Stderr), jc.Contains, "unknown-command: command not found")
+	c.Assert(string(result.Stderr), jc.Contains, "The term 'unknown-command' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path")
 	// 127 is a special bash return code meaning command not found.
 	c.Assert(result.Code, gc.Equals, 127)
 }
