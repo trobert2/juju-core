@@ -1,28 +1,44 @@
 package utils_test
 
 import (
-	// "path/filepath"
+	"log"
+	"os"
 
-	// jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
-
+	
 	"launchpad.net/juju-core/utils"
 )
 
 type PathSuite struct {
-	Path string
+	Target string
+	Link string
 }
 
 var _ = gc.Suite(&PathSuite{})
 
 func (s *PathSuite) SetUpTest(c *gc.C) {
-	s.Path = c.MkDir()
+	s.Target = c.MkDir()
+	s.Link = "symlink"
+}
+
+func (s *PathSuite) TearDownTest(c *gc.C) {
+	os.Remove(s.Link)
 }
 
 func (s *PathSuite) TestCreateSymLink(c *gc.C) {
-	err := utils.CreateSymLink("symlink", s.Path)
+	target := utils.PathToWindows(s.Target)
+	target, _ = utils.GetLongPath(target)
+
+	err := utils.CreateSymLink(s.Link, target)
+	if err != nil {
+		log.Print(err)
+	}
+	compare, err := utils.Readlink(s.Link)
+	if err != nil {
+		log.Print(err)
+	}
+
 	c.Assert(err, gc.IsNil)
-	target, err := utils.Readlink("symlink")
 	c.Assert(err, gc.IsNil)
-	c.Assert(target, gc.Equals, s.Path)
+	c.Assert(compare, gc.Equals, target)
 }

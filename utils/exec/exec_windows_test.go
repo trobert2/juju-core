@@ -4,13 +4,12 @@
 package exec_test
 
 import (
-	"strings"
-
 	jc "github.com/juju/testing/checkers"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/testing"
 	"launchpad.net/juju-core/utils/exec"
+	"launchpad.net/juju-core/utils"
 )
 
 type execSuite struct {
@@ -21,7 +20,7 @@ var _ = gc.Suite(&execSuite{})
 
 func (*execSuite) TestRunCommands(c *gc.C) {
 	newDir := c.MkDir()
-	// newDir =
+	newDir, _ = utils.GetLongPath(utils.PathToWindows(newDir))
 
 	for i, test := range []struct {
 		message     string
@@ -44,7 +43,7 @@ func (*execSuite) TestRunCommands(c *gc.C) {
 			message:    "test working dir",
 			commands:   `(Get-Item -Path ".\" -Verbose).FullName`,
 			workingDir: newDir,
-			stdout:     strings.Replace(newDir, "/", "\\", -1) + "\r\n",
+			stdout:     newDir + "\r\n",
 		},
 		// }, {
 		// 	message:     "test environment",
@@ -75,9 +74,7 @@ func (*execSuite) TestExecUnknownCommand(c *gc.C) {
 	)
 	c.Assert(err, gc.IsNil)
 	c.Assert(result.Stdout, gc.HasLen, 0)
-	compare := "The term 'unknown-command' is not recognized as the name of a cmdlet, function, "
-	compare += "script file, or operable program. Check the spelling of the name, or if a path was "
-	compare += "included, verify that the path"
+	compare := "The term 'unknown-command' is not recognized as the name of a cmdlet, function, script file"
 	c.Assert(string(result.Stderr), jc.Contains, compare)
 	// 127 is a special bash return code meaning command not found.
 	c.Assert(result.Code, gc.Equals, 0)
