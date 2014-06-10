@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"runtime"
 
 	"github.com/juju/errors"
 
@@ -72,13 +71,8 @@ func (d *BundlesDir) download(info BundleInfo, abort <-chan struct{}) (err error
 				return st.Err
 			}
 			logger.Infof("download complete")
+			defer st.File.Close()
 			actualSha256, _, err := utils.ReadSHA256(st.File)
-			// Renaming an open file is not possible on windows
-			if runtime.GOOS == "windows" {
-				st.File.Close()
-			} else {
-				defer st.File.Close()
-			}
 			if err != nil {
 				return err
 			}

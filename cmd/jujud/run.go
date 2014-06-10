@@ -7,24 +7,20 @@ import (
 	"fmt"
 	"net/rpc"
 	"os"
-	"path"
 	"path/filepath"
-	"runtime"
 
 	"launchpad.net/gnuflag"
 
 	"launchpad.net/juju-core/cmd"
-	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/names"
-	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/utils/fslock"
 	"launchpad.net/juju-core/worker/uniter"
 )
 
 var (
-	AgentDir = path.Join(osenv.DataDir, "agents")
-	LockDir  = path.Join(osenv.DataDir, "locks")
+	AgentDir = "/var/lib/juju/agents"
+	LockDir  = "/var/lib/juju/locks"
 )
 
 type RunCommand struct {
@@ -122,15 +118,8 @@ func (c *RunCommand) executeInUnitContext() (*exec.ExecResponse, error) {
 	}
 
 	socketPath := filepath.Join(unitDir, uniter.RunListenerFile)
-	if runtime.GOOS == "windows" {
-		sock, errSock := utils.ReadSocketFile(socketPath)
-		if errSock != nil {
-			return nil, errSock
-		}
-		socketPath = sock
-	}
 	// make sure the socket exists
-	client, err := rpc.Dial(osenv.SocketType, socketPath)
+	client, err := rpc.Dial("unix", socketPath)
 	if err != nil {
 		return nil, err
 	}
@@ -159,10 +148,6 @@ func (c *RunCommand) executeNoContext() (*exec.ExecResponse, error) {
 	defer lock.Unlock()
 
 	runCmd := `[ -f "/home/ubuntu/.juju-proxy" ] && . "/home/ubuntu/.juju-proxy"` + "\n" + c.commands
-
-	if runtime.GOOS == "windows" {
-		runCmd = c.commands
-	}
 
 	return exec.RunCommands(
 		exec.RunParams{

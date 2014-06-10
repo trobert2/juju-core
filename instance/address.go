@@ -130,8 +130,6 @@ func DeriveAddressType(value string) AddressType {
 }
 
 func isIPv4PrivateNetworkAddress(ip net.IP) bool {
-	// gsamfira: For testing
-	return false
 	return classAPrivate.Contains(ip) ||
 		classBPrivate.Contains(ip) ||
 		classCPrivate.Contains(ip)

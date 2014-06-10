@@ -18,11 +18,24 @@ import (
 	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/cmd"
-	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/utils/exec"
 )
 
 var logger = loggo.GetLogger("worker.uniter.jujuc")
+
+// newCommands maps Command names to initializers.
+var newCommands = map[string]func(Context) cmd.Command{
+	"close-port":    NewClosePortCommand,
+	"config-get":    NewConfigGetCommand,
+	"juju-log":      NewJujuLogCommand,
+	"open-port":     NewOpenPortCommand,
+	"relation-get":  NewRelationGetCommand,
+	"relation-ids":  NewRelationIdsCommand,
+	"relation-list": NewRelationListCommand,
+	"relation-set":  NewRelationSetCommand,
+	"unit-get":      NewUnitGetCommand,
+	"owner-get":     NewOwnerGetCommand,
+}
 
 // CommandNames returns the names of all jujuc commands.
 func CommandNames() (names []string) {
@@ -114,7 +127,7 @@ func NewServer(getCmd CmdGetter, socketPath string) (*Server, error) {
 	if err := server.Register(&Jujuc{getCmd: getCmd}); err != nil {
 		return nil, err
 	}
-	listener, err := net.Listen(osenv.SocketType, socketPath)
+	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, err
 	}

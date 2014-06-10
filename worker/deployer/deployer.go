@@ -112,7 +112,7 @@ func (d *Deployer) changed(unitName string) error {
 	// Deployed units must be removed if they're Dead, or if the deployer
 	// is no longer responsible for them.
 	if d.deployed.Contains(unitName) {
-		if life == params.Dead || life == params.Dying {
+		if life == params.Dead {
 			if err := d.recall(unitName); err != nil {
 				return err
 			}

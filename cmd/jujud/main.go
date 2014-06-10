@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -20,7 +19,6 @@ import (
 	"launchpad.net/juju-core/worker/uniter/jujuc"
 
 	// Import the providers.
-	"launchpad.net/juju-core/juju/osenv"
 	_ "launchpad.net/juju-core/provider/all"
 )
 
@@ -79,7 +77,7 @@ func jujuCMain(commandName string, args []string) (code int, err error) {
 	if err != nil {
 		return
 	}
-	client, err := rpc.Dial(osenv.SocketType, socketPath)
+	client, err := rpc.Dial("unix", socketPath)
 	if err != nil {
 		return
 	}
@@ -119,24 +117,14 @@ func Main(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(2)
 	}
-
-	jujudName := "jujud"
-	jujucName := "jujuc"
-	jujuRunName := "juju-run"
-
-	if runtime.GOOS == "windows" {
-		jujudName = "jujud.exe"
-		jujucName = "jujuc.exe"
-		jujuRunName = "juju-run.exe"
-	}
 	commandName := filepath.Base(args[0])
-	if commandName == jujudName {
+	if commandName == "jujud" {
 		code, err = jujuDMain(args, ctx)
-	} else if commandName == jujucName {
+	} else if commandName == "jujuc" {
 		fmt.Fprint(os.Stderr, jujudDoc)
 		code = 2
 		err = fmt.Errorf("jujuc should not be called directly")
-	} else if commandName == jujuRunName {
+	} else if commandName == "juju-run" {
 		code = cmd.Main(&RunCommand{}, ctx, args[1:])
 	} else {
 		code, err = jujuCMain(commandName, args)

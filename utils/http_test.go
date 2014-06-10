@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 
 	"github.com/juju/testing"
@@ -19,7 +20,17 @@ import (
 	"launchpad.net/juju-core/utils"
 )
 
+func init() {
+	// The default Proxy implementation for HTTP transports,
+	// ProxyFromEnvironment, uses a sync.Once in Go 1.3 onwards.
+	// No tests should be dialing out, so no proxy should be
+	// used.
+	os.Setenv("http_proxy", "")
+	os.Setenv("HTTP_PROXY", "")
+}
+
 type httpSuite struct {
+	testing.IsolationSuite
 	Server *httptest.Server
 }
 
@@ -32,6 +43,7 @@ func (t *trivialResponseHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *httpSuite) SetUpTest(c *gc.C) {
+	s.IsolationSuite.SetUpTest(c)
 	s.Server = httptest.NewTLSServer(&trivialResponseHandler{})
 }
 
@@ -39,6 +51,7 @@ func (s *httpSuite) TearDownTest(c *gc.C) {
 	if s.Server != nil {
 		s.Server.Close()
 	}
+	s.IsolationSuite.TearDownTest(c)
 }
 
 func (s *httpSuite) TestDefaultClientFails(c *gc.C) {
@@ -93,7 +106,7 @@ func (s *httpSuite) TestBasicAuthHeader(c *gc.C) {
 }
 
 type dialSuite struct {
-	testing.CleanupSuite
+	testing.IsolationSuite
 }
 
 var _ = gc.Suite(&dialSuite{})

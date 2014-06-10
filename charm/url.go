@@ -49,7 +49,7 @@ type URL struct {
 var ErrUnresolvedUrl error = fmt.Errorf("charm url series is not resolved")
 
 var (
-	validSeries = regexp.MustCompile("^[a-zA-Z0-9]+([a-zA-Z0-9-]+[a-zA-Z0-9])?$")
+	validSeries = regexp.MustCompile("^[a-z]+([a-z0-9]+)?$")
 	validName   = regexp.MustCompile("^[a-z][a-z0-9]*(-[a-z0-9]*[a-z][a-z0-9]*)*$")
 )
 

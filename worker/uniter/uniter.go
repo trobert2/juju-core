@@ -13,29 +13,25 @@ import (
 	"sync"
 	"time"
 
-	osExec "os/exec"
-	"runtime"
-
 	"github.com/juju/loggo"
 	"launchpad.net/tomb"
 
 	"launchpad.net/juju-core/agent/tools"
 	corecharm "launchpad.net/juju-core/charm"
 	"launchpad.net/juju-core/charm/hooks"
-	// "launchpad.net/juju-core/cmd"
+	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/environs/config"
-	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/api/uniter"
 	apiwatcher "launchpad.net/juju-core/state/api/watcher"
 	"launchpad.net/juju-core/state/watcher"
-	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/utils/exec"
 	"launchpad.net/juju-core/utils/fslock"
+	proxyutils "launchpad.net/juju-core/utils/proxy"
 	"launchpad.net/juju-core/worker"
 	"launchpad.net/juju-core/worker/uniter/charm"
 	"launchpad.net/juju-core/worker/uniter/hook"
-	// "launchpad.net/juju-core/worker/uniter/jujuc"
+	"launchpad.net/juju-core/worker/uniter/jujuc"
 	"launchpad.net/juju-core/worker/uniter/relation"
 )
 
@@ -45,8 +41,6 @@ const (
 	// These work fine for linux, but should we need to work with windows
 	// workloads in the future, we'll need to move these into a file that is
 	// compiled conditionally for different targets and use tcp (most likely).
-	// gsamfira: On Windows this file will be a text file we will use it to store
-	// the TCP port nr until we implement RPC over named pipes
 	RunListenerFile = "run.socket"
 )
 
@@ -85,7 +79,7 @@ type Uniter struct {
 	hookLock     *fslock.Lock
 	runListener  *RunListener
 
-	proxy      osenv.ProxySettings
+	proxy      proxyutils.Settings
 	proxyMutex sync.Mutex
 
 	ranConfigChanged bool
@@ -220,25 +214,13 @@ func (u *Uniter) init(unitTag string) (err error) {
 		return err
 	}
 	runListenerSocketPath := filepath.Join(u.baseDir, RunListenerFile)
-	if runtime.GOOS == "windows" {
-		//TODO: gsamfira: This is a bit hacky. Would prefer implementing
-		//named pipes on windows
-		tmpPath, err := utils.WriteSocketFile(runListenerSocketPath)
-		if err != nil {
-			return err
-		}
-		runListenerSocketPath = tmpPath
-	}
-	logger.Debugf("starting juju-run listener on :%s", runListenerSocketPath)
+	logger.Debugf("starting juju-run listener on unix:%s", runListenerSocketPath)
 	u.runListener, err = NewRunListener(u, runListenerSocketPath)
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS != "windows" {
-		// The socket needs to have permissions 777 in order for other users to use it.
-		return os.Chmod(runListenerSocketPath, 0777)
-	}
-	return nil
+	// The socket needs to have permissions 777 in order for other users to use it.
+	return os.Chmod(runListenerSocketPath, 0777)
 }
 
 func (u *Uniter) Kill() {
@@ -386,6 +368,27 @@ func (u *Uniter) acquireHookLock(message string) (err error) {
 	return nil
 }
 
+func (u *Uniter) startJujucServer(context *HookContext) (*jujuc.Server, string, error) {
+	// Prepare server.
+	getCmd := func(ctxId, cmdName string) (cmd.Command, error) {
+		// TODO: switch to long-running server with single context;
+		// use nonce in place of context id.
+		if ctxId != context.id {
+			return nil, fmt.Errorf("expected context id %q, got %q", context.id, ctxId)
+		}
+		return jujuc.NewCommand(context, cmdName)
+	}
+	socketPath := filepath.Join(u.baseDir, "agent.socket")
+	// Use abstract namespace so we don't get stale socket files.
+	socketPath = "@" + socketPath
+	srv, err := jujuc.NewServer(getCmd, socketPath)
+	if err != nil {
+		return nil, "", err
+	}
+	go srv.Run()
+	return srv, socketPath, nil
+}
+
 // RunCommands executes the supplied commands in a hook context.
 func (u *Uniter) RunCommands(commands string) (results *exec.ExecResponse, err error) {
 	logger.Tracef("run commands: %s", commands)
@@ -477,20 +480,6 @@ func (u *Uniter) runHook(hi hook.Info) (err error) {
 	logger.Infof("running %q hook", hookName)
 	ranHook := true
 	err = hctx.RunHook(hookName, u.charmPath, u.toolsDir, socketPath)
-	if RebootRequiredError(err) {
-		logger.Infof("hook %q requested a reboot", hookName)
-		if err := u.writeState(RunHook, Queued, &hi, nil); err != nil {
-			return err
-		}
-		time := 5
-		logger.Infof("rebooting system in %q seconds", time)
-		errReboot := utils.Reboot(time)
-		if eeReboot, ok := errReboot.(*osExec.Error); ok && eeReboot != nil {
-			logger.Infof("Reboot returned error: %q", eeReboot.Err)
-		}
-		logger.Infof("Stopping uniter due to reboot")
-		u.Stop()
-	}
 	if IsMissingHookError(err) {
 		ranHook = false
 	} else if err != nil {

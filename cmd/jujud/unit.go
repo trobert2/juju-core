@@ -104,11 +104,9 @@ func (a *UnitAgent) APIWorkers() (worker.Worker, error) {
 	runner.StartWorker("apiaddressupdater", func() (worker.Worker, error) {
 		return apiaddressupdater.NewAPIAddressUpdater(st.Uniter(), a), nil
 	})
-	if runtime.GOOS != "windows" {
-		runner.StartWorker("rsyslog", func() (worker.Worker, error) {
-			return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslog.RsyslogModeForwarding)
-		})
-	}
+	runner.StartWorker("rsyslog", func() (worker.Worker, error) {
+		return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslog.RsyslogModeForwarding)
+	})
 	return newCloseWorker(runner, st), nil
 }
 

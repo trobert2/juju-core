@@ -11,13 +11,10 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"runtime"
-	"strconv"
 	"strings"
 	"unicode"
 
 	"launchpad.net/goyaml"
-	"launchpad.net/juju-core/utils/exec"
 )
 
 // WriteYaml marshals obj as yaml and then writes it to a file, atomically,
@@ -33,14 +30,9 @@ func WriteYaml(path string, obj interface{}) error {
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS != "windows" {
-		defer f.Close()
-	}
+	defer f.Close()
 	if _, err = f.Write(data); err != nil {
 		return err
-	}
-	if runtime.GOOS == "windows" {
-		f.Close()
 	}
 	return ReplaceFile(prep, path)
 }
@@ -147,21 +139,4 @@ func ReadFileSHA256(filename string) (string, int64, error) {
 //generation windows paths on linux
 func PathToWindows(filepath string) string {
 	return strings.Replace(filepath, "/", "\\", -1)
-}
-
-func Reboot(when int) error {
-	cmd := []string{
-		"shutdown",
-		"-r",
-	}
-
-	if runtime.GOOS == "windows" {
-		cmd = append(cmd, "-t")
-	}
-	cmd = append(cmd, strconv.Itoa(when))
-	_, err := exec.RunCommand(cmd)
-	if err != nil {
-		return err
-	}
-	return nil
 }

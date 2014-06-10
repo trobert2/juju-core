@@ -104,17 +104,22 @@ func (fakeAPIOpenConfig) OldPassword() string {
 	return "old"
 }
 
+func (fakeAPIOpenConfig) Jobs() []params.MachineJob {
+	return []params.MachineJob{}
+}
+
 var _ = gc.Suite(&apiOpenSuite{})
 
 func (s *apiOpenSuite) TestOpenAPIStateReplaceErrors(c *gc.C) {
+	type replaceErrors struct {
+		openErr    error
+		replaceErr error
+	}
 	var apiError error
 	s.PatchValue(&apiOpen, func(info *api.Info, opts api.DialOpts) (*api.State, error) {
 		return nil, apiError
 	})
-	for i, test := range []struct {
-		openErr    error
-		replaceErr error
-	}{{
+	errReplacePairs := []replaceErrors{{
 		fmt.Errorf("blah"), nil,
 	}, {
 		openErr:    &params.Error{Code: params.CodeNotProvisioned},
@@ -122,7 +127,8 @@ func (s *apiOpenSuite) TestOpenAPIStateReplaceErrors(c *gc.C) {
 	}, {
 		openErr:    &params.Error{Code: params.CodeUnauthorized},
 		replaceErr: worker.ErrTerminateAgent,
-	}} {
+	}}
+	for i, test := range errReplacePairs {
 		c.Logf("test %d", i)
 		apiError = test.openErr
 		_, _, err := openAPIState(fakeAPIOpenConfig{}, nil)
@@ -233,7 +239,7 @@ func (s *agentSuite) SetUpSuite(c *gc.C) {
 	// a bit when some tests are restarting every 50ms for 10 seconds,
 	// so use a slightly more friendly delay.
 	worker.RestartDelay = 250 * time.Millisecond
-	s.PatchValue(&ensureMongoServer, func(string, string, params.StateServingInfo, bool) error {
+	s.PatchValue(&ensureMongoServer, func(string, string, params.StateServingInfo) error {
 		return nil
 	})
 }

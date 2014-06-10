@@ -4,6 +4,7 @@
 package filetesting_test
 
 import (
+	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -11,7 +12,6 @@ import (
 	gc "launchpad.net/gocheck"
 
 	ft "launchpad.net/juju-core/testing/filetesting"
-	"launchpad.net/juju-core/utils"
 )
 
 type EntrySuite struct {
@@ -26,6 +26,18 @@ func (s *EntrySuite) SetUpTest(c *gc.C) {
 
 func (s *EntrySuite) join(path string) string {
 	return filepath.Join(s.basePath, filepath.FromSlash(path))
+}
+
+func (s *EntrySuite) TestFileCreate(c *gc.C) {
+	ft.File{"foobar", "hello", 0644}.Create(c, s.basePath)
+	path := s.join("foobar")
+	info, err := os.Lstat(path)
+	c.Assert(err, gc.IsNil)
+	c.Assert(info.Mode()&os.ModePerm, gc.Equals, os.FileMode(0644))
+	c.Assert(info.Mode()&os.ModeType, gc.Equals, os.FileMode(0))
+	data, err := ioutil.ReadFile(path)
+	c.Assert(err, gc.IsNil)
+	c.Assert(string(data), gc.Equals, "hello")
 }
 
 func (s *EntrySuite) TestFileCreateFailure(c *gc.C) {
@@ -66,6 +78,14 @@ func (s *EntrySuite) TestFileCheckFailureDir(c *gc.C) {
 	ft.Dir{"furble", 0740}.Create(c, s.basePath)
 	c.ExpectFailure("shouldn't accept dir")
 	ft.File{"furble", "pingle", 0740}.Check(c, s.basePath)
+}
+
+func (s *EntrySuite) TestDirCreate(c *gc.C) {
+	ft.Dir{"path", 0750}.Create(c, s.basePath)
+	info, err := os.Lstat(s.join("path"))
+	c.Check(err, gc.IsNil)
+	c.Check(info.Mode()&os.ModePerm, gc.Equals, os.FileMode(0750))
+	c.Check(info.Mode()&os.ModeType, gc.Equals, os.ModeDir)
 }
 
 func (s *EntrySuite) TestDirCreateChmod(c *gc.C) {
@@ -118,7 +138,7 @@ func (s *EntrySuite) TestDirCheckFailureFile(c *gc.C) {
 
 func (s *EntrySuite) TestSymlinkCreate(c *gc.C) {
 	ft.Symlink{"link", "target"}.Create(c, s.basePath)
-	target, err := utils.Readlink(s.join("link"))
+	target, err := os.Readlink(s.join("link"))
 	c.Assert(err, gc.IsNil)
 	c.Assert(target, gc.Equals, "target")
 }

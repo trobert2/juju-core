@@ -12,20 +12,20 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
+	"runtime"
 
 	"github.com/juju/errors"
 	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/instance"
-	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/state"
 	"launchpad.net/juju-core/state/api"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/utils"
 	"launchpad.net/juju-core/version"
+	"launchpad.net/juju-core/juju/osenv"
 )
 
 var logger = loggo.GetLogger("juju.agent")
@@ -627,8 +627,24 @@ func (c *configInternal) writeCommands() ([]string, error) {
 }
 
 func (c *configInternal) APIInfo() *api.Info {
+	servingInfo, isStateServer := c.StateServingInfo()
+	addrs := c.apiDetails.addresses
+	if isStateServer {
+		port := servingInfo.APIPort
+		localApiAddr := fmt.Sprintf("localhost:%d", port)
+		addrInAddrs := false
+		for _, addr := range addrs {
+			if addr == localApiAddr {
+				addrInAddrs = true
+				break
+			}
+		}
+		if !addrInAddrs {
+			addrs = append(addrs, localApiAddr)
+		}
+	}
 	return &api.Info{
-		Addrs:    c.apiDetails.addresses,
+		Addrs:    addrs,
 		Password: c.apiDetails.password,
 		CACert:   c.caCert,
 		Tag:      c.tag,

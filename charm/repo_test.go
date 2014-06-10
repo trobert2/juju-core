@@ -15,8 +15,6 @@ import (
 	charmtesting "launchpad.net/juju-core/charm/testing"
 	env_config "launchpad.net/juju-core/environs/config"
 	"launchpad.net/juju-core/testing"
-
-	"launchpad.net/juju-core/utils"
 )
 
 type StoreSuite struct {
@@ -521,7 +519,7 @@ func (s *LocalRepoSuite) TestIgnoresUnpromisingNames(c *gc.C) {
 func (s *LocalRepoSuite) TestFindsSymlinks(c *gc.C) {
 	realPath := testing.Charms.ClonedDirPath(c.MkDir(), "dummy")
 	linkPath := filepath.Join(s.seriesPath, "dummy")
-	err := utils.Symlink(realPath, linkPath)
+	err := os.Symlink(realPath, linkPath)
 	c.Assert(err, gc.IsNil)
 	ch, err := s.repo.Get(charm.MustParseURL("local:quantal/dummy"))
 	c.Assert(err, gc.IsNil)

@@ -551,12 +551,7 @@ func (task *provisionerTask) provisioningInfo(machine *apiprovisioner.Machine) (
 	includeNetworks := pInfo.IncludeNetworks
 	excludeNetworks := pInfo.ExcludeNetworks
 	nonce := fmt.Sprintf("%s:%s", task.machineTag, uuid.String())
-
-	serie, err := machine.Series()
-	if err != nil {
-		return nil, err
-	}
-	machineConfig := environs.NewMachineConfig(machine.Id(), nonce, serie, includeNetworks, excludeNetworks, stateInfo, apiInfo)
+	machineConfig := environs.NewMachineConfig(machine.Id(), nonce, "", includeNetworks, excludeNetworks, stateInfo, apiInfo)
 	return &provisioningInfo{
 		Constraints:   pInfo.Constraints,
 		Series:        pInfo.Series,

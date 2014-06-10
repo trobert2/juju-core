@@ -59,7 +59,6 @@ func (log *Log) Start(ctx *Context) error {
 	if log.Verbose && log.Quiet {
 		return fmt.Errorf(`"verbose" and "quiet" flags clash, please use one or the other, not both`)
 	}
-	var writer loggo.Writer
 	ctx.quiet = log.Quiet
 	ctx.verbose = log.Verbose
 	if log.Path != "" {
@@ -68,7 +67,7 @@ func (log *Log) Start(ctx *Context) error {
 		if err != nil {
 			return err
 		}
-		writer = log.GetLogWriter(target)
+		writer := log.GetLogWriter(target)
 		err = loggo.RegisterWriter("logfile", writer, loggo.TRACE)
 		if err != nil {
 			return err
@@ -89,11 +88,7 @@ func (log *Log) Start(ctx *Context) error {
 
 	if log.ShowLog {
 		// We replace the default writer to use ctx.Stderr rather than os.Stderr.
-		// gsamfira: we may want a debug log in a logfile. If you mean to print it to
-		// stderr, jut omit the --log-file arg
-		if log.Path == "" {
-			writer = log.GetLogWriter(ctx.Stderr)
-		}
+		writer := log.GetLogWriter(ctx.Stderr)
 		_, err := loggo.ReplaceDefaultWriter(writer)
 		if err != nil {
 			return err
@@ -102,9 +97,7 @@ func (log *Log) Start(ctx *Context) error {
 		loggo.RemoveWriter("default")
 		// Create a simple writer that doesn't show filenames, or timestamps,
 		// and only shows warning or above.
-		if log.Path == "" {
-			writer = loggo.NewSimpleWriter(ctx.Stderr, &warningFormatter{})
-		}
+		writer := loggo.NewSimpleWriter(ctx.Stderr, &warningFormatter{})
 		err := loggo.RegisterWriter("warning", writer, loggo.WARNING)
 		if err != nil {
 			return err

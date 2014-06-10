@@ -7,44 +7,27 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	// "os"
+	"os"
 	"os/exec"
-	// "path/filepath"
+	"path/filepath"
 	"sort"
-	// "strings"
+	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/juju/loggo"
 
 	"launchpad.net/juju-core/charm"
-	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/state/api/params"
 	"launchpad.net/juju-core/state/api/uniter"
 	utilexec "launchpad.net/juju-core/utils/exec"
+	"launchpad.net/juju-core/utils/proxy"
 	unitdebug "launchpad.net/juju-core/worker/uniter/debug"
 	"launchpad.net/juju-core/worker/uniter/jujuc"
 )
 
 type missingHookError struct {
 	hookName string
-}
-
-func RebootRequiredError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg, _ := err.(*exec.ExitError)
-	if msg == nil {
-		return false
-	}
-	code := msg.Sys().(syscall.WaitStatus).ExitStatus()
-	if code == osenv.MustReboot {
-		return true
-	}
-
-	return false
 }
 
 func (e *missingHookError) Error() string {
@@ -101,12 +84,12 @@ type HookContext struct {
 	serviceOwner string
 
 	// proxySettings are the current proxy settings that the uniter knows about
-	proxySettings osenv.ProxySettings
+	proxySettings proxy.Settings
 }
 
 func NewHookContext(unit *uniter.Unit, id, uuid, envName string,
 	relationId int, remoteUnitName string, relations map[int]*ContextRelation,
-	apiAddrs []string, serviceOwner string, proxySettings osenv.ProxySettings) (*HookContext, error) {
+	apiAddrs []string, serviceOwner string, proxySettings proxy.Settings) (*HookContext, error) {
 	ctx := &HookContext{
 		unit:           unit,
 		id:             id,
@@ -192,15 +175,33 @@ func (ctx *HookContext) RelationIds() []int {
 	return ids
 }
 
-func (ctx *HookContext) finalizeContext(process string, err error) error {
-	if err != nil {
-		// gsamfira: We need this later to requeue the hook
-		logger.Infof("Checking if reboot is needed")
-		if RebootRequiredError(err) {
-			logger.Infof("Error code is reboot code")
-			return err
-		}
+// hookVars returns an os.Environ-style list of strings necessary to run a hook
+// such that it can know what environment it's operating in, and can call back
+// into ctx.
+func (ctx *HookContext) hookVars(charmDir, toolsDir, socketPath string) []string {
+	vars := []string{
+		"APT_LISTCHANGES_FRONTEND=none",
+		"DEBIAN_FRONTEND=noninteractive",
+		"PATH=" + toolsDir + ":" + os.Getenv("PATH"),
+		"CHARM_DIR=" + charmDir,
+		"JUJU_CONTEXT_ID=" + ctx.id,
+		"JUJU_AGENT_SOCKET=" + socketPath,
+		"JUJU_UNIT_NAME=" + ctx.unit.Name(),
+		"JUJU_ENV_UUID=" + ctx.uuid,
+		"JUJU_ENV_NAME=" + ctx.envName,
+		"JUJU_API_ADDRESSES=" + strings.Join(ctx.apiAddrs, " "),
 	}
+	if r, found := ctx.HookRelation(); found {
+		vars = append(vars, "JUJU_RELATION="+r.Name())
+		vars = append(vars, "JUJU_RELATION_ID="+r.FakeId())
+		name, _ := ctx.RemoteUnitName()
+		vars = append(vars, "JUJU_REMOTE_UNIT="+name)
+	}
+	vars = append(vars, ctx.proxySettings.AsEnvironmentValues()...)
+	return vars
+}
+
+func (ctx *HookContext) finalizeContext(process string, err error) error {
 	writeChanges := err == nil
 	for id, rctx := range ctx.relations {
 		if writeChanges {
@@ -249,6 +250,40 @@ func (ctx *HookContext) RunHook(hookName, charmDir, toolsDir, socketPath string)
 		err = ctx.runCharmHook(hookName, charmDir, env)
 	}
 	return ctx.finalizeContext(hookName, err)
+}
+
+func (ctx *HookContext) runCharmHook(hookName, charmDir string, env []string) error {
+	hook, err := exec.LookPath(filepath.Join(charmDir, "hooks", hookName))
+	if err != nil {
+		if ee, ok := err.(*exec.Error); ok && os.IsNotExist(ee.Err) {
+			// Missing hook is perfectly valid, but worth mentioning.
+			logger.Infof("skipped %q hook (not implemented)", hookName)
+			return &missingHookError{hookName}
+		}
+		return err
+	}
+	ps := exec.Command(hook)
+	ps.Env = env
+	ps.Dir = charmDir
+	outReader, outWriter, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("cannot make logging pipe: %v", err)
+	}
+	ps.Stdout = outWriter
+	ps.Stderr = outWriter
+	hookLogger := &hookLogger{
+		r:      outReader,
+		done:   make(chan struct{}),
+		logger: ctx.GetLogger(hookName),
+	}
+	go hookLogger.run()
+	err = ps.Start()
+	outWriter.Close()
+	if err == nil {
+		err = ps.Wait()
+	}
+	hookLogger.stop()
+	return err
 }
 
 type hookLogger struct {

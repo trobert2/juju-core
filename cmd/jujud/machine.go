@@ -24,7 +24,6 @@ import (
 	"launchpad.net/juju-core/container/kvm"
 	"launchpad.net/juju-core/environs"
 	"launchpad.net/juju-core/instance"
-	"launchpad.net/juju-core/juju/osenv"
 	"launchpad.net/juju-core/names"
 	"launchpad.net/juju-core/provider"
 	"launchpad.net/juju-core/state"
@@ -38,25 +37,25 @@ import (
 	"launchpad.net/juju-core/utils/voyeur"
 	"launchpad.net/juju-core/version"
 	"launchpad.net/juju-core/worker"
-	// "launchpad.net/juju-core/worker/apiaddressupdater"
-	// "launchpad.net/juju-core/worker/authenticationworker"
-	// "launchpad.net/juju-core/worker/charmrevisionworker"
+	"launchpad.net/juju-core/worker/apiaddressupdater"
+	"launchpad.net/juju-core/worker/authenticationworker"
+	"launchpad.net/juju-core/worker/charmrevisionworker"
 	"launchpad.net/juju-core/worker/cleaner"
-	// "launchpad.net/juju-core/worker/deployer"
-	// "launchpad.net/juju-core/worker/firewaller"
+	"launchpad.net/juju-core/worker/deployer"
+	"launchpad.net/juju-core/worker/firewaller"
 	"launchpad.net/juju-core/worker/instancepoller"
 	"launchpad.net/juju-core/worker/localstorage"
-	// workerlogger "launchpad.net/juju-core/worker/logger"
-	// "launchpad.net/juju-core/worker/machineenvironmentworker"
-	// "launchpad.net/juju-core/worker/machiner"
+	workerlogger "launchpad.net/juju-core/worker/logger"
+	"launchpad.net/juju-core/worker/machineenvironmentworker"
+	"launchpad.net/juju-core/worker/machiner"
 	"launchpad.net/juju-core/worker/minunitsworker"
 	"launchpad.net/juju-core/worker/peergrouper"
 	"launchpad.net/juju-core/worker/provisioner"
 	"launchpad.net/juju-core/worker/resumer"
-	// "launchpad.net/juju-core/worker/rsyslog"
+	"launchpad.net/juju-core/worker/rsyslog"
 	"launchpad.net/juju-core/worker/singular"
 	"launchpad.net/juju-core/worker/terminationworker"
-	// "launchpad.net/juju-core/worker/upgrader"
+	"launchpad.net/juju-core/worker/upgrader"
 )
 
 var logger = loggo.GetLogger("juju.cmd.jujud")
@@ -70,7 +69,7 @@ type eitherState interface{}
 
 var (
 	retryDelay      = 3 * time.Second
-	jujuRun         = osenv.JujuRun
+	jujuRun         = "/usr/local/bin/juju-run"
 	useMultipleCPUs = utils.UseMultipleCPUs
 
 	// The following are defined as variables to
@@ -223,6 +222,123 @@ func (a *MachineAgent) stateStarter(stopch <-chan struct{}) error {
 	}
 }
 
+// APIWorker returns a Worker that connects to the API and starts any
+// workers that need an API connection.
+func (a *MachineAgent) APIWorker() (worker.Worker, error) {
+	agentConfig := a.CurrentConfig()
+	st, entity, err := openAPIState(agentConfig, a)
+	if err != nil {
+		return nil, err
+	}
+	reportOpenedAPI(st)
+
+	// Refresh the configuration, since it may have been updated after opening state.
+	agentConfig = a.CurrentConfig()
+
+	for _, job := range entity.Jobs() {
+		if job.NeedsState() {
+			info, err := st.Agent().StateServingInfo()
+			if err != nil {
+				return nil, fmt.Errorf("cannot get state serving info: %v", err)
+			}
+			err = a.ChangeConfig(func(config agent.ConfigSetter) {
+				config.SetStateServingInfo(info)
+			})
+			if err != nil {
+				return nil, err
+			}
+			agentConfig = a.CurrentConfig()
+			break
+		}
+	}
+
+	rsyslogMode := rsyslog.RsyslogModeForwarding
+	runner := newRunner(connectionIsFatal(st), moreImportant)
+	var singularRunner worker.Runner
+	for _, job := range entity.Jobs() {
+		if job == params.JobManageEnviron {
+			rsyslogMode = rsyslog.RsyslogModeAccumulate
+			conn := singularAPIConn{st, st.Agent()}
+			singularRunner, err = newSingularRunner(runner, conn)
+			if err != nil {
+				return nil, fmt.Errorf("cannot make singular API Runner: %v", err)
+			}
+			break
+		}
+	}
+
+	// Run the upgrader and the upgrade-steps worker without waiting for
+	// the upgrade steps to complete.
+	runner.StartWorker("upgrader", func() (worker.Worker, error) {
+		return upgrader.NewUpgrader(st.Upgrader(), agentConfig), nil
+	})
+	runner.StartWorker("upgrade-steps", func() (worker.Worker, error) {
+		return a.upgradeWorker(st, entity.Jobs(), agentConfig), nil
+	})
+
+	// All other workers must wait for the upgrade steps to complete
+	// before starting.
+	a.startWorkerAfterUpgrade(runner, "machiner", func() (worker.Worker, error) {
+		return machiner.NewMachiner(st.Machiner(), agentConfig), nil
+	})
+	a.startWorkerAfterUpgrade(runner, "apiaddressupdater", func() (worker.Worker, error) {
+		return apiaddressupdater.NewAPIAddressUpdater(st.Machiner(), a), nil
+	})
+	a.startWorkerAfterUpgrade(runner, "logger", func() (worker.Worker, error) {
+		return workerlogger.NewLogger(st.Logger(), agentConfig), nil
+	})
+	a.startWorkerAfterUpgrade(runner, "machineenvironmentworker", func() (worker.Worker, error) {
+		return machineenvironmentworker.NewMachineEnvironmentWorker(st.Environment(), agentConfig), nil
+	})
+	a.startWorkerAfterUpgrade(runner, "rsyslog", func() (worker.Worker, error) {
+		return newRsyslogConfigWorker(st.Rsyslog(), agentConfig, rsyslogMode)
+	})
+
+	// If not a local provider bootstrap machine, start the worker to
+	// manage SSH keys.
+	providerType := agentConfig.Value(agent.ProviderType)
+	if providerType != provider.Local || a.MachineId != bootstrapMachineId {
+		a.startWorkerAfterUpgrade(runner, "authenticationworker", func() (worker.Worker, error) {
+			return authenticationworker.NewWorker(st.KeyUpdater(), agentConfig), nil
+		})
+	}
+
+	// Perform the operations needed to set up hosting for containers.
+	if err := a.setupContainerSupport(runner, st, entity, agentConfig); err != nil {
+		return nil, fmt.Errorf("setting up container support: %v", err)
+	}
+	for _, job := range entity.Jobs() {
+		switch job {
+		case params.JobHostUnits:
+			a.startWorkerAfterUpgrade(runner, "deployer", func() (worker.Worker, error) {
+				apiDeployer := st.Deployer()
+				context := newDeployContext(apiDeployer, agentConfig)
+				return deployer.NewDeployer(apiDeployer, context), nil
+			})
+		case params.JobManageEnviron:
+			a.startWorkerAfterUpgrade(singularRunner, "environ-provisioner", func() (worker.Worker, error) {
+				return provisioner.NewEnvironProvisioner(st.Provisioner(), agentConfig), nil
+			})
+			// TODO(axw) 2013-09-24 bug #1229506
+			// Make another job to enable the firewaller. Not all
+			// environments are capable of managing ports
+			// centrally.
+			a.startWorkerAfterUpgrade(singularRunner, "firewaller", func() (worker.Worker, error) {
+				return firewaller.NewFirewaller(st.Firewaller())
+			})
+			a.startWorkerAfterUpgrade(singularRunner, "charm-revision-updater", func() (worker.Worker, error) {
+				return charmrevisionworker.NewRevisionUpdateWorker(st.CharmRevisionUpdater()), nil
+			})
+		case params.JobManageStateDeprecated:
+			// Legacy environments may set this, but we ignore it.
+		default:
+			// TODO(dimitern): Once all workers moved over to using
+			// the API, report "unknown job type" here.
+		}
+	}
+	return newCloseWorker(runner, st), nil // Note: a worker.Runner is itself a worker.Worker.
+}
+
 // setupContainerSupport determines what containers can be run on this machine and
 // initialises suitable infrastructure to support such containers.
 func (a *MachineAgent) setupContainerSupport(runner worker.Runner, st *api.State, entity *apiagent.Entity, agentConfig agent.Config) error {
@@ -334,11 +450,9 @@ func (a *MachineAgent) StateWorker() (worker.Worker, error) {
 			a.startWorkerAfterUpgrade(runner, "instancepoller", func() (worker.Worker, error) {
 				return instancepoller.NewWorker(st), nil
 			})
-			if shouldEnableHA(agentConfig) {
-				a.startWorkerAfterUpgrade(runner, "peergrouper", func() (worker.Worker, error) {
-					return peergrouperNew(st)
-				})
-			}
+			a.startWorkerAfterUpgrade(runner, "peergrouper", func() (worker.Worker, error) {
+				return peergrouperNew(st)
+			})
 			runner.StartWorker("apiserver", func() (worker.Worker, error) {
 				// If the configuration does not have the required information,
 				// it is currently not a recoverable error, so we kill the whole
@@ -391,7 +505,6 @@ func (a *MachineAgent) ensureMongoServer(agentConfig agent.Config) error {
 		return fmt.Errorf("state worker was started with no state serving info")
 	}
 	namespace := agentConfig.Value(agent.Namespace)
-	withHA := shouldEnableHA(agentConfig)
 
 	// When upgrading from a pre-HA-capable environment,
 	// we must add machine-0 to the admin database and
@@ -428,7 +541,7 @@ func (a *MachineAgent) ensureMongoServer(agentConfig agent.Config) error {
 		}
 		st.Close()
 		addrs = m.Addresses()
-		shouldInitiateMongoServer = withHA
+		shouldInitiateMongoServer = true
 	}
 
 	// ensureMongoServer installs/upgrades the upstart config as necessary.
@@ -436,7 +549,6 @@ func (a *MachineAgent) ensureMongoServer(agentConfig agent.Config) error {
 		agentConfig.DataDir(),
 		namespace,
 		servingInfo,
-		withHA,
 	); err != nil {
 		return err
 	}
@@ -494,16 +606,6 @@ func (a *MachineAgent) ensureMongoAdminUser(agentConfig agent.Config) (added boo
 
 func isPreHAVersion(v version.Number) bool {
 	return v.Compare(version.MustParse("1.19.0")) < 0
-}
-
-// shouldEnableHA reports whether HA should be enabled.
-//
-// Eventually this should always be true, and ideally
-// it should be true before 1.20 is released or we'll
-// have more upgrade scenarios on our hands.
-func shouldEnableHA(agentConfig agent.Config) bool {
-	providerType := agentConfig.Value(agent.ProviderType)
-	return providerType != provider.Local
 }
 
 func openState(agentConfig agent.Config) (_ *state.State, _ *state.Machine, err error) {
@@ -591,7 +693,8 @@ func (a *MachineAgent) upgradeWorker(
 			return nil
 		default:
 		}
-		// If the machine agent is a state server, wait until state is opened.
+		// If the machine agent is a state server, flag that state
+		// needs to be opened before running upgrade steps
 		needsState := false
 		for _, job := range jobs {
 			if job == params.JobManageEnviron {
@@ -687,12 +790,8 @@ func (a *MachineAgent) createJujuRun(dataDir string) error {
 	if err := os.Remove(jujuRun); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	jujuName := "jujud"
-	if runtime.GOOS == "windows" {
-		jujuName = "jujud.exe"
-	}
-	jujud := filepath.Join(dataDir, "tools", a.Tag(), jujuName)
-	return utils.Symlink(jujud, jujuRun)
+	jujud := filepath.Join(dataDir, "tools", a.Tag(), "jujud")
+	return os.Symlink(jujud, jujuRun)
 }
 
 func (a *MachineAgent) uninstallAgent(agentConfig agent.Config) error {

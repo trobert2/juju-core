@@ -21,6 +21,7 @@ import (
 	coretesting "launchpad.net/juju-core/testing"
 	coretools "launchpad.net/juju-core/tools"
 	"launchpad.net/juju-core/utils"
+	"launchpad.net/juju-core/utils/set"
 	"launchpad.net/juju-core/version"
 	"launchpad.net/juju-core/worker/upgrader"
 )
@@ -185,8 +186,10 @@ func MustUploadFakeToolsVersions(stor storage.Storage, versions ...version.Binar
 }
 
 func uploadFakeTools(stor storage.Storage) error {
+	toolsSeries := set.NewStrings(bootstrap.ToolsLtsSeries...)
+	toolsSeries.Add(version.Current.Series)
 	var versions []version.Binary
-	for _, series := range bootstrap.ToolsLtsSeries {
+	for _, series := range toolsSeries.Values() {
 		vers := version.Current
 		vers.Series = series
 		versions = append(versions, vers)
@@ -295,8 +298,8 @@ var (
 	V220all = []version.Binary{V220p64, V220p32, V220q64, V220q32}
 	VAll    = append(V1all, V220all...)
 
-	V310qppc64  = version.MustParseBinary("3.1.0-quantal-ppc64")
-	V3101qppc64 = version.MustParseBinary("3.1.0.1-quantal-ppc64")
+	V31d0qppc64  = version.MustParseBinary("3.1-dev0-quantal-ppc64")
+	V31d01qppc64 = version.MustParseBinary("3.1-dev0.1-quantal-ppc64")
 )
 
 type BootstrapToolsTest struct {

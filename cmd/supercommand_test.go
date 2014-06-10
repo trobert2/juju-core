@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"strings"
 
+	gitjujutesting "github.com/juju/testing"
 	"launchpad.net/gnuflag"
 	gc "launchpad.net/gocheck"
 
 	"launchpad.net/juju-core/cmd"
 	"launchpad.net/juju-core/testing"
-	"launchpad.net/juju-core/testing/testbase"
 	"launchpad.net/juju-core/version"
 )
 
@@ -25,7 +25,7 @@ func initDefenestrate(args []string) (*cmd.SuperCommand, *TestCommand, error) {
 }
 
 type SuperCommandSuite struct {
-	testbase.LoggingSuite
+	gitjujutesting.IsolationSuite
 }
 
 var _ = gc.Suite(&SuperCommandSuite{})
@@ -174,11 +174,7 @@ func (s *SuperCommandSuite) TestVersionFlag(c *gc.C) {
 }
 
 func (s *SuperCommandSuite) TestLogging(c *gc.C) {
-	s.PatchValue(&version.Current, version.Binary{
-		Number: version.Number{1, 2, 3, 4},
-		Series: "plan9",
-		Arch:   "mips",
-	})
+	s.PatchValue(&version.Current, version.MustParseBinary("1.2.3.4-plan9-mips"))
 	s.PatchValue(&version.Compiler, "llgo")
 
 	loggingTests := []struct {

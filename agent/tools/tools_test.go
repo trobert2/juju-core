@@ -31,6 +31,16 @@ func (t *ToolsSuite) SetUpTest(c *gc.C) {
 	t.dataDir = c.MkDir()
 }
 
+func (t *ToolsSuite) TestPackageDependencies(c *gc.C) {
+	// This test is to ensure we don't bring in dependencies on state, environ
+	// or any of the other bigger packages that'll drag in yet more dependencies.
+	// Only imports that start with "launchpad.net/juju-core" are checked, and the
+	// resulting slice has that prefix removed to keep the output short.
+	c.Assert(testing.FindJujuCoreImports(c, "launchpad.net/juju-core/agent/tools"),
+		gc.DeepEquals,
+		[]string{"juju/arch", "tools", "utils/set", "version"})
+}
+
 const toolsFile = "downloaded-tools.txt"
 
 // gzyesses holds the result of running:

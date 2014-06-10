@@ -460,7 +460,7 @@ func (environ *maasEnviron) StartInstance(args environs.StartInstanceParams) (
 	// The machine envronment config values are being moved to the agent config.
 	// Explicitly specify that the lxc containers use the network bridge defined above.
 	args.MachineConfig.AgentEnvironment[agent.LxcBridge] = "br0"
-
+	
 	series := args.Tools.OneSeries()
 	cloudcfg, err := newCloudinitConfig(hostname, networkInfo, series, inst)
 
@@ -484,7 +484,7 @@ func (environ *maasEnviron) StartInstance(args environs.StartInstanceParams) (
 
 func newCloudinitConfig(hostname string, networkInfo []network.Info, serie string, inst *maasInstance) (*cloudinit.Config, error) {
 	logger.Infof("Making cloudinit cfg for %s", serie)
-	if version.IsWindows(serie) {
+	if version.IsWindows(serie){
 		logger.Infof("validated as WINDOWS")
 		return newWinCloudinitConfig(hostname, networkInfo, inst)
 	}
@@ -538,7 +538,7 @@ func newWinCloudinitConfig(hostname string, networkInfo []network.Info, inst *ma
 	cloudcfg.AddPSScripts(
 		runCmd,
 	)
-	if ips != nil {
+	if ips != nil{
 		cloudcfg.AddPSScripts(
 			fmt.Sprintf(`$ipAddrs = "%s"`, strings.Join(ips, ",")),
 			renameInterface,
